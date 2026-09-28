@@ -1,0 +1,21 @@
+appId: com.harbor.storage
+productName: harbor0
+artifactName: harbor0-${version}-${os}-${arch}.${ext}
+icon: assets/icon.png
+directories:
+  output: release
+files:
+  - dist/**/*
+  - package.json
+mac:
+  target: [dmg]
+  category: public.app-category.productivity
+  hardenedRuntime: true
+win:
+  target: [nsis]
+linux:
+  target: [AppImage, deb]
+  category: Utility
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

@@ -1,0 +1,1120 @@
+import path from 'node:path';
+import { FolderBackups, backupReady } from './backups';
+import { SyncReceipts } from './sync-receipts';
+import { mkdir, lstat, rename, rm, access } from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
+import {
+  syncIssueCode,
+  type SyncRuntime,
+  type SyncIssue,
+  type SyncActivityItem,
+} from './sync-state';
+import chokidar, { type FSWatcher } from 'chokidar';
+import { ApiClient, ApiError } from '@harbor/api-client';
+import type { DriveItem } from '@harbor/contracts';
+import { Journal, type Root, type LocalJob } from './journal';
+import { contained, safeParents, safeSegment, conflictName } from './paths';
+import { uploadFile, downloadFile, hashFile, type UploadState } from './transfers';
+export class SyncEngine {
+  private receipts: SyncReceipts;
+  private backups: FolderBackups;
+  private watchers = new Map<string, FSWatcher>();
+  private timer?: ReturnType<typeof setInterval>;
+  private wakeTimer?: ReturnType<typeof setTimeout>;
+  private queueEmitTimer?: ReturnType<typeof setTimeout>;
+  private pendingWake = false;
+  private lastProgressEmit = 0;
+  private running = false;
+  private stopped = false;
+  private work?: Promise<void>;
+  private mutation = Promise.resolve();
+  private currentRootId = '';
+  private publishedFolders = '';
+  private publishingFolders = false;
+  private publishWork?: Promise<void>;
+  private publishRetryAt = 0;
+  private publishedAt = 0;
+  private removedRemoteIds = new Set<string>();
+  private confirmationWork?: Promise<void>;
+  private confirmationController = new AbortController();
+  private nextConfirmationAt = 0;
+  state: SyncRuntime = {
+    running: false,
+    paused: false,
+    online: true,
+    message: 'Ready',
+    queued: 0,
+    lastSync: null,
+    active: null,
+    issues: [],
+    recent: [],
+  };
+  constructor(
+    private api: ApiClient,
+    private journal: Journal,
+    private deviceId: string,
+    private changed: (state: unknown) => void,
+  ) {
+    this.receipts = new SyncReceipts(api, journal);
+    this.backups = new FolderBackups(api, journal);
+    this.state.lastSync = journal.get<string>('lastSync') ?? null;
+    this.state.issues = journal.get<SyncIssue[]>('syncIssues') ?? [];
+    this.state.recent = journal.get<SyncActivityItem[]>('syncRecent') ?? [];
+  }
+  async start() {
+    this.stopped = false;
+    this.confirmationController = new AbortController();
+    this.nextConfirmationAt = 0;
+    for (let root of this.journal.roots()) {
+      if (root.mode === 'sync' && !root.remoteId) {
+        root = { ...root, paused: true };
+        this.journal.root(root);
+        this.state.issues = this.state.issues.filter(
+          (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+        );
+        this.state.issues.push({
+          id: `${root.id}:mapping`,
+          rootId: root.id,
+          code: 'MAPPING_REQUIRED',
+          message: 'Choose a cloud folder for this local folder before syncing resumes.',
+          at: new Date().toISOString(),
+        });
+        this.persistIssues();
+      }
+      if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+      if (await this.checkRoot(root)) await this.watch(root);
+    }
+    this.timer = setInterval(() => void this.tick(), 2000);
+    void this.tick();
+  }
+  async stop() {
+    this.stopped = true;
+    this.confirmationController.abort();
+    await this.confirmationWork;
+    this.pendingWake = false;
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = undefined;
+    if (this.queueEmitTimer) clearTimeout(this.queueEmitTimer);
+    this.queueEmitTimer = undefined;
+    if (this.timer) clearInterval(this.timer);
+    await Promise.all([...this.watchers.values()].map((w) => w.close()));
+    this.watchers.clear();
+    await this.work;
+    await this.publishWork;
+  }
+  private ignored(root: Root, relative: string) {
+    return (
+      relative.split('/').some((p) => p.startsWith('.harbor-') || p.endsWith('.harbor-part')) ||
+      root.excluded.some((p) => relative === p || relative.startsWith(p + '/'))
+    );
+  }
+  async watch(root: Root) {
+    const watcher = chokidar.watch(root.localPath, {
+      ignoreInitial: false,
+      followSymlinks: false,
+      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
+      ignored: (p) =>
+        this.ignored(root, path.relative(root.localPath, p).split(path.sep).join('/')),
+    });
+    const queue =
+      (kind: 'upsert' | 'delete', changed = false) =>
+      (full: string, info?: Stats) => {
+        const relative = path.relative(root.localPath, full).split(path.sep).join('/');
+        const current = this.journal.roots().find((entry) => entry.id === root.id);
+        if (current && relative && !this.ignored(current, relative)) {
+          this.journal.enqueue(
+            root.id,
+            relative,
+            kind,
+            info
+              ? {
+                  type: info.isDirectory() ? 'FOLDER' : 'FILE',
+                  sizeBytes: info.size,
+                  updatedAt: info.mtime.toISOString(),
+                }
+              : undefined,
+          );
+          if (current.mode === 'backup' && changed) {
+            const job = this.journal
+              .jobs()
+              .find((j) => j.rootId === root.id && j.relativePath === relative && j.kind === kind);
+            if (job) {
+              job.payload.observedAt = Date.now();
+              this.journal.saveJob(job);
+            }
+          }
+          // Batch large directory scans while still showing new files promptly,
+          // including when paused (when no sync tick will run).
+          if (!this.queueEmitTimer)
+            this.queueEmitTimer = setTimeout(() => {
+              this.queueEmitTimer = undefined;
+              this.emit();
+            }, 50);
+          this.scheduleTick();
+        }
+      };
+    watcher
+      .on('add', queue('upsert'))
+      .on('change', queue('upsert', true))
+      .on('addDir', queue('upsert'))
+      .on('unlink', queue('delete'))
+      .on('unlinkDir', queue('delete'))
+      .on('error', (error) => this.issue(root.id, error));
+    this.watchers.set(root.id, watcher);
+  }
+  private scheduleTick() {
+    if (this.stopped || this.state.paused) return;
+    if (this.running) {
+      this.pendingWake = true;
+      return;
+    }
+    if (this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = undefined;
+      void this.tick();
+    }, 150);
+  }
+  pause(paused: boolean) {
+    this.state.paused = paused;
+    this.journal.set('paused', paused);
+    if (!paused)
+      for (const root of this.journal.roots())
+        if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+    this.emit();
+  }
+  private emit(progressOnly = false) {
+    const now = Date.now();
+    if (progressOnly && now - this.lastProgressEmit < 100) return;
+    this.lastProgressEmit = now;
+    this.state.queued = this.journal.jobCount();
+    this.changed({ ...this.state });
+  }
+  validateRoot(root: Root) {
+    if (root.mode === 'sync' && !root.remoteId)
+      throw new Error('Choose a cloud folder before syncing.');
+    for (const other of this.journal.roots().filter((other) => other.id !== root.id)) {
+      const rel = path.relative(other.localPath, root.localPath);
+      const reverse = path.relative(root.localPath, other.localPath);
+      if (
+        !rel ||
+        (!rel.startsWith('..') && !path.isAbsolute(rel)) ||
+        (!reverse.startsWith('..') && !path.isAbsolute(reverse))
+      )
+        throw new Error('Sync and backup folders must not overlap.');
+      if (root.mode === 'sync' && other.mode === 'sync' && root.remoteId === other.remoteId)
+        throw new Error('This cloud folder is already synchronized on this computer.');
+    }
+  }
+  private changeConfiguration(change: () => void) {
+    const task = this.mutation.then(async () => {
+      // Finish the current transfer before detaching its mapping; no files are deleted.
+      await this.stop();
+      await this.work;
+      try {
+        change();
+      } finally {
+        await this.start();
+      }
+    });
+    this.mutation = task.catch(() => {});
+    return task;
+  }
+  async backupNow(id: string) {
+    const root = this.journal.roots().find((r) => r.id === id && r.mode === 'backup');
+    if (!root) throw new Error('Backup folder was not found on this computer.');
+    if (this.state.paused) throw new Error('Resume backups before backing up now.');
+    await this.backups.request(root);
+    this.scheduleTick();
+    return { queued: true };
+  }
+  async addRoot(root: Root) {
+    this.validateRoot(root);
+    await this.changeConfiguration(() => {
+      this.validateRoot(root);
+      this.journal.root({ ...root, needsReconcile: root.mode === 'sync' });
+    });
+  }
+  async updateRoot(root: Root) {
+    this.validateRoot(root);
+    await this.changeConfiguration(() => {
+      this.validateRoot(root);
+      const previous = this.journal.roots().find((item) => item.id === root.id);
+      if (!previous) throw new Error('Folder was not found.');
+      if (previous.localPath !== root.localPath || previous.remoteId !== root.remoteId)
+        this.journal.resetRootFiles(root.id);
+      this.journal.root({ ...root, needsReconcile: root.mode === 'sync' });
+      this.state.issues = this.state.issues.filter(
+        (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+      );
+      this.persistIssues();
+    });
+  }
+  async removeSyncedFolder(folderId: string) {
+    await this.api.request(`/v1/sync/folders/${folderId}`, { method: 'DELETE' });
+    await this.changeConfiguration(() => {
+      for (const root of this.journal.roots()) {
+        if (root.mode !== 'sync') continue;
+        if (root.remoteId === folderId) this.journal.removeRoot(root.id);
+        else this.excludeRemovedFolder(root, folderId);
+      }
+      this.state.issues = this.state.issues.filter((issue) =>
+        this.journal.roots().some((r) => r.id === issue.rootId),
+      );
+      this.persistIssues();
+    });
+  }
+  private excludeRemovedFolder(root: Root, folderId: string) {
+    const known = this.journal.fileByItem(root.id, folderId);
+    if (!known || known.type !== 'FOLDER') return;
+    this.journal.root({ ...root, excluded: [...new Set([...root.excluded, known.relativePath])] });
+    for (const job of this.journal.jobs())
+      if (
+        job.rootId === root.id &&
+        (job.relativePath === known.relativePath ||
+          job.relativePath.startsWith(known.relativePath + '/'))
+      )
+        this.journal.finish(job.id);
+    for (const file of this.journal.files(root.id))
+      if (
+        file.relativePath === known.relativePath ||
+        file.relativePath.startsWith(known.relativePath + '/')
+      )
+        this.journal.deleteFile(root.id, file.relativePath);
+  }
+  private async detachRoot(root: Root) {
+    await this.watchers.get(root.id)?.close();
+    this.watchers.delete(root.id);
+    this.journal.removeRoot(root.id);
+    this.state.issues = this.state.issues.filter((issue) => issue.rootId !== root.id);
+    this.persistIssues();
+    this.emit();
+  }
+  async removeRoot(id: string) {
+    await this.changeConfiguration(() => {
+      this.journal.removeRoot(id);
+      this.state.issues = this.state.issues.filter((issue) => issue.rootId !== id);
+      this.persistIssues();
+    });
+  }
+  dismissConflict(id: string) {
+    this.state.issues = this.state.issues.filter(
+      (issue) => issue.id !== id || issue.code !== 'CONFLICT',
+    );
+    this.persistIssues();
+    this.emit();
+  }
+  private persistIssues() {
+    this.journal.set('syncIssues', this.state.issues);
+  }
+  private issue(rootId: string, error: unknown, relativePath?: string) {
+    const code = syncIssueCode(error);
+    this.state.issues = this.state.issues.filter(
+      (issue) => issue.rootId !== rootId || issue.code === 'CONFLICT',
+    );
+    this.state.issues.push({
+      id: `${rootId}:${code}`,
+      rootId,
+      code,
+      relativePath,
+      message: (error as Error).message,
+      at: new Date().toISOString(),
+    });
+    this.persistIssues();
+    this.emit();
+  }
+  private conflict(root: Root, relativePath: string, conflictPath: string) {
+    this.state.issues.push({
+      id: crypto.randomUUID(),
+      rootId: root.id,
+      code: 'CONFLICT',
+      relativePath,
+      conflictPath,
+      message:
+        'This file changed in more than one place. Your local version has been preserved separately.',
+      at: new Date().toISOString(),
+    });
+    this.persistIssues();
+    this.emit();
+  }
+  private activity(
+    root: Root,
+    relativePath: string,
+    direction: 'upload' | 'download',
+    item?: DriveItem,
+  ) {
+    const at = new Date().toISOString();
+    this.state.recent = [
+      { id: crypto.randomUUID(), rootId: root.id, direction, relativePath, at, item },
+      ...this.state.recent,
+    ].slice(0, 30);
+    this.journal.set('syncRecent', this.state.recent);
+    const current = this.journal.roots().find((item) => item.id === root.id);
+    if (current) this.journal.root({ ...current, lastSyncedAt: at });
+    // Upload jobs remain active until their queue entry has been removed.
+    if (direction === 'download') {
+      this.state.active = null;
+      this.emit();
+    }
+  }
+  private async checkRoot(root: Root) {
+    try {
+      const info = await lstat(root.localPath);
+      if (!info.isDirectory() || info.isSymbolicLink())
+        throw Object.assign(new Error('The local folder is unavailable.'), { code: 'ENOTDIR' });
+      await access(root.localPath, constants.R_OK | constants.W_OK);
+      return true;
+    } catch (error) {
+      if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+      this.issue(root.id, error);
+      return false;
+    }
+  }
+  async reconcile(root: Root) {
+    if (root.mode === 'backup' || root.paused || this.state.paused || this.stopped) return;
+    const seen = new Set<string>();
+    const walk = async (parent: string | null) => {
+      let cursor: string | undefined;
+      do {
+        const page = await this.api.list(parent, cursor);
+        for (const item of page.items) {
+          if (this.stopped || this.state.paused) return;
+          seen.add(item.id);
+          const relative = await this.relative(root, item);
+          if (relative === null || this.ignored(root, relative)) continue;
+          const known = this.journal.fileByItem(root.id, item.id);
+          const pending = this.journal
+            .jobs()
+            .some((job) => job.rootId === root.id && job.relativePath === relative);
+          // A shared-folder scan can be triggered by an unrelated sibling edit.
+          // Do not overwrite this device's queued edits/deletes when this item is unchanged.
+          if (!(
+            pending &&
+            known?.revision === item.revision &&
+            known.relativePath === relative &&
+            item.cloudState !== 'REQUESTED'
+          ))
+            await this.remoteItem(root, item);
+          if (item.type === 'FOLDER') await walk(item.id);
+        }
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+    };
+    const rootItem = (await this.api.request(`/v1/drive/items/${root.remoteId}`)).item;
+    if (rootItem) this.receipts.queue(root, '.', rootItem, null);
+    await walk(root.remoteId);
+    // Paused or unavailable folders can miss feed events while other folders advance
+    // the device cursor. Check tracked items absent from the current subtree.
+    for (const known of this.journal.files(root.id)) {
+      if (this.stopped || this.state.paused) return;
+      if (seen.has(known.itemId) || this.ignored(root, known.relativePath)) continue;
+      try {
+        const { item } = await this.api.request(`/v1/drive/items/${known.itemId}`);
+        await this.remoteItem(root, item);
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'SYNC_REMOVED') continue;
+        if (
+          !(error instanceof ApiError) ||
+          !['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND', ...(root.shareId ? ['FORBIDDEN'] : [])].includes(
+            error.code,
+          )
+        )
+          throw error;
+        if (root.shareId) await this.api.request(`/v1/sync/shares/${root.shareId}/status`);
+        await this.remoteItem(root, {
+          id: known.itemId,
+          revision: known.revision + 1,
+          deletedAt: new Date().toISOString(),
+        } as DriveItem);
+      }
+    }
+  }
+  private async publishSyncFolders() {
+    const folderIds = this.journal
+      .roots()
+      .filter((root) => root.mode === 'sync' && root.remoteId)
+      .map((root) => root.remoteId!)
+      .sort();
+    const signature = JSON.stringify(folderIds);
+    if (
+      this.publishingFolders ||
+      (signature === this.publishedFolders && Date.now() - this.publishedAt < 60000) ||
+      Date.now() < this.publishRetryAt
+    )
+      return;
+    this.publishingFolders = true;
+    try {
+      const response = await this.api.request('/v1/sync/folders', {
+        method: 'PUT',
+        body: { folderIds },
+        signal: AbortSignal.timeout(8000),
+      });
+      for (const id of response.removedFolderIds ?? []) this.removedRemoteIds.add(id);
+      this.publishedFolders = signature;
+      this.publishedAt = Date.now();
+      this.publishRetryAt = 0;
+    } catch {
+      // Retry while offline without interrupting file transfers or local configuration changes.
+      this.publishRetryAt = Date.now() + 15000;
+    } finally {
+      this.publishingFolders = false;
+    }
+  }
+  private confirmStatus() {
+    if (
+      this.stopped ||
+      this.state.paused ||
+      this.confirmationWork ||
+      Date.now() < this.nextConfirmationAt
+    )
+      return;
+    const signal = this.confirmationController.signal;
+    this.confirmationWork = (async () => {
+      try {
+        await this.receipts.flush(signal);
+        if (!signal.aborted) await this.receipts.audit(signal);
+        if (!signal.aborted) await this.receipts.flush(signal);
+      } catch {
+        // Keep the durable outbox and retry independently of file transfer work.
+      } finally {
+        this.confirmationWork = undefined;
+        this.nextConfirmationAt = Date.now() + 5000;
+        if (!signal.aborted) {
+          this.state.confirmationPendingRoots = this.receipts.pendingRoots();
+          if (!this.state.active && !this.journal.jobCount() && !this.state.issues.length) {
+            if (this.state.confirmationPendingRoots.length)
+              this.state.message = 'Files transferred; waiting for backend confirmation';
+            else if (this.state.message === 'Files transferred; waiting for backend confirmation')
+              this.state.message = 'Everything is up to date';
+          }
+          this.emit();
+        }
+      }
+    })();
+  }
+  async tick() {
+    if (!this.stopped && !this.publishingFolders) this.publishWork = this.publishSyncFolders();
+    this.confirmStatus();
+    if (this.running || this.stopped || (this.state.paused && !this.removedRemoteIds.size)) return;
+    this.work = this.runTick();
+    return this.work;
+  }
+  private async runTick() {
+    this.running = true;
+    this.state.running = true;
+    try {
+      for (const root of this.journal.roots())
+        if (root.mode === 'sync' && root.remoteId && this.removedRemoteIds.has(root.remoteId))
+          await this.detachRoot(root);
+      this.removedRemoteIds.clear();
+      const available = new Set<string>();
+      for (let root of this.journal.roots()) {
+        if (this.stopped || this.state.paused) return;
+        if (root.shareId) {
+          try {
+            const status = await this.api.request(`/v1/sync/shares/${root.shareId}/status`);
+            if (root.sharedSequence !== status.sequence) {
+              root = { ...root, needsReconcile: true, sharedSequence: status.sequence };
+              this.journal.root(root);
+            }
+          } catch (error) {
+            if (
+              error instanceof ApiError &&
+              [
+                'SYNC_ACCESS_REMOVED',
+                'FORBIDDEN',
+                'SYNC_REMOVED',
+                'ITEM_NOT_FOUND',
+                'PARENT_NOT_FOUND',
+              ].includes(error.code)
+            ) {
+              await this.detachRoot(root);
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (root.paused || !(await this.checkRoot(root))) continue;
+        if (
+          root.mode === 'sync' &&
+          this.state.issues.some(
+            (issue) => issue.rootId === root.id && issue.code === 'FOLDER_MISSING',
+          )
+        ) {
+          // A disappearing volume can generate unlink events for every child.
+          // Rebuild the mapping on recovery instead of replaying those deletions.
+          this.journal.resetRootFiles(root.id);
+        }
+        if (!this.watchers.has(root.id)) await this.watch(root);
+        available.add(root.id);
+        this.currentRootId = root.id;
+        this.state.issues = this.state.issues.filter(
+          (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+        );
+        if (root.needsReconcile && root.mode === 'sync') {
+          await this.reconcile(root);
+          if (this.stopped || this.state.paused) return;
+          const current = this.journal.roots().find((item) => item.id === root.id);
+          if (current) this.journal.root({ ...current, needsReconcile: false });
+        }
+      }
+      for (const root of this.journal
+        .roots()
+        .filter((r) => r.mode === 'backup' && !r.paused && available.has(r.id))) {
+        if (this.stopped || this.state.paused) return;
+        this.currentRootId = root.id;
+        await this.backups.process(
+          root,
+          (r, job) => this.localJob(r, job),
+          () => this.stopped || this.state.paused,
+        );
+      }
+      for (const job of this.journal.jobs()) {
+        if (this.stopped || this.state.paused) return;
+        const root = this.journal.roots().find((r) => r.id === job.rootId);
+        if (
+          !root ||
+          root.mode === 'backup' ||
+          !available.has(root.id) ||
+          root.paused ||
+          this.ignored(root, job.relativePath)
+        )
+          continue;
+        this.currentRootId = root.id;
+        try {
+          await this.localJob(root, job);
+          this.journal.finish(job.id);
+          this.state.active = null;
+          this.emit();
+        } catch (e) {
+          job.attempts++;
+          job.error = (e as Error).message;
+          if (!(e instanceof TypeError)) this.issue(root.id, e, job.relativePath);
+          this.journal.saveJob(job);
+          throw e;
+        }
+      }
+      if (this.stopped || this.state.paused) return;
+      this.currentRootId = '';
+      let cursor = this.journal.get<number>('cursor') ?? 0;
+      let more = true;
+      while (more && !this.stopped) {
+        const page = await this.api.changes(cursor);
+        for (const change of page.changes) {
+          if (change.type === 'SYNC_FOLDER_REMOVED')
+            for (const root of this.journal.roots().filter((r) => r.mode === 'sync')) {
+              if (root.remoteId === change.entityId) await this.detachRoot(root);
+              else this.excludeRemovedFolder(root, change.entityId);
+            }
+          if (change.type === 'TRANSFER_SAVED')
+            for (const root of this.journal
+              .roots()
+              .filter((r) => r.mode === 'sync' && !r.shareId && !r.paused && available.has(r.id))) {
+              this.currentRootId = root.id;
+              await this.reconcile(root);
+            }
+          if (change.item)
+            for (const root of this.journal
+              .roots()
+              .filter((r) => r.mode === 'sync' && !r.shareId && !r.paused && available.has(r.id))) {
+              this.currentRootId = root.id;
+              await this.remoteItem(root, change.item);
+            }
+        }
+        cursor = page.nextCursor;
+        this.journal.set('cursor', cursor);
+        more = page.hasMore;
+      }
+      if (this.stopped || this.state.paused) return;
+      this.currentRootId = '';
+      this.state.issues = this.state.issues.filter(
+        (issue) => issue.rootId !== '' || issue.code === 'CONFLICT',
+      );
+      this.persistIssues();
+      await this.api.request('/v1/sync/checkpoints', {
+        method: 'POST',
+        body: { deviceId: this.deviceId, cursor },
+      });
+      this.state.online = true;
+      this.state.lastSync = new Date().toISOString();
+      this.journal.set('lastSync', this.state.lastSync);
+      this.state.confirmationPendingRoots = this.receipts.pendingRoots();
+      this.state.message = this.state.confirmationPendingRoots.length
+        ? 'Files transferred; waiting for backend confirmation'
+        : 'Everything is up to date';
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'SYNC_REMOVED') {
+        const root = this.journal.roots().find((r) => r.id === this.currentRootId);
+        if (root) {
+          try {
+            await this.api.request(`/v1/drive/items/${root.remoteId}`);
+          } catch (rootError) {
+            if (rootError instanceof ApiError && rootError.code === 'SYNC_REMOVED')
+              await this.detachRoot(root);
+          }
+          const folderId = (e.details as { folderId?: string } | undefined)?.folderId;
+          if (folderId && this.journal.roots().some((r) => r.id === root.id))
+            this.excludeRemovedFolder(root, folderId);
+        }
+        return;
+      }
+      if (e instanceof ApiError && e.code === 'SYNC_CURSOR_EXPIRED') {
+        for (const root of this.journal.roots())
+          if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+        this.journal.set('cursor', 0);
+      }
+      this.state.online = !(e instanceof TypeError);
+      this.state.message = (e as Error).message;
+      if (
+        !(e instanceof TypeError) &&
+        !(e instanceof ApiError && e.code === 'SYNC_CURSOR_EXPIRED') &&
+        !this.state.issues.some(
+          (issue) => issue.rootId === this.currentRootId && issue.code !== 'CONFLICT',
+        )
+      )
+        this.issue(this.currentRootId, e);
+      if (e instanceof ApiError && ['DEVICE_REVOKED', 'AUTH_INVALID'].includes(e.code))
+        this.state.paused = true;
+    } finally {
+      this.confirmStatus();
+      this.running = false;
+      if (this.pendingWake) {
+        this.pendingWake = false;
+        this.scheduleTick();
+      }
+      this.state.running = false;
+      this.state.active = null;
+      this.emit();
+    }
+  }
+  private async child(parentId: string | null, name: string) {
+    let cursor: string | undefined;
+    do {
+      const page = await this.api.list(parentId, cursor);
+      const item = page.items.find((i) => i.normalizedName === name.normalize('NFC').toLowerCase());
+      if (item) return item;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return undefined;
+  }
+  private async ensureFolder(
+    name: string,
+    parentId: string | null,
+    operationId: string = crypto.randomUUID(),
+  ) {
+    try {
+      return (await this.api.createFolder(name, parentId, operationId)).item;
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'NAME_CONFLICT') {
+        const existing = await this.child(parentId, name);
+        if (existing?.type === 'FOLDER') return existing;
+      }
+      throw e;
+    }
+  }
+  private async remoteParent(root: Root, relative: string): Promise<string | null> {
+    const dirname = path.posix.dirname(relative);
+    if (dirname === '.') return root.remoteId;
+    const cached = this.journal.file(root.id, dirname);
+    if (cached) return cached.itemId;
+    const parentId = await this.remoteParent(root, dirname);
+    const item = await this.ensureFolder(path.posix.basename(dirname), parentId);
+    this.journal.putFile({
+      rootId: root.id,
+      relativePath: dirname,
+      itemId: item.id,
+      revision: item.revision,
+      hash: null,
+      type: 'FOLDER',
+    });
+    return item.id;
+  }
+  private async localJob(root: Root, job: LocalJob) {
+    const absolute = contained(root.localPath, job.relativePath);
+    let known = this.journal.file(root.id, job.relativePath);
+    if (job.kind === 'delete') {
+      try {
+        await lstat(absolute);
+        return;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      if (root.mode === 'backup') return;
+      if (known) {
+        try {
+          await this.api.request(`/v1/drive/items/${known.itemId}`, {
+            method: 'DELETE',
+            body: { operationId: job.id, baseRevision: known.revision },
+          });
+        } catch (e) {
+          if (e instanceof ApiError && e.code === 'REVISION_CONFLICT') {
+            const current = await this.api.request(`/v1/drive/items/${known.itemId}`);
+            await this.remoteItem(root, current.item);
+            return;
+          }
+          if (!(e instanceof ApiError && ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(e.code)))
+            throw e;
+        }
+        this.journal.deleteFile(root.id, job.relativePath);
+      }
+      return;
+    }
+    let info;
+    try {
+      info = await lstat(absolute);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw e;
+    }
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) return;
+    this.state.active = {
+      rootId: root.id,
+      direction: 'upload',
+      relativePath: job.relativePath,
+      loaded: 0,
+      total: info.isFile() ? info.size : 0,
+    };
+    this.emit();
+    const parentId = await this.remoteParent(root, job.relativePath);
+    if (info.isDirectory()) {
+      if (!known) {
+        const item = await this.ensureFolder(path.basename(absolute), parentId, job.id);
+        this.journal.putFile({
+          rootId: root.id,
+          relativePath: job.relativePath,
+          itemId: item.id,
+          revision: item.revision,
+          hash: null,
+          type: 'FOLDER',
+        });
+        this.receipts.queue(root, job.relativePath, item, null);
+        this.activity(root, job.relativePath, 'upload', item);
+      }
+      return;
+    }
+    if (root.mode === 'backup') {
+      await safeParents(root.localPath, job.relativePath, false);
+      const remote = known
+        ? ((await this.api.request(`/v1/drive/items/${known.itemId}`)).item as DriveItem)
+        : await this.child(parentId, path.basename(absolute));
+      if (remote?.type === 'FILE') {
+        if (remote.name.normalize('NFC') !== path.basename(absolute).normalize('NFC'))
+          throw new Error(
+            'Another archived file has the same name with different capitalization. Rename the local file to back up both.',
+          );
+        let savedHash = known?.revision === remote.revision ? known.hash : null;
+        if (!savedHash) {
+          const { items } = await this.api.request(`/v1/drive/items/${remote.id}/versions`);
+          savedHash =
+            items.find(
+              (version: { id: string; contentHash: string }) =>
+                version.id === remote.currentVersionId,
+            )?.contentHash ?? null;
+        }
+        known = {
+          rootId: root.id,
+          relativePath: job.relativePath,
+          itemId: remote.id,
+          revision: remote.revision,
+          hash: savedHash,
+          type: 'FILE',
+        };
+        this.journal.putFile(known);
+      }
+    }
+    const hash = await hashFile(absolute);
+    if (job.payload.relayVersion && known) {
+      if (known.hash !== hash) {
+        // An edit arriving while a relay request is queued is still a normal local edit.
+        delete job.payload.relayVersion;
+        job.payload.upload = { operationId: crypto.randomUUID() };
+        this.journal.saveJob(job);
+      } else {
+        const current = (await this.api.request(`/v1/drive/items/${known.itemId}`))
+          .item as DriveItem;
+        if (
+          current.cloudState !== 'REQUESTED' ||
+          current.currentVersionId !== job.payload.relayVersion
+        )
+          return;
+      }
+    } else if (known?.hash === hash) return;
+    const state = (job.payload.upload ??= { operationId: job.id }) as UploadState;
+    // Reuse this checksum only when the file remained stable during hashing.
+    // uploadFile checks these attributes again before using it.
+    const hashedInfo = await lstat(absolute);
+    if (!state.uploadId && info.size === hashedInfo.size && info.mtimeMs === hashedInfo.mtimeMs) {
+      state.hash = hash;
+      state.size = info.size;
+      state.mtime = info.mtimeMs;
+    }
+    const verifyBackupQuiet = async () => {
+      if (root.mode !== 'backup' || job.payload.backupManual) return;
+      const current = await lstat(absolute);
+      const queued = this.journal.jobs().find((entry) => entry.id === job.id);
+      if (!backupReady(current.mtimeMs, queued?.payload.observedAt ?? job.payload.observedAt ?? 0))
+        throw new Error('This file changed recently. Automatic backup will wait one hour.');
+    };
+    await verifyBackupQuiet();
+    let item: DriveItem;
+    this.state.active = {
+      rootId: root.id,
+      direction: 'upload',
+      relativePath: job.relativePath,
+      loaded: 0,
+      total: info.size,
+    };
+    this.emit();
+    try {
+      item = await uploadFile(
+        this.api,
+        absolute,
+        path.basename(absolute),
+        parentId,
+        state,
+        () => this.journal.saveJob(job),
+        known ? { itemId: known.itemId, revision: known.revision } : undefined,
+        (n, total) => {
+          this.state.active = {
+            rootId: root.id,
+            direction: 'upload',
+            relativePath: job.relativePath,
+            loaded: n,
+            total,
+          };
+          this.state.message = `Uploading ${Math.round((n / Math.max(1, total)) * 100)}%`;
+          this.emit(n < total);
+        },
+        verifyBackupQuiet,
+      );
+    } catch (e) {
+      if (root.mode === 'backup') throw e;
+      if (e instanceof ApiError && ['REVISION_CONFLICT', 'NAME_CONFLICT'].includes(e.code)) {
+        if (state.uploadId)
+          await this.api.request(`/v1/uploads/${state.uploadId}`, { method: 'DELETE' });
+        if (job.payload.relayVersion) return;
+        const conflict = path.posix.join(
+          path.posix.dirname(job.relativePath),
+          conflictName(path.basename(absolute), 'this device', job.id),
+        );
+        await rename(absolute, contained(root.localPath, conflict));
+        this.conflict(root, job.relativePath, conflict);
+        this.journal.enqueue(root.id, conflict, 'upsert');
+        const remote = known
+          ? (await this.api.request(`/v1/drive/items/${known.itemId}`)).item
+          : await this.child(parentId, path.basename(absolute));
+        if (remote) await this.remoteItem(root, remote);
+        return;
+      }
+      throw e;
+    }
+    if (root.mode === 'backup') {
+      job.payload.backupEntry = {
+        relativePath: job.relativePath,
+        itemId: item.id,
+        versionId: item.currentVersionId,
+        sizeBytes: item.sizeBytes,
+        modifiedAt: new Date(state.mtime!).toISOString(),
+        savedAt: new Date().toISOString(),
+      };
+      this.journal.saveJob(job);
+    }
+    this.journal.putFile({
+      rootId: root.id,
+      relativePath: job.relativePath,
+      itemId: item.id,
+      revision: item.revision,
+      hash: state.hash!,
+      type: 'FILE',
+    });
+    this.receipts.queue(root, job.relativePath, item, state.hash!);
+    this.activity(root, job.relativePath, 'upload', item);
+  }
+  private async relative(root: Root, item: DriveItem): Promise<string | null> {
+    const segments = [safeSegment(item.name, item.id)];
+    let parentId = item.parentId;
+    let depth = 0;
+    while (parentId !== root.remoteId) {
+      if (!parentId || depth++ > 32) return null;
+      const response = await this.api.request(`/v1/drive/items/${parentId}`);
+      segments.unshift(safeSegment(response.item.name, response.item.id));
+      parentId = response.item.parentId;
+    }
+    return segments.join('/');
+  }
+  private async preserve(root: Root, relative: string, knownHash: string | null) {
+    const full = contained(root.localPath, relative);
+    try {
+      const info = await lstat(full);
+      if (info.isFile() && (await hashFile(full)) !== knownHash) {
+        const conflict = path.posix.join(
+          path.posix.dirname(relative),
+          conflictName(path.basename(full), 'this device', crypto.randomUUID()),
+        );
+        await rename(full, contained(root.localPath, conflict));
+        this.conflict(root, relative, conflict);
+        this.journal.enqueue(root.id, conflict, 'upsert');
+        return true;
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    return false;
+  }
+  async remoteItem(root: Root, eventItem: DriveItem) {
+    if (this.stopped || this.state.paused || root.paused || root.mode !== 'sync') return;
+    if (root.remoteId === eventItem.id) {
+      if (!eventItem.deletedAt) this.receipts.queue(root, '.', eventItem, null);
+      return;
+    }
+    const known = this.journal.fileByItem(root.id, eventItem.id);
+    if (known && this.ignored(root, known.relativePath)) return;
+    if (eventItem.deletedAt && known && known.revision >= eventItem.revision) return;
+    if (eventItem.deletedAt) {
+      if (!known) return;
+      const full = contained(root.localPath, known.relativePath);
+      if (known.type === 'FILE') {
+        await this.preserve(root, known.relativePath, known.hash);
+        await rm(full, { force: true });
+      } else {
+        // Preserve the entire local directory on remote deletion. It may contain unsynced work.
+        try {
+          await rename(
+            full,
+            contained(root.localPath, `.harbor-recovered-${Date.now()}-${path.basename(full)}`),
+          );
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        }
+        for (const child of this.journal
+          .files(root.id)
+          .filter((f) => f.relativePath.startsWith(known.relativePath + '/')))
+          this.journal.deleteFile(root.id, child.relativePath);
+      }
+      this.journal.deleteFile(root.id, known.relativePath);
+      return;
+    }
+    // Resolve the latest metadata when processing historical feed entries.
+    let item: DriveItem;
+    try {
+      item = (await this.api.request(`/v1/drive/items/${eventItem.id}`)).item;
+    } catch (e) {
+      if (e instanceof ApiError && ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(e.code)) return;
+      throw e;
+    }
+    const relative = await this.relative(root, item);
+    if (relative === null || this.ignored(root, relative)) return;
+    const destination = await safeParents(root.localPath, relative);
+    if (known && known.relativePath !== relative) {
+      const previous = contained(root.localPath, known.relativePath);
+      try {
+        await lstat(destination);
+        throw new Error('A local item blocks a remote move. Move it aside to continue safely.');
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      try {
+        await rename(previous, destination);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      this.journal.deleteFile(root.id, known.relativePath);
+      if (known.type === 'FOLDER')
+        for (const child of this.journal
+          .files(root.id)
+          .filter((f) => f.relativePath.startsWith(known.relativePath + '/'))) {
+          this.journal.deleteFile(root.id, child.relativePath);
+          this.journal.putFile({
+            ...child,
+            relativePath: relative + child.relativePath.slice(known.relativePath.length),
+          });
+        }
+    }
+    if (item.type === 'FOLDER') {
+      await mkdir(destination, { recursive: true });
+      this.journal.putFile({
+        rootId: root.id,
+        relativePath: relative,
+        itemId: item.id,
+        revision: item.revision,
+        hash: null,
+        type: 'FOLDER',
+      });
+      this.receipts.queue(root, relative, item, null);
+      return;
+    }
+    const versions = await this.api.request(`/v1/drive/items/${item.id}/versions`);
+    const hash = versions.items.find((v: any) => v.id === item.currentVersionId)?.contentHash;
+    if (!hash) throw new Error('File version is unavailable.');
+    try {
+      if ((await hashFile(destination)) === hash) {
+        this.journal.putFile({
+          rootId: root.id,
+          relativePath: relative,
+          itemId: item.id,
+          revision: item.revision,
+          hash,
+          type: 'FILE',
+        });
+        this.receipts.queue(root, relative, item, hash);
+        if (item.cloudState === 'REQUESTED') {
+          this.journal.enqueue(root.id, relative, 'upsert');
+          const relay = this.journal
+            .jobs()
+            .find(
+              (j) => j.rootId === root.id && j.relativePath === relative && j.kind === 'upsert',
+            )!;
+          if (relay.payload.relayVersion !== item.currentVersionId) {
+            relay.payload.relayVersion = item.currentVersionId;
+            relay.payload.upload = { operationId: crypto.randomUUID() };
+          }
+          this.journal.saveJob(relay);
+          this.scheduleTick();
+        }
+        return;
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    if (item.cloudState === 'RELEASED' || item.cloudState === 'REQUESTED') {
+      await this.api.request(`/v1/sync/items/${item.id}/request-content`, { method: 'POST' });
+      this.state.message = 'Waiting for a linked device to provide this file';
+      return;
+    }
+    this.state.active = {
+      rootId: root.id,
+      direction: 'download',
+      relativePath: relative,
+      loaded: 0,
+      total: item.sizeBytes,
+    };
+    this.emit();
+    await downloadFile(
+      this.api,
+      { driveItemId: item.id, versionId: item.currentVersionId! },
+      destination,
+      (loaded, total) => {
+        this.state.active = {
+          rootId: root.id,
+          direction: 'download',
+          relativePath: relative,
+          loaded,
+          total,
+        };
+        this.emit(loaded < total);
+      },
+      async () => {
+        await this.preserve(root, relative, known?.hash ?? null);
+      },
+    );
+    this.journal.putFile({
+      rootId: root.id,
+      relativePath: relative,
+      itemId: item.id,
+      revision: item.revision,
+      hash,
+      type: 'FILE',
+    });
+    this.receipts.queue(root, relative, item, hash);
+    this.activity(root, relative, 'download', item);
+  }
+}

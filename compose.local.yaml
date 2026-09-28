@@ -1,0 +1,7 @@
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    pull_policy: never
+  storage:
+    image: minio/minio:latest
+    pull_policy: never

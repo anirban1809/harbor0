@@ -1,0 +1,19 @@
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:3.0.0
+    command: '-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data'
+    user: root
+    ports: ['127.0.0.1:8100:8000']
+    volumes: ['dynamo-data:/home/dynamodblocal/data']
+  storage:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: local-storage
+      MINIO_ROOT_PASSWORD: local-development-secret
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:3000,http://127.0.0.1:3000
+    ports: ['127.0.0.1:9100:9000', '127.0.0.1:9101:9001']
+    volumes: ['object-data:/data']
+volumes:
+  dynamo-data:
+  object-data:

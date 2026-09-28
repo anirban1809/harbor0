@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+cdk.out
+release
+package-lock.json
+docs/specs
+packages/api-client/src/generated.ts
+test-results
+.cloud

@@ -1,0 +1,62 @@
+name: Validate
+on: [push, pull_request]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run openapi
+      - run: git diff --exit-code -- docs/openapi.json packages/api-client/src/generated.ts
+      - run: npm run build:backend
+      - run: npm run infra:synth
+      - run: npm run build -w @harbor/web
+      - run: npm run build:web-static
+      - run: npx cdk synth --app 'npx tsx infra/web.ts' --quiet
+      - run: npm run build -w @harbor/desktop
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: cp .env.example .env && cp apps/web/.env.example apps/web/.env.local
+      - run: docker compose up -d
+      - run: |
+          ready=false
+          for i in $(seq 1 30); do
+            if npm run local:setup; then ready=true; break; fi
+            sleep 2
+          done
+          "$ready"
+      - run: RUN_INTEGRATION=true npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run dev > /tmp/harbor-api.log 2>&1 &
+      - run: npm run dev:web > /tmp/harbor-web.log 2>&1 &
+      - run: |
+          ready=false
+          for i in $(seq 1 30); do
+            if curl --fail http://127.0.0.1:8787/health && curl --fail http://localhost:3000; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          "$ready"
+      - run: npx playwright test
+      - run: npx tsx scripts/sync-integration.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-evidence
+          path: test-results/

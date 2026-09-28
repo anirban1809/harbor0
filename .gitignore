@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.next/
+dist/
+release/
+cdk.out/
+coverage/
+playwright-report/
+test-results/
+*.sqlite*
+*.tsbuildinfo
+.DS_Store
+.cloud/

@@ -1,0 +1,1183 @@
+import { Hono, type Context } from 'hono';
+import { cors } from 'hono/cors';
+import { secureHeaders } from 'hono/secure-headers';
+import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import * as c from '@harbor/contracts';
+import { ArchiveWorkflows } from './archives';
+import { CloudCopies } from './cloud-copies';
+import { Backups } from './backups';
+import {
+  backupEntrySchema,
+  backupRunSchema,
+  backupRestoreSchema,
+} from '../../../packages/contracts/src/backups';
+import { SyncRelay } from './sync-relay';
+import { SyncSharing } from './sync-sharing';
+import { StorageService, userPK } from './domain';
+import { DomainError, assert } from './errors';
+import { transact } from './repository';
+import type { AuthProvider } from './auth';
+import { responseSchema, queryParameters } from './responses';
+type Env = { Variables: { identity: c.Identity; requestId: string } };
+type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
+type Definition = {
+  method: string;
+  path: string;
+  summary: string;
+  body?: z.ZodType;
+  response: z.ZodType;
+  public?: boolean;
+  handler: Handler;
+};
+const pageQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+  cursor: z.string().max(4096).optional(),
+});
+const op = z.object({ operationId: c.operationId }).strict();
+const email = z
+  .email()
+  .max(254)
+  .transform((v) => v.toLowerCase());
+const password = z.string().min(12).max(256);
+const anyObject = z.record(z.string(), z.unknown());
+const folderBody = z
+  .object({ operationId: c.operationId, parentId: c.id.nullable().default(null), name: c.filename })
+  .strict();
+const userId = (ctx: Context<Env>) => ctx.get('identity').id;
+const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
+export function createApp(
+  service: StorageService,
+  auth: AuthProvider,
+  origins: string[] = [],
+  wakeArchives?: () => Promise<void>,
+) {
+  const app = new Hono<Env>();
+  const definitions: Definition[] = [];
+  app.use('*', async (ctx, next) => {
+    const requestId = crypto.randomUUID();
+    ctx.set('requestId', requestId);
+    ctx.header('X-Request-ID', requestId);
+    ctx.header('Cache-Control', 'no-store');
+    await next();
+  });
+  app.use('*', secureHeaders());
+  app.use(
+    '*',
+    cors({
+      origin: (origin) => (origins.includes(origin) ? origin : undefined),
+      allowHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key', 'X-Request-ID'],
+      exposeHeaders: ['X-Request-ID'],
+      allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    }),
+  );
+  app.onError((error, ctx) => {
+    let e: DomainError;
+    if (error instanceof DomainError) e = error;
+    else if (error instanceof z.ZodError)
+      e = new DomainError(
+        'VALIDATION_ERROR',
+        'Check the request fields.',
+        400,
+        error.issues.map((i) => ({ path: i.path, message: i.message })),
+      );
+    else {
+      const name = (error as { name: string }).name;
+      const known: Record<string, [string, string, number]> = {
+        NotAuthorizedException: ['AUTH_INVALID', 'Email, password, or session is invalid.', 401],
+        UserNotConfirmedException: ['EMAIL_NOT_VERIFIED', 'Verify your email to sign in.', 403],
+        UsernameExistsException: [
+          'EMAIL_ALREADY_REGISTERED',
+          'This email is already registered.',
+          409,
+        ],
+        UserLambdaValidationException: [
+          'VALIDATION_ERROR',
+          'Registration could not be completed. Choose an available username.',
+          400,
+        ],
+        CodeMismatchException: ['AUTH_INVALID', 'The verification code is incorrect.', 400],
+        ExpiredCodeException: ['AUTH_EXPIRED', 'The verification code expired.', 400],
+        TooManyRequestsException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
+        LimitExceededException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
+        InvalidPasswordException: ['VALIDATION_ERROR', 'Use a stronger password.', 400],
+      };
+      const mapped = known[name];
+      e = mapped
+        ? new DomainError(...mapped)
+        : new DomainError(
+            'INTERNAL_ERROR',
+            'The request could not be completed. Retry with the same operation ID.',
+            500,
+          );
+      if (!mapped)
+        console.error(
+          JSON.stringify({
+            event: 'request_failed',
+            requestId: ctx.get('requestId'),
+            errorType: name,
+          }),
+        );
+    }
+    return ctx.json(
+      {
+        error: {
+          code: e.code,
+          message: e.message,
+          requestId: ctx.get('requestId'),
+          ...(e.details ? { details: e.details } : {}),
+        },
+      },
+      e.status as 400,
+    );
+  });
+  async function rateLimit(key: string, max: number) {
+    const bucket = Math.floor(Date.now() / 60000);
+    await transact(service.repo, async (tx) => {
+      const k = createHash('sha256').update(key).digest('hex');
+      const r = await tx.get<{ count: number }>('RATE', `${k}#${bucket}`);
+      assert(
+        (r?.count ?? 0) < max,
+        'RATE_LIMITED',
+        'Too many requests. Please try again shortly.',
+        429,
+      );
+      await tx.put(
+        'RATE',
+        `${k}#${bucket}`,
+        { count: (r?.count ?? 0) + 1 },
+        { expiresAt: (bucket + 2) * 60 },
+      );
+    });
+  }
+  function route(d: Definition) {
+    definitions.push(d);
+    app.on(d.method.toUpperCase(), d.path, async (ctx) => {
+      if (!d.public) {
+        const token = ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
+        assert(token, 'AUTH_REQUIRED', 'Sign in to continue.', 401);
+        const identity = await auth.identity(token);
+        assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
+        ctx.set('identity', identity);
+        await service.ensureUser(identity);
+        if (d.path !== '/v1/auth/session') {
+          assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
+          await service.checkDevice(identity.id, identity.deviceId);
+        }
+        await rateLimit(`user:${identity.id}`, 600);
+      }
+      let input: unknown = {};
+      if (d.body) {
+        assert(
+          Number(ctx.req.header('content-length') ?? 0) <= 1024 * 1024,
+          'VALIDATION_ERROR',
+          'Request body is too large.',
+          413,
+        );
+        try {
+          const text = await ctx.req.text();
+          assert(text.length <= 1024 * 1024, 'VALIDATION_ERROR', 'Request body is too large.', 413);
+          input = d.body.parse(JSON.parse(text || '{}'));
+        } catch (error) {
+          if (error instanceof SyntaxError)
+            throw new DomainError('VALIDATION_ERROR', 'Request must contain valid JSON.');
+          throw error;
+        }
+      }
+      if (d.public && d.path.startsWith('/v1/auth/')) {
+        const data = input as { email?: string; refreshToken?: string };
+        await rateLimit(
+          `auth:${
+            data.email ??
+            createHash('sha256')
+              .update(data.refreshToken ?? '')
+              .digest('hex')
+          }`,
+          20,
+        );
+      }
+      const result = await d.handler(ctx, input);
+      const validated = d.response.safeParse(result);
+      if (!validated.success)
+        throw new DomainError('INTERNAL_ERROR', 'The server response could not be validated.', 500);
+      return ctx.json(validated.data as object);
+    });
+  }
+  const add = (
+    method: string,
+    path: string,
+    summary: string,
+    body: z.ZodType | undefined,
+    response: z.ZodType,
+    handler: Handler,
+    isPublic = false,
+  ) =>
+    route({
+      method,
+      path,
+      summary,
+      body,
+      response: responseSchema(method, path, response),
+      handler,
+      public: isPublic,
+    });
+  add(
+    'get',
+    '/health',
+    'Health',
+    undefined,
+    z.object({ status: z.string() }),
+    async () => ({ status: 'ok' }),
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/signup',
+    'Create a Cognito account',
+    z
+      .object({ email, password, username: c.username, displayName: z.string().min(1).max(100) })
+      .strict(),
+    anyObject,
+    async (_, input) => {
+      const existing = await service.lookup(input.username);
+      assert(existing.users.length === 0, 'USERNAME_TAKEN', 'This username is taken.', 409);
+      return auth.signup(input);
+    },
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/confirm',
+    'Verify email',
+    z.object({ email, code: z.string().min(1).max(20) }).strict(),
+    anyObject,
+    async (_, i) => auth.confirm(i.email, i.code),
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/resend',
+    'Resend verification',
+    z.object({ email }).strict(),
+    anyObject,
+    async (_, i) => auth.resend(i.email),
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/login',
+    'Sign in',
+    z
+      .object({
+        email,
+        password: z.string().min(1).max(256),
+        deviceName: z.string().max(100).default('Web browser'),
+        platform: c.platform.default('WEB'),
+      })
+      .strict(),
+    anyObject,
+    async (_, i) => {
+      const tokens = await auth.login(i.email, i.password);
+      const identity = await auth.identity(tokens.accessToken);
+      await service.ensureUser(identity);
+      const { device } = await service.registerDevice(
+        identity.id,
+        { name: i.deviceName, platform: i.platform },
+        identity.deviceId,
+      );
+      await service.claimPending(identity.id);
+      return { ...tokens, device };
+    },
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/refresh',
+    'Rotate refresh credentials',
+    z.object({ refreshToken: z.string().min(1).max(10000) }).strict(),
+    anyObject,
+    async (_, i) => {
+      const tokens = await auth.refresh(i.refreshToken);
+      const identity = await auth.identity(tokens.accessToken);
+      await service.checkDevice(identity.id, identity.deviceId!);
+      return tokens;
+    },
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/logout',
+    'Revoke session',
+    z.object({ refreshToken: z.string().min(1).max(10000) }).strict(),
+    anyObject,
+    async (ctx, i) => {
+      await service.revokeSession(userId(ctx), ctx.get('identity').deviceId!);
+      await auth.logout(i.refreshToken);
+      return { loggedOut: true };
+    },
+  );
+  add(
+    'post',
+    '/v1/auth/forgot',
+    'Request password reset',
+    z.object({ email }).strict(),
+    anyObject,
+    async (_, i) => auth.forgot(i.email),
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/reset',
+    'Reset password',
+    z.object({ email, code: z.string().min(1).max(20), password }).strict(),
+    anyObject,
+    async (_, i) => auth.reset(i.email, i.code, i.password),
+    true,
+  );
+  const deviceInput = z
+    .object({
+      name: z.string().min(1).max(100),
+      platform: c.platform,
+      devicePublicId: z.string().max(128).optional(),
+      appVersion: z.string().max(32).optional(),
+    })
+    .strict();
+  add(
+    'post',
+    '/v1/auth/session',
+    'Register a managed-login session',
+    deviceInput,
+    z.object({ device: c.deviceSchema }),
+    async (ctx, i) => service.registerDevice(userId(ctx), i, ctx.get('identity').deviceId),
+  );
+  add(
+    'get',
+    '/v1/users/me',
+    'Current account and quota',
+    undefined,
+    z.object({ user: c.userSchema, storage: c.storageSchema }),
+    async (ctx) => service.me(userId(ctx)),
+  );
+  add(
+    'patch',
+    '/v1/users/me',
+    'Update profile',
+    z
+      .object({
+        operationId: c.operationId,
+        username: c.username.optional(),
+        displayName: z.string().min(1).max(100).optional(),
+        appearance: c.appearanceSchema.optional(),
+      })
+      .strict(),
+    z.object({ user: c.userSchema }),
+    async (ctx, i) => service.updateProfile(userId(ctx), i),
+  );
+  add('get', '/v1/users/lookup', 'Look up an exact username', undefined, anyObject, async (ctx) => {
+    await rateLimit(`lookup:${userId(ctx)}`, 30);
+    return service.lookup(z.string().min(3).max(32).parse(ctx.req.query('q')));
+  });
+  add(
+    'get',
+    '/v1/drive/items/:id',
+    'Read item metadata',
+    undefined,
+    z.object({ item: c.itemSchema }),
+    async (ctx) => service.metadata(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'get',
+    '/v1/drive/folders/:id/children',
+    'List a folder',
+    undefined,
+    z.object({ items: z.array(c.itemSchema), nextCursor: z.string().nullable() }),
+    async (ctx) => {
+      const q = pageQuery.parse(ctx.req.query());
+      return p(ctx, 'id') === 'root'
+        ? service.list(userId(ctx), null, q.limit, q.cursor)
+        : service.sharedList(userId(ctx), p(ctx, 'id'), q.limit, q.cursor);
+    },
+  );
+  add(
+    'post',
+    '/v1/drive/folders',
+    'Create folder',
+    folderBody,
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.createFolder(userId(ctx), i),
+  );
+  add(
+    'patch',
+    '/v1/drive/items/:id',
+    'Rename an item',
+    c.mutation.extend({ name: c.filename }).strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
+    'post',
+    '/v1/drive/items/:id/move',
+    'Move an item',
+    c.mutation.extend({ parentId: c.id.nullable() }).strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
+    'post',
+    '/v1/drive/folders/:id/copy-to-cloud',
+    'Create a snapshot or ongoing cloud copy of a sync folder',
+    c.mutation.extend({ mode: z.enum(['SNAPSHOT', 'SYNC']).default('SNAPSHOT') }).strict(),
+    z.object({ copy: c.cloudCopySchema }),
+    async (ctx, i) => {
+      const result = await new CloudCopies(service).create(userId(ctx), p(ctx, 'id'), i);
+      await wakeArchives?.().catch(() => console.error('Cloud copy worker wake-up failed'));
+      return result;
+    },
+  );
+  add(
+    'get',
+    '/v1/drive/cloud-copies',
+    'List cloud copy progress',
+    undefined,
+    z.object({ items: z.array(c.cloudCopySchema), nextCursor: z.string().nullable() }),
+    async (ctx) =>
+      new CloudCopies(service).list(userId(ctx), pageQuery.parse(ctx.req.query()).cursor),
+  );
+  add(
+    'delete',
+    '/v1/drive/items/:id',
+    'Move to trash',
+    c.mutation.strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), { ...i, action: 'trash' }),
+  );
+  add(
+    'post',
+    '/v1/drive/items/:id/restore',
+    'Restore from trash',
+    c.mutation.strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), { ...i, action: 'restore' }),
+  );
+  add(
+    'delete',
+    '/v1/drive/items/:id/permanent',
+    'Permanently delete a trashed item',
+    c.mutation.strict(),
+    anyObject,
+    async (ctx, i) => service.permanentDelete(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
+    'post',
+    '/v1/drive/trash/empty',
+    'Permanently delete a page of trash without moving file content',
+    z.object({ operationId: c.operationId, cursor: z.string().optional() }).strict(),
+    z.object({ count: z.number().int().nonnegative(), nextCursor: z.string().nullable() }),
+    async (ctx, i) => service.emptyTrash(userId(ctx), i),
+  );
+  for (const method of ['put', 'delete'])
+    add(
+      method,
+      '/v1/drive/items/:id/favorite',
+      'Change favorite',
+      c.mutation.strict(),
+      z.object({ item: c.itemSchema }),
+      async (ctx, i) =>
+        service.mutate(userId(ctx), p(ctx, 'id'), { ...i, favorite: method === 'put' }),
+    );
+  add(
+    'get',
+    '/v1/search',
+    'Search file metadata',
+    undefined,
+    z.object({ items: z.array(c.itemSchema), nextCursor: z.string().nullable() }),
+    async (ctx) => {
+      const q = pageQuery.parse(ctx.req.query());
+      return service.browseSpecial(userId(ctx), ctx.req.query(), q.limit, q.cursor);
+    },
+  );
+  add(
+    'get',
+    '/v1/drive/items/:id/versions',
+    'List file versions',
+    undefined,
+    z.object({ items: z.array(c.versionSchema.omit({ storageObjectId: true })) }),
+    async (ctx) => {
+      const r = await service.versions(userId(ctx), p(ctx, 'id'));
+      return { items: r.items.map(({ storageObjectId: _, ...v }) => v) };
+    },
+  );
+  add(
+    'post',
+    '/v1/drive/items/:id/versions/:versionId/restore',
+    'Restore a version',
+    c.mutation.strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.restoreVersion(userId(ctx), p(ctx, 'id'), p(ctx, 'versionId'), i),
+  );
+  add(
+    'post',
+    '/v1/uploads',
+    'Reserve quota and create upload',
+    c.uploadInput,
+    anyObject,
+    async (ctx, i) => service.createUpload(userId(ctx), i, ctx.get('identity').deviceId),
+  );
+  add('get', '/v1/uploads/:id', 'Resume an upload', undefined, anyObject, async (ctx) =>
+    service.uploadStatus(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'post',
+    '/v1/uploads/:id/parts',
+    'Sign upload part URLs',
+    z.object({ partNumbers: z.array(z.number().int().min(1).max(10000)).min(1).max(50) }).strict(),
+    anyObject,
+    async (ctx, i) => service.uploadParts(userId(ctx), p(ctx, 'id'), i.partNumbers),
+  );
+  add(
+    'post',
+    '/v1/uploads/:id/complete',
+    'Finalize upload atomically',
+    z.object({ parts: z.array(c.completedPart).min(1).max(10000), contentHash: c.hash }).strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.completeUpload(userId(ctx), p(ctx, 'id'), i.parts, i.contentHash),
+  );
+  add(
+    'delete',
+    '/v1/uploads/:id',
+    'Abort upload and release reservation',
+    undefined,
+    anyObject,
+    async (ctx) => service.abortUpload(userId(ctx), p(ctx, 'id')),
+  );
+  const archives = new ArchiveWorkflows(service);
+  add(
+    'post',
+    '/v1/folder-downloads',
+    'Prepare one folder ZIP in the background',
+    z.object({ operationId: c.operationId, driveItemId: c.id }).strict(),
+    c.folderDownloadSchema,
+    async (ctx, input) => {
+      const result = await archives.create(
+        userId(ctx),
+        ctx.get('identity').deviceId!,
+        input.driveItemId,
+        input.operationId,
+      );
+      // A scheduled invocation also resumes work if this immediate wake-up fails.
+      await wakeArchives?.().catch(() => console.error('Archive worker wake-up failed'));
+      return archives.status(userId(ctx), result.id);
+    },
+  );
+  add(
+    'get',
+    '/v1/folder-downloads/:id',
+    'Read ZIP preparation progress',
+    undefined,
+    c.folderDownloadSchema,
+    async (ctx) => archives.status(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'delete',
+    '/v1/folder-downloads/:id',
+    'Cancel ZIP preparation',
+    undefined,
+    z.object({ cancelled: z.boolean() }),
+    async (ctx) => archives.cancel(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'post',
+    '/v1/downloads',
+    'Authorize a short-lived download',
+    z
+      .object({
+        folderDownloadId: c.id.optional(),
+        driveItemId: c.id.optional(),
+        versionId: c.id.nullable().optional(),
+        transferId: c.id.optional(),
+        entryId: c.id.optional(),
+      })
+      .strict(),
+    z.object({
+      downloadUrl: z.string(),
+      expiresAt: z.string(),
+      sizeBytes: z.number(),
+      contentHash: c.hash,
+      contentHashAlgorithm: z.literal('SHA256'),
+    }),
+    async (ctx, i) => service.download(userId(ctx), i),
+  );
+  add(
+    'post',
+    '/v1/transfers',
+    'Send files to a person',
+    z
+      .object({
+        operationId: c.operationId,
+        recipient: c.recipient,
+        items: z
+          .array(z.object({ driveItemId: c.id }).strict())
+          .min(1)
+          .max(40),
+      })
+      .strict(),
+    z.object({ transfer: c.transferSchema }),
+    async (ctx, i) => service.createTransfer(userId(ctx), i),
+  );
+  for (const direction of ['received', 'sent'] as const)
+    add(
+      'get',
+      `/v1/transfers/${direction}`,
+      `List ${direction} transfers`,
+      undefined,
+      anyObject,
+      async (ctx) => {
+        const q = pageQuery.parse(ctx.req.query());
+        return service.listTransfers(
+          userId(ctx),
+          direction,
+          q.limit,
+          q.cursor,
+          ctx.req.query('state'),
+        );
+      },
+    );
+  for (const action of ['accept', 'decline', 'cancel'] as const)
+    add(
+      'post',
+      `/v1/transfers/:id/${action}`,
+      `${action} a transfer`,
+      op,
+      z.object({ transfer: c.transferSchema }),
+      async (ctx, i) => service.transferAction(userId(ctx), p(ctx, 'id'), action, i.operationId),
+    );
+  add(
+    'get',
+    '/v1/transfers/:id/items',
+    'Read a transfer manifest page',
+    undefined,
+    anyObject,
+    async (ctx) => service.transferItems(userId(ctx), p(ctx, 'id'), ctx.req.query('cursor')),
+  );
+  add(
+    'post',
+    '/v1/transfers/:id/save',
+    'Save an accepted transfer',
+    op.extend({ targetParentId: c.id.nullable().default(null) }).strict(),
+    z.object({
+      items: z.array(c.itemSchema),
+      jobId: z.string().optional(),
+      state: z.string().optional(),
+    }),
+    async (ctx, i) => service.saveTransfer(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
+    'post',
+    '/v1/shares',
+    'Grant authenticated access',
+    z
+      .object({
+        operationId: c.operationId,
+        driveItemId: c.id,
+        recipient: c.recipient,
+        permission: z.enum(['VIEWER', 'EDITOR']),
+      })
+      .strict(),
+    z.object({ share: c.shareSchema }),
+    async (ctx, i) => service.createShare(userId(ctx), i),
+  );
+  add(
+    'delete',
+    '/v1/shares/:id',
+    'Remove shared access',
+    op,
+    z.object({ share: c.shareSchema }),
+    async (ctx, i) => service.revokeShare(userId(ctx), p(ctx, 'id'), i.operationId),
+  );
+  for (const side of ['received', 'sent'])
+    add('get', `/v1/shares/${side}`, `List ${side} shares`, undefined, anyObject, async (ctx) =>
+      service.shares(userId(ctx), side === 'received'),
+    );
+  add(
+    'get',
+    '/v1/devices',
+    'List devices',
+    undefined,
+    z.object({ items: z.array(c.deviceSchema) }),
+    async (ctx) => service.devices(userId(ctx)),
+  );
+  add(
+    'post',
+    '/v1/sync/devices/register',
+    'Register this device',
+    deviceInput,
+    z.object({ device: c.deviceSchema }),
+    async (ctx, i) => service.registerDevice(userId(ctx), i, ctx.get('identity').deviceId),
+  );
+  add(
+    'delete',
+    '/v1/devices/:id',
+    'Revoke a device',
+    undefined,
+    z.object({ device: c.deviceSchema }),
+    async (ctx) => service.revokeDevice(userId(ctx), p(ctx, 'id')),
+  );
+  const syncSharing = new SyncSharing(service);
+  add(
+    'post',
+    '/v1/sync/shares',
+    'Invite another account to two-way folder sync',
+    z.object({ operationId: c.operationId, driveItemId: c.id, recipient: c.recipient }).strict(),
+    z.object({ share: c.shareSchema }),
+    async (ctx, input) => syncSharing.invite(userId(ctx), input),
+  );
+  add(
+    'get',
+    '/v1/sync/shares',
+    'List sent and received sync invitations',
+    undefined,
+    z.object({
+      items: z.array(
+        c.shareSchema.extend({
+          name: z.string(),
+          direction: z.enum(['SENT', 'RECEIVED']),
+          owner: z.object({ id: z.string(), username: z.string(), displayName: z.string() }),
+          recipient: z.object({ id: z.string(), username: z.string(), displayName: z.string() }),
+        }),
+      ),
+    }),
+    async (ctx) => syncSharing.list(userId(ctx)),
+  );
+  add(
+    'post',
+    '/v1/sync/shares/:id/respond',
+    'Accept or decline a sync invitation',
+    z.object({ action: z.enum(['ACCEPTED', 'DECLINED']) }).strict(),
+    z.object({ share: c.shareSchema }),
+    async (ctx, input) => syncSharing.respond(userId(ctx), p(ctx, 'id'), input.action),
+  );
+  add(
+    'get',
+    '/v1/sync/shares/:id/status',
+    'Read an accepted shared folder revision',
+    undefined,
+    z.object({ share: c.shareSchema, item: c.itemSchema, sequence: z.number() }),
+    async (ctx) => syncSharing.status(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'get',
+    '/v1/sync/folders',
+    'List synced folders across devices',
+    undefined,
+    z.object({ items: z.array(c.itemSchema) }),
+    async (ctx) => service.syncFolders(userId(ctx)),
+  );
+  add(
+    'put',
+    '/v1/sync/folders',
+    'Replace this device’s synced folders',
+    z.object({ folderIds: z.array(c.id).max(200) }).strict(),
+    z.object({ ok: z.boolean(), removedFolderIds: z.array(c.id) }),
+    async (ctx, i) => {
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      return service.setSyncFolders(userId(ctx), deviceId, i.folderIds);
+    },
+  );
+  add(
+    'delete',
+    '/v1/sync/folders/:id',
+    'Remove a folder from sync on all linked devices, preserving local files',
+    undefined,
+    z.object({ ok: z.boolean() }),
+    async (ctx) => service.removeSyncFolder(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'get',
+    '/v1/sync/status',
+    'Read file and folder delivery status',
+    undefined,
+    z.object({ items: z.array(c.syncItemStatusSchema) }),
+    async (ctx) => {
+      const ids = z
+        .array(c.id)
+        .min(1)
+        .max(50)
+        .parse((ctx.req.query('ids') ?? '').split(','));
+      return new SyncRelay(service).statuses(
+        userId(ctx),
+        ids,
+        ctx.get('identity').deviceId,
+        z.enum(['true', 'false']).default('true').parse(ctx.req.query('recursive')) === 'true',
+      );
+    },
+  );
+  add(
+    'post',
+    '/v1/sync/items/:id/acknowledge',
+    'Confirm a verified local copy',
+    z
+      .object({
+        versionId: c.id.nullable(),
+        revision: z.number().int().positive(),
+        contentHash: c.hash.nullable(),
+      })
+      .strict(),
+    z.object({ ok: z.boolean(), requiredDevices: z.number(), confirmedDevices: z.number() }),
+    async (ctx, input) => {
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      return new SyncRelay(service).acknowledge(userId(ctx), deviceId, p(ctx, 'id'), input);
+    },
+  );
+  add(
+    'post',
+    '/v1/sync/items/:id/request-content',
+    'Request a temporary copy from a synced device',
+    undefined,
+    z.object({ item: c.itemSchema }),
+    async (ctx) => {
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      return new SyncRelay(service).requestContent(userId(ctx), deviceId, p(ctx, 'id'));
+    },
+  );
+  add(
+    'get',
+    '/v1/sync/changes',
+    'Read ordered durable changes',
+    undefined,
+    z.object({ changes: z.array(c.changeSchema), nextCursor: z.number(), hasMore: z.boolean() }),
+    async (ctx) =>
+      service.changes(
+        userId(ctx),
+        z.coerce.number().int().min(0).default(0).parse(ctx.req.query('cursor')),
+        z.coerce.number().int().min(1).max(500).default(100).parse(ctx.req.query('limit')),
+      ),
+  );
+  add(
+    'post',
+    '/v1/sync/checkpoints',
+    'Advance device checkpoint',
+    z.object({ deviceId: c.id, cursor: z.number().int().min(0) }).strict(),
+    anyObject,
+    async (ctx, i) => {
+      assert(
+        i.deviceId === ctx.get('identity').deviceId,
+        'FORBIDDEN',
+        'Checkpoint must belong to this device.',
+        403,
+      );
+      return service.checkpoint(userId(ctx), i.deviceId, i.cursor);
+    },
+  );
+  add(
+    'post',
+    '/v1/sync/operations',
+    'Apply offline operations',
+    z
+      .object({
+        deviceId: c.id,
+        operations: z
+          .array(
+            z
+              .object({
+                operationId: c.operationId,
+                type: z.enum(['RENAME_ITEM', 'MOVE_ITEM', 'DELETE_ITEM', 'RESTORE_ITEM']),
+                entityId: c.id,
+                baseRevision: z.number().int().positive(),
+                payload: z
+                  .object({ name: c.filename.optional(), parentId: c.id.nullable().optional() })
+                  .strict(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(50),
+      })
+      .strict(),
+    anyObject,
+    async (ctx, i) => {
+      assert(
+        i.deviceId === ctx.get('identity').deviceId,
+        'FORBIDDEN',
+        'Operation device mismatch.',
+        403,
+      );
+      const results = [];
+      for (const o of i.operations) {
+        try {
+          if (o.type === 'RENAME_ITEM')
+            assert(o.payload.name, 'VALIDATION_ERROR', 'Name is required.');
+          if (o.type === 'MOVE_ITEM')
+            assert(o.payload.parentId !== undefined, 'VALIDATION_ERROR', 'Parent is required.');
+          const replay = await service.repo.get({
+            pk: userPK(userId(ctx)),
+            sk: `OP#${o.operationId}`,
+          });
+          const r = await service.mutate(userId(ctx), o.entityId, {
+            operationId: o.operationId,
+            baseRevision: o.baseRevision,
+            ...o.payload,
+            ...(o.type === 'DELETE_ITEM'
+              ? { action: 'trash' as const }
+              : o.type === 'RESTORE_ITEM'
+                ? { action: 'restore' as const }
+                : {}),
+          });
+          results.push({
+            operationId: o.operationId,
+            status: replay ? 'ALREADY_APPLIED' : 'APPLIED',
+            revision: r.item.revision,
+          });
+        } catch (e) {
+          if (!(e instanceof DomainError)) throw e;
+          results.push({
+            operationId: o.operationId,
+            status: e.code === 'REVISION_CONFLICT' ? 'CONFLICT' : 'REJECTED',
+            error: { code: e.code, message: e.message },
+            ...((e.details as object) ?? {}),
+          });
+        }
+      }
+      return { results };
+    },
+  );
+  add('get', '/v1/notifications', 'List notifications', undefined, anyObject, async (ctx) => {
+    const q = pageQuery.parse(ctx.req.query());
+    return service.notifications(userId(ctx), q.limit, q.cursor);
+  });
+  add(
+    'post',
+    '/v1/notifications/:id/read',
+    'Mark notification read',
+    undefined,
+    anyObject,
+    async (ctx) => service.markNotification(userId(ctx), p(ctx, 'id')),
+  );
+  add('get', '/v1/backups', 'List backup roots', undefined, anyObject, async (ctx) =>
+    service.backups(userId(ctx)),
+  );
+  add(
+    'post',
+    '/v1/backups',
+    'Create backup root',
+    op.extend({ deviceId: c.id, name: c.filename }).strict(),
+    anyObject,
+    async (ctx, i) => {
+      assert(
+        i.deviceId === ctx.get('identity').deviceId,
+        'FORBIDDEN',
+        'Backup device mismatch.',
+        403,
+      );
+      return service.backupRoot(userId(ctx), i);
+    },
+  );
+  const backupWorkflows = new Backups(service);
+  const backupDevice = (ctx: Context<Env>) => {
+    const id = ctx.get('identity').deviceId;
+    assert(id, 'FORBIDDEN', 'Use the desktop app for this action.', 403);
+    return id;
+  };
+  for (const [collection, schema, prefix] of [
+    ['runs', backupRunSchema, 'RUN#'],
+    ['restores', backupRestoreSchema, 'RESTORE#'],
+    ['pending-restores', backupRestoreSchema, 'PENDING#'],
+  ] as const) {
+    add(
+      'get',
+      `/v1/backups/:id/${collection}`,
+      `List backup ${collection}`,
+      undefined,
+      z.object({ items: z.array(schema), nextCursor: z.string().nullable() }),
+      async (ctx) =>
+        backupWorkflows.page(
+          userId(ctx),
+          p(ctx, 'id'),
+          prefix,
+          pageQuery.parse(ctx.req.query()).cursor,
+        ),
+    );
+  }
+  add(
+    'post',
+    '/v1/backups/:id/runs',
+    'Start backup run',
+    z.object({ id: c.id, trigger: z.enum(['AUTOMATIC', 'MANUAL']) }).strict(),
+    z.object({ run: backupRunSchema }),
+    async (ctx, i) => backupWorkflows.start(userId(ctx), p(ctx, 'id'), backupDevice(ctx), i),
+  );
+  add(
+    'get',
+    '/v1/backups/:id/runs/:runId/files',
+    'List files covered by a backup',
+    undefined,
+    z.object({ items: z.array(backupEntrySchema), nextCursor: z.string().nullable() }),
+    async (ctx) =>
+      backupWorkflows.page(
+        userId(ctx),
+        p(ctx, 'id'),
+        `ENTRY#${p(ctx, 'runId')}#`,
+        pageQuery.parse(ctx.req.query()).cursor,
+      ),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/files',
+    'Record a backed up file',
+    backupEntrySchema.strict(),
+    anyObject,
+    async (ctx, i) =>
+      backupWorkflows.entry(userId(ctx), p(ctx, 'id'), backupDevice(ctx), p(ctx, 'runId'), i),
+  );
+  const backupResult = z.object({ error: z.string().min(1).max(2000).optional() }).strict();
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/complete',
+    'Complete backup run',
+    backupResult,
+    z.object({ run: backupRunSchema }),
+    async (ctx, i) =>
+      backupWorkflows.finish(
+        userId(ctx),
+        p(ctx, 'id'),
+        backupDevice(ctx),
+        p(ctx, 'runId'),
+        i.error,
+      ),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/restores',
+    'Restore a backup version to its local folder',
+    z.object({ id: c.id, itemId: c.id, versionId: c.id }).strict(),
+    z.object({ restore: backupRestoreSchema }),
+    async (ctx, i) => backupWorkflows.restore(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/restores/:restoreId/complete',
+    'Record local restore result',
+    backupResult,
+    anyObject,
+    async (ctx, i) =>
+      backupWorkflows.restored(
+        userId(ctx),
+        p(ctx, 'id'),
+        backupDevice(ctx),
+        p(ctx, 'restoreId'),
+        i.error,
+      ),
+  );
+  add('get', '/v1/billing/plans', 'Available storage capacity', undefined, anyObject, async () => ({
+    items: [
+      {
+        id: 'free',
+        name: 'Free',
+        storageBytes: c.FREE_QUOTA,
+        priceMinorUnits: 0,
+        currency: 'USD',
+        billingPeriod: 'MONTH',
+      },
+    ],
+    checkoutAvailable: false,
+  }));
+  add(
+    'get',
+    '/v1/billing/subscription',
+    'Current storage entitlement',
+    undefined,
+    anyObject,
+    async (ctx) => ({
+      planId: 'free',
+      entitlement: {
+        userId: userId(ctx),
+        baseFreeBytes: c.FREE_QUOTA,
+        paidBytes: Math.max(
+          0,
+          (await service.me(userId(ctx))).user.storageQuotaBytes - c.FREE_QUOTA,
+        ),
+        totalQuotaBytes: (await service.me(userId(ctx))).user.storageQuotaBytes,
+      },
+    }),
+  );
+  add(
+    'get',
+    '/ready',
+    'Check metadata availability',
+    undefined,
+    anyObject,
+    async () => {
+      await service.repo.get({ pk: 'SYSTEM', sk: 'SCHEMA' });
+      return { status: 'ready' };
+    },
+    true,
+  );
+  const document = () => {
+    const paths: Record<string, Record<string, unknown>> = {};
+    const json = (schema: z.ZodType) =>
+      z.toJSONSchema(schema, { unrepresentable: 'any', io: 'input' });
+    for (const d of definitions) {
+      const path = d.path.replace(/:([^/]+)/g, '{$1}');
+      const parameters = [...d.path.matchAll(/:([^/]+)/g)].map((m) => ({
+        name: m[1],
+        in: 'path',
+        required: true,
+        schema: { type: 'string' },
+      }));
+      paths[path] ??= {};
+      paths[path][d.method.toLowerCase()] = {
+        summary: d.summary,
+        operationId: d.method + '_' + d.path.replace(/[^a-zA-Z0-9]/g, '_'),
+        security: d.public ? [] : [{ bearerAuth: [] }],
+        parameters: [...parameters, ...(d.method === 'get' ? queryParameters(d.path) : [])],
+        ...(d.body
+          ? {
+              requestBody: {
+                required: true,
+                content: { 'application/json': { schema: json(d.body) } },
+              },
+            }
+          : {}),
+        responses: {
+          '200': {
+            description: 'Success',
+            content: { 'application/json': { schema: json(d.response) } },
+          },
+          ...Object.fromEntries(
+            [400, 401, 403, 404, 409, 410, 413, 429, 500].map((status) => [
+              status,
+              {
+                description: 'Error',
+                content: { 'application/json': { schema: json(c.errorSchema) } },
+              },
+            ]),
+          ),
+        },
+      };
+    }
+    return {
+      openapi: '3.1.0',
+      info: { title: 'harbor0 storage API', version: '1.0.0' },
+      components: {
+        securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } },
+      },
+      paths,
+    };
+  };
+  app.get('/openapi.json', (ctx) => ctx.json(document()));
+  app.notFound((ctx) =>
+    ctx.json(
+      {
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Endpoint not found.',
+          requestId: ctx.get('requestId'),
+        },
+      },
+      404,
+    ),
+  );
+  return { app, document };
+}

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "paths": {
+      "@harbor/contracts": ["./packages/contracts/src/index.ts"],
+      "@harbor/api-client": ["./packages/api-client/src/index.ts"]
+    }
+  },
+  "include": [
+    "apps/backend/**/*.ts",
+    "apps/desktop/**/*.ts",
+    "apps/desktop/**/*.tsx",
+    "packages/**/*.ts",
+    "infra/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

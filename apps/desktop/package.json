@@ -1,0 +1,14 @@
+{
+  "name": "@harbor/desktop",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "tsx build.ts",
+    "dev": "npm run build && electron .",
+    "package": "npm run build && electron-builder"
+  },
+  "productName": "harbor0",
+  "description": "harbor0 \u2014 private storage, backup, sync, and sending"
+}
