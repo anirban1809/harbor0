@@ -50,10 +50,10 @@ data class Palette(val dark: Boolean, val primary: Color, val background: Color,
     val warning = if (dark) Color(0xffe5a949) else Color(0xffb45309)
     val kindImage = if (dark) Color(0xff3fd0c0) else Color(0xff0e9384)
     val backdrop = if (dark) Color.Black.copy(alpha = .55f) else Color(0xff101218).copy(alpha = .32f)
-    fun on(surface: Color) = Tokens(this, surface)
+    fun on(surface: Color) = SurfaceTokens(this, surface)
 }
 // Compose interpolates colors in Oklab, matching the web's color-mix(in oklab, …).
-class Tokens(val palette: Palette, val surface: Color) {
+class SurfaceTokens(val palette: Palette, val surface: Color) {
     val text = if (ink(surface) == Color.Black) Color(0xff16181d) else Color(0xffeceef1)
     private fun mix(color: Color, share: Float, into: Color = surface) = lerp(into, color, share)
     val text2 = mix(text, .66f)
@@ -76,11 +76,11 @@ class Tokens(val palette: Palette, val surface: Color) {
 }
 private val defaultPalette = Appearance().colors(false).let { (accent, background, card, sidebar, border) -> Palette(false, accent, background, card, sidebar, border) }
 val LocalTokens = staticCompositionLocalOf { defaultPalette.on(defaultPalette.background) }
-val tokens: Tokens @Composable @ReadOnlyComposable get() = LocalTokens.current
+val theme: SurfaceTokens @Composable @ReadOnlyComposable get() = LocalTokens.current
 
 /** Names the background an area paints, so text, fills and tints inside it are derived against it. */
 @Composable fun OnSurface(color: Color, modifier: Modifier = Modifier, paint: Boolean = true, content: @Composable () -> Unit) {
-    val next = tokens.palette.on(color)
+    val next = theme.palette.on(color)
     CompositionLocalProvider(LocalTokens provides next, LocalContentColor provides next.text) {
         Box(if (paint) modifier.background(color) else modifier) { content() }
     }
@@ -112,7 +112,7 @@ object Radius { val sm = 6.dp; val md = 8.dp; val lg = 12.dp; val xl = 16.dp }
     val palette = Palette(dark, accent, background, card, sidebar, border)
     val page = palette.on(background)
     val onCard = palette.on(card)
-    // Material components that remain (menus, pull-to-refresh, ripples, text selection) follow the same tokens.
+    // Material components that remain (menus, pull-to-refresh, ripples, text selection) follow the same theme.
     val scheme = (if (dark) darkColorScheme() else lightColorScheme()).copy(primary = accent, onPrimary = palette.onPrimary,
         background = background, onBackground = page.text, surface = card, onSurface = onCard.text, surfaceVariant = onCard.fill2,
         onSurfaceVariant = onCard.text2, outline = border, outlineVariant = border, error = palette.destructive, onError = palette.onDestructive,

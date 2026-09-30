@@ -108,6 +108,8 @@ try {
     '06-ocean-drive',
     '07-violet-dark',
     '08-restored-session',
+    '09-settings',
+    '10-trash',
   ];
   await mkdir(resolve(root, 'apps/android/build/screenshots'), { recursive: true });
   for (const name of screenshots) {

@@ -5,6 +5,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.UUID
 
 val harborJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -58,3 +62,8 @@ fun bytesLabel(bytes: Long): String {
     while (value >= 1000 && index < units.lastIndex) { value /= 1000; index++ }
     return "%.1f %s".format(value, units[index])
 }
+/** Formats an API timestamp for the device locale; unparseable values fall back to their date part. */
+fun dateLabel(iso: String, time: Boolean = false): String = runCatching {
+    val local = Instant.parse(iso).atZone(ZoneId.systemDefault())
+    local.format(if (time) DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT) else DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))
+}.getOrElse { iso.replace('T', ' ').take(if (time) 16 else 10) }

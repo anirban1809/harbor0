@@ -1,21 +1,27 @@
 import { lstat, opendir } from 'node:fs/promises';
 import path from 'node:path';
+import { internalPath } from './paths';
 
-/** Allocated disk space, including excluded/hidden files, without following symlinks. */
-export async function folderDiskUsage(directory: string): Promise<number> {
-  const pending = [directory];
-  const seen = new Set<string>();
+/**
+ * Total size of the files that sync, so every linked device reports the same figure. Allocated
+ * blocks, directory entries, and files the engine ignores differ between filesystems and devices.
+ */
+export async function folderDiskUsage(directory: string, excluded: string[] = []): Promise<number> {
+  const pending = [''];
   let bytes = 0;
   while (pending.length) {
-    const current = pending.pop()!;
-    const info = await lstat(current);
-    const identity = `${info.dev}:${info.ino}`;
-    if (info.ino && seen.has(identity)) continue;
-    if (info.ino) seen.add(identity);
-    bytes += typeof info.blocks === 'number' ? info.blocks * 512 : info.size;
-    if (info.isDirectory()) {
-      const entries = await opendir(current);
-      for await (const entry of entries) pending.push(path.join(current, entry.name));
+    const relative = pending.pop()!;
+    const info = await lstat(path.join(directory, relative));
+    if (info.isFile()) bytes += info.size;
+    if (!info.isDirectory()) continue;
+    const entries = await opendir(path.join(directory, relative));
+    for await (const entry of entries) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (
+        !internalPath(child) &&
+        !excluded.some((item) => child === item || child.startsWith(item + '/'))
+      )
+        pending.push(child);
     }
   }
   return bytes;
@@ -24,16 +30,17 @@ export async function folderDiskUsage(directory: string): Promise<number> {
 /** Status requests never wait for a filesystem scan; each folder refreshes at most once a minute. */
 export class FolderDiskUsageCache {
   private entries = new Map<string, { bytes?: number | null; checked: number; pending: boolean }>();
-  read(directory: string): number | null | undefined {
-    let entry = this.entries.get(directory);
+  read(directory: string, excluded: string[] = []): number | null | undefined {
+    const key = JSON.stringify([directory, excluded]);
+    let entry = this.entries.get(key);
     if (!entry) {
       entry = { checked: 0, pending: false };
-      this.entries.set(directory, entry);
+      this.entries.set(key, entry);
     }
     if (!entry.pending && Date.now() - entry.checked >= 60_000) {
       entry.pending = true;
       const current = entry;
-      void folderDiskUsage(directory)
+      void folderDiskUsage(directory, excluded)
         .then((bytes) => {
           current.bytes = bytes;
         })

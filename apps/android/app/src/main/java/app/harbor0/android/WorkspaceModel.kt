@@ -103,13 +103,14 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
             try { block() } catch (e: Exception) { report(e) } finally { busy = false }
         }
     }
-    fun select(next: Tab) { if (tab == next) return; tab = next; history = false; refresh() }
-    fun enter(item: DriveItem) { stacks = stacks + (tab to (path + item)); history = false; refresh() }
+    fun select(next: Tab) { if (tab == next) return; tab = next; history = false; refresh(reset = true) }
+    fun enter(item: DriveItem) { stacks = stacks + (tab to (path + item)); history = false; refresh(reset = true) }
+    fun openPath(depth: Int) { stacks = stacks + (tab to path.take(depth)); history = false; refresh(reset = true) }
     fun back() {
         if (history) history = false else if (path.isNotEmpty()) stacks = stacks + (tab to path.dropLast(1))
-        refresh()
+        refresh(reset = true)
     }
-    fun showHistory() { history = true; refresh() }
+    fun showHistory() { history = true; refresh(reset = true) }
     private suspend fun loadAccount() {
         val stamp = generation
         val accountStamp = accountGeneration
@@ -118,7 +119,8 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
         if (appearance == savedAppearance) { appearance = result.user.appearance; savedAppearance = appearance }
         account = result
     }
-    fun refresh(more: Boolean = false) {
+    /** Reloads the current location. Navigation passes `reset`; otherwise the items already shown stay visible while loading. */
+    fun refresh(more: Boolean = false, reset: Boolean = false) {
         loadJob?.cancel()
         val destination = tab
         val parent = folder?.id
@@ -126,8 +128,9 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
         val backup = currentBackup
         val previous = listings[destination] ?: Listing()
         val cursor = if (more) previous.cursor else null
+        val shown = if (reset) Listing() else previous
         loadJob = viewModelScope.launch {
-            listings = listings + (destination to (if (more) previous else Listing()).copy(loading = true))
+            listings = listings + (destination to shown.copy(loading = true, error = null))
             try {
                 var page = DrivePage(emptyList())
                 var runs = RunPage(emptyList())
@@ -165,7 +168,7 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
                     cursor = nextCursor, loaded = true))
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                listings = listings + (destination to (if (more) previous else Listing()).copy(error = e.message ?: "Could not load this page. Try again."))
+                listings = listings + (destination to shown.copy(loading = false, error = e.message ?: "Could not load this page. Try again."))
             }
         }
     }

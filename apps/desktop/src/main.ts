@@ -373,7 +373,7 @@ app
         roots: (accountReady ? journal.roots() : []).map((r) => ({
           ...r,
           ...journal.fileCounts(r.id),
-          diskSizeBytes: r.mode === 'sync' ? folderDiskUsage.read(r.localPath) : undefined,
+          diskSizeBytes: r.mode === 'sync' ? folderDiskUsage.read(r.localPath, r.excluded) : undefined,
           localPathDisplayName: path.basename(r.localPath),
           localPathDisplay: r.localPath.startsWith(os.homedir() + path.sep)
             ? '~' + r.localPath.slice(os.homedir().length)

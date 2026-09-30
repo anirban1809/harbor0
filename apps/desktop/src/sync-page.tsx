@@ -156,7 +156,7 @@ export function SyncFolderRow({
         </div>
       </td>
       <td className="sync-folder-path">{root.localPathDisplay ?? root.localPath}</td>
-      <td className="sync-folder-size" title="Space occupied on this device">
+      <td className="sync-folder-size" title="Total size of the synced files">
         {root.diskSizeBytes === undefined
           ? 'Calculating…'
           : root.diskSizeBytes === null

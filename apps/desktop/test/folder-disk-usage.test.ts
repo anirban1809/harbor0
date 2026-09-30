@@ -1,30 +1,23 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, lstat, link, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { folderDiskUsage, FolderDiskUsageCache } from '../src/folder-disk-usage';
 
-it('measures allocated space including hidden files without following links or double-counting hard links', async () => {
+it('sums synced file sizes, skipping links, internal files, and excluded folders', async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'harbor-disk-size-'));
   try {
     const root = path.join(temp, 'root');
-    await mkdir(root);
-    await mkdir(path.join(root, '.hidden'));
-    await writeFile(path.join(root, '.hidden', 'file'), Buffer.alloc(8192));
+    await mkdir(path.join(root, '.hidden'), { recursive: true });
+    await mkdir(path.join(root, 'skipped'));
+    await writeFile(path.join(root, '.hidden', 'file'), Buffer.alloc(8193));
+    await writeFile(path.join(root, 'note.txt'), 'abc');
+    await writeFile(path.join(root, 'download.harbor-part'), Buffer.alloc(500));
+    await writeFile(path.join(root, 'skipped', 'big'), Buffer.alloc(4096));
     await writeFile(path.join(temp, 'outside'), Buffer.alloc(1024 * 1024));
-    await link(path.join(root, '.hidden', 'file'), path.join(root, 'hard-link'));
     await symlink(temp, path.join(root, 'outside-link'));
-    const entries = [
-      root,
-      path.join(root, '.hidden'),
-      path.join(root, '.hidden', 'file'),
-      path.join(root, 'outside-link'),
-    ];
-    const expected = (await Promise.all(entries.map((entry) => lstat(entry)))).reduce(
-      (sum, info) => sum + info.blocks * 512,
-      0,
-    );
-    expect(await folderDiskUsage(root)).toBe(expected);
+    expect(await folderDiskUsage(root, ['skipped'])).toBe(8193 + 3);
+    expect(await folderDiskUsage(root)).toBe(8193 + 3 + 4096);
     await expect(folderDiskUsage(path.join(temp, 'missing'))).rejects.toThrow();
   } finally {
     await rm(temp, { recursive: true, force: true });
