@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -18,6 +18,7 @@ import { Alert } from '../../web/components/ui/alert';
 import { Badge } from '../../web/components/ui/badge';
 import { Field } from '../../web/components/ui/field';
 import { Textarea } from '../../web/components/ui/input';
+import type { SyncFolderItem } from '@harbor/contracts';
 import { ActionsMenu, MenuItem, MenuSeparator } from '../../web/components/ui/menu';
 import {
   folderState,
@@ -314,12 +315,61 @@ export function SyncProblem({
     </article>
   );
 }
+// Folders the account already syncs elsewhere that have no local copy on this computer.
+export function SyncAvailableList({
+  folders,
+  link,
+}: {
+  folders: SyncFolderItem[];
+  link: (folder: SyncFolderItem) => void;
+}) {
+  return (
+    <section className="sync-folders sync-available">
+      <h2>On your other devices</h2>
+      <DataTable label="Folders synced on your other devices" className="sync-available-table">
+        <thead>
+          <tr>
+            {['Folder', 'Synced on', ''].map((heading, index) => (
+              <th key={index} scope="col">
+                {heading}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {folders.map((folder) => (
+            <tr key={folder.id} className="sync-folder-row">
+              <td>
+                <div className="sync-folder-title">
+                  <span className="file-entry-icon" data-kind="folder">
+                    <Folder aria-hidden="true" />
+                  </span>
+                  <span>{folder.name}</span>
+                </div>
+              </td>
+              <td>{folder.syncDevices.map((device) => device.name).join(', ') || '—'}</td>
+              <td className="sync-available-action">
+                <Button variant="outline" size="sm" onClick={() => link(folder)}>
+                  <Plus />
+                  Sync to this computer
+                </Button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </DataTable>
+    </section>
+  );
+}
 export function AddSyncFolderDialog({
   close,
   refresh,
   root,
+  remote,
 }: {
   root?: SyncFolder;
+  // An existing synced folder from another device to link here.
+  remote?: { id: string; name: string };
   close: () => void;
   refresh: () => Promise<void>;
 }) {
@@ -349,6 +399,7 @@ export function AddSyncFolderDialog({
       await bridge.addSyncRoot({
         selectionId: local.selectionId || undefined,
         rootId: root?.id,
+        ...(remote ? { cloudFolderId: remote.id } : {}),
       });
       await refresh();
       close();
@@ -364,8 +415,18 @@ export function AddSyncFolderDialog({
       onOpenChange={(value) => {
         if (!value && !busy) close();
       }}
-      title={root ? 'Set up folder sync' : 'Add folder to sync'}
-      description="Choose a local folder. Files use temporary cloud storage while syncing between linked devices."
+      title={
+        remote
+          ? `Sync “${remote.name}” to this computer`
+          : root
+            ? 'Set up folder sync'
+            : 'Add folder to sync'
+      }
+      description={
+        remote
+          ? 'Choose where this folder lives on this computer. Its files download from your other devices.'
+          : 'Choose a local folder. Files use temporary cloud storage while syncing between linked devices.'
+      }
     >
       <div className="sync-dialog">
         <div className="sync-location-picker">
@@ -378,6 +439,8 @@ export function AddSyncFolderDialog({
           </Button>
         </div>
         <p className="sync-setup-note">
+          {remote &&
+            'Choose an empty folder, or one that already holds a copy of these files. Anything else in it will sync to your other devices. '}
           Changes, including deletions, sync between linked devices. Cloud copies are temporary and
           released once all linked devices confirm receipt. No cloud destination is needed.
           Conflicting versions are preserved.
@@ -648,10 +711,12 @@ export function SyncPage({
   jobs,
   state,
   deviceName,
+  accountId,
   refresh,
   openCloud,
   manageStorage,
 }: {
+  accountId?: string | null;
   roots: SyncFolder[];
   jobs: SyncJob[];
   state: SyncBrowserState;
@@ -669,6 +734,36 @@ export function SyncPage({
   const [conflict, setConflict] = useState<SyncIssue | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [remoteFolders, setRemoteFolders] = useState<SyncFolderItem[]>([]);
+  const [linking, setLinking] = useState<SyncFolderItem | null>(null);
+  const linked = roots
+    .map((root) => root.remoteId)
+    .sort()
+    .join(',');
+  useEffect(() => {
+    let cancelled = false;
+    const read = () =>
+      bridge
+        .request({ path: '/v1/sync/folders' })
+        .then((response: { items: SyncFolderItem[] }) => {
+          if (!cancelled) setRemoteFolders(response.items);
+        })
+        // The list is a convenience; the next poll retries while offline.
+        .catch(() => {});
+    void read();
+    const timer = setInterval(read, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [linked]);
+  // Folders shared by someone else are linked from their invitation instead.
+  const available = remoteFolders.filter(
+    (folder) =>
+      !folder.syncRemovedAt &&
+      (!accountId || folder.ownerUserId === accountId) &&
+      !roots.some((root) => root.remoteId === folder.id),
+  );
   const waiting = (state.waiting ?? []).filter((item) => ids.has(item.rootId)).length;
   // Derived on every render so the list empties as problems resolve.
   const problems =
@@ -732,9 +827,13 @@ export function SyncPage({
         {roots.length ? (
           <SyncFolderList roots={roots} state={state} jobs={syncJobs} action={action} />
         ) : (
-          <SyncEmptyState add={() => setAdding(true)} />
+          !available.length && <SyncEmptyState add={() => setAdding(true)} />
         )}
+        {available.length > 0 && <SyncAvailableList folders={available} link={setLinking} />}
       </div>
+      {linking && (
+        <AddSyncFolderDialog remote={linking} close={() => setLinking(null)} refresh={refresh} />
+      )}
       {adding && <AddSyncFolderDialog close={() => setAdding(false)} refresh={refresh} />}
       {dialog?.mode === 'stop' && (
         <StopSyncDialog root={dialog.root} close={() => setDialog(null)} refresh={refresh} />

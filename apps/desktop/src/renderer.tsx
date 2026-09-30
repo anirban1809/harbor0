@@ -1009,6 +1009,7 @@ function App() {
               jobs={sync?.jobs ?? status.jobs}
               state={sync ?? {}}
               deviceName={status.deviceName}
+              accountId={status.accountId}
               refresh={load}
               manageStorage={() => setSection('Storage')}
               openCloud={(root) => {

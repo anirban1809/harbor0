@@ -95,6 +95,21 @@
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+.sync-content {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.sync-available h2 {
+  margin-bottom: 8px;
+  font-size: var(--text-sm);
+}
+.sync-available-table th:nth-child(1) {
+  width: 40%;
+}
+.sync-available-action {
+  text-align: right;
+}
 .sync-empty h2 {
   margin-bottom: 4px;
 }
