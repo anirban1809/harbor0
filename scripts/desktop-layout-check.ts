@@ -143,17 +143,7 @@ try {
     page.getByText('24,567,890,123 of 100,000,000,000 bytes', { exact: true }),
   ).toBeVisible();
   await page.screenshot({ path: path.join(evidence, 'home.png') });
-  for (const section of [
-    'Received',
-    'Sent',
-    'Favorites',
-    'Trash',
-    'Backups',
-    'Devices',
-    'Sync',
-    'Storage',
-    'Settings',
-  ]) {
+  for (const section of ['Shared', 'Trash', 'Backups', 'Devices', 'Sync', 'Storage', 'Settings']) {
     await navigate(section);
     await expect(
       page.getByRole('heading', {
@@ -170,13 +160,10 @@ try {
       ).toHaveCount(0);
     }
     if (section === 'Sync') {
-      await expect(page.getByText('1,248 files', { exact: false }).first()).toBeVisible();
+      await expect(page.getByRole('columnheader', { name: 'Folder size' })).toBeVisible();
       await expect(page.getByText('/Users/demo/Projects', { exact: true })).toBeVisible();
-      await page.getByRole('tab', { name: 'Activity', exact: true }).click();
-      await expect(
-        page.getByText('Website/Design specifications.pdf', { exact: true }),
-      ).toBeVisible();
-      await page.getByRole('tab', { name: 'Files', exact: true }).click();
+      await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveCount(0);
+      await expect(page.locator('.sync-page').getByRole('tablist')).toHaveCount(0);
       await page.getByRole('button', { name: 'Manage Projects', exact: true }).click();
       await page.getByRole('menuitem', { name: 'Folder details', exact: true }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
@@ -200,9 +187,7 @@ try {
   await size(840, 620);
   for (const section of [
     'My Drive',
-    'Received',
-    'Sent',
-    'Favorites',
+    'Shared',
     'Trash',
     'Backups',
     'Devices',

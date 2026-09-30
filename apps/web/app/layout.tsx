@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import { brandDescription, brandName } from '../lib/brand';
 import './globals.css';
-import './workspace-layout.css';
 export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.WEB_ORIGIN ?? process.env.APP_ORIGIN ?? 'https://d1bpha1d51nhxy.cloudfront.net',

@@ -13,8 +13,6 @@ for (const dir of ['app', 'components', 'lib', 'workers']) {
   });
 }
 await cp('apps/web/package.json', path.join(stage, 'package.json'));
-// The isolated export needs the same Tailwind processing as the normal web build.
-await cp('apps/web/postcss.config.mjs', path.join(stage, 'postcss.config.mjs'));
 const tsconfig = JSON.parse(await readFile('apps/web/tsconfig.json', 'utf8'));
 tsconfig.compilerOptions.paths = {
   '@harbor/contracts': [path.join(root, 'packages/contracts/src/index.ts')],
@@ -54,11 +52,10 @@ const styles = (
   )
 ).join('\n');
 if (
-  /@(?:theme|tailwind|source|custom-variant)\b/.test(styles) ||
-  !['.sr-only', '.bg-primary', '.rounded-md', '.p-5'].every((selector) => styles.includes(selector))
+  !['.sr-only', '.btn', '.menu', '.dialog', '.table'].every((selector) => styles.includes(selector))
 ) {
   throw new Error(
-    'Static export is missing compiled Tailwind styles. Check the staged PostCSS configuration before publishing.',
+    'Static export is missing the component stylesheet. Check the imports in apps/web/app/globals.css before publishing.',
   );
 }
 console.log('Static export ready at .cloud/web-export/out. Browser APIs are served by Lambda.');

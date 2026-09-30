@@ -97,6 +97,11 @@ async function saveAs(filePath: string, canceled = false) {
   );
 }
 async function nav(name: string) {
+  if (name === 'Received' || name === 'Sent') {
+    await nav('Shared');
+    await page.getByRole('tab', { name, exact: true }).click();
+    return;
+  }
   await page.locator('nav').getByRole('button', { name, exact: true }).click();
   await expect(
     page.getByRole('heading', { name: name === 'Sync' ? /^Sync on / : name, exact: true }),
@@ -211,24 +216,12 @@ try {
     assert.equal(result, null);
     await assert.rejects(stat(dest), { code: 'ENOENT' });
   });
-  await check('Favorites displays a file marked favorite through the API', async () => {
-    await alice.request(`/v1/drive/items/${uploaded.id}/favorite`, {
-      method: 'PUT',
-      body: { ...op(), baseRevision: uploaded.revision },
-    });
-    await nav('Favorites');
-    await expect(row(path.basename(source))).toBeVisible();
-  });
-  await check('Opening a favorite folder navigates to its children', async () => {
-    folder = (await alice.request(`/v1/drive/items/${folder.id}`)).item;
-    await alice.request(`/v1/drive/items/${folder.id}/favorite`, {
-      method: 'PUT',
-      body: { ...op(), baseRevision: folder.revision },
-    });
-    await nav('My Drive');
-    await nav('Favorites');
-    await row(renamedFolder).getByRole('button', { name: renamedFolder, exact: true }).click();
-    await expect(row(path.basename(empty))).toBeVisible({ timeout: 3000 });
+  await check('Favorites is absent from navigation', async () => {
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Main navigation' })
+        .getByRole('button', { name: 'Favorites', exact: true }),
+    ).toHaveCount(0);
   });
   await check('Trash a file and restore it', async () => {
     await nav('My Drive');
@@ -320,6 +313,7 @@ try {
         .locator('.simple-row')
         .filter({ has: page.getByText(other.session.device.name, { exact: true }) });
       await card.getByRole('button', { name: 'Revoke', exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Revoke access' }).click();
       await expect(card).toContainText('Revoked');
       await assert.rejects(other.api.me(), /revoked/i);
     },

@@ -3,7 +3,9 @@ import { useEffect, useId, useState } from 'react';
 import { Monitor, Moon, RotateCcw, Sun } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Card, CardContent, CardHeader, CardDescription } from './ui/card';
+import { Card } from './ui/card';
+import { Badge } from './ui/badge';
+import { Segmented } from './ui/segmented';
 import { colorFields, normalizeHex } from '../lib/appearance-colors';
 import { appearancePresets } from '../lib/appearance-presets';
 import {
@@ -51,6 +53,7 @@ function ColorControl({ field }: { field: (typeof colorFields)[number] }) {
         />
         <Input
           id={id}
+          className="appearance-hex"
           aria-label={`${field.label} hex color`}
           aria-invalid={error}
           aria-describedby={error ? `${id}-error` : undefined}
@@ -78,7 +81,7 @@ function ColorControl({ field }: { field: (typeof colorFields)[number] }) {
           title={`Reset ${field.label.toLowerCase()} color`}
           onClick={() => setAppearanceColor(field.key, null)}
         >
-          <RotateCcw size={15} />
+          <RotateCcw />
         </Button>
         {error && (
           <p id={`${id}-error`} role="alert" className="appearance-color-error">
@@ -93,73 +96,65 @@ export function AppearanceSettings() {
   const { preference, preset, mode, palettes, status, ready } = useAppearance();
   const modified = Object.keys(palettes[mode]).length > 0;
   return (
-    <Card className="appearance-settings">
-      <CardHeader>
-        <h2 className="mb-0">Appearance</h2>
-        <CardDescription>Theme settings apply across your devices.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <fieldset className="appearance-controls" disabled={!ready}>
-          <fieldset className="appearance-mode">
-            <legend>Color mode</legend>
-            <div className="appearance-mode-options">
-              {(
-                [
-                  ['light', 'Light', Sun],
-                  ['dark', 'Dark', Moon],
-                  ['system', 'System', Monitor],
-                ] as const
-              ).map(([value, label, Icon]) => (
-                <Button
-                  key={value}
-                  variant={preference === value ? 'secondary' : 'outline'}
-                  aria-pressed={preference === value}
-                  onClick={() => setAppearanceMode(value)}
-                >
-                  <Icon size={16} />
-                  {label}
-                </Button>
-              ))}
-            </div>
-          </fieldset>
-          <fieldset className="appearance-presets">
-            <legend>Preset themes</legend>
-            <p className="muted appearance-help">
-              Each theme includes light and dark colors. Choosing a preset resets custom colors.
-            </p>
-            <div className="appearance-preset-grid">
-              {appearancePresets.map((theme) => (
-                <button
-                  type="button"
-                  key={theme.id}
-                  className="appearance-preset"
-                  aria-pressed={preset === theme.id}
-                  onClick={() => setAppearancePreset(theme.id)}
-                >
-                  <span className="appearance-swatches" aria-hidden="true">
-                    {(theme.id === 'default'
-                      ? theme.swatches
-                      : Object.values(theme.palettes[mode]).slice(0, 3)
-                    ).map((color, index) => (
-                      <span key={index} style={{ backgroundColor: color }} />
-                    ))}
+    <Card
+      className="appearance-settings"
+      title="Appearance"
+      description="Theme settings apply across your devices."
+    >
+      <fieldset className="appearance-controls" disabled={!ready}>
+        <fieldset className="appearance-section">
+          <legend>Color mode</legend>
+          <Segmented
+            label="Color mode"
+            className="appearance-mode-options"
+            value={preference}
+            onValueChange={setAppearanceMode}
+            options={[
+              { value: 'light', label: 'Light', icon: <Sun /> },
+              { value: 'dark', label: 'Dark', icon: <Moon /> },
+              { value: 'system', label: 'System', icon: <Monitor /> },
+            ]}
+          />
+        </fieldset>
+        <fieldset className="appearance-section">
+          <legend>Preset themes</legend>
+          <p className="muted appearance-help">
+            Each theme includes light and dark colors. Choosing a preset resets custom colors.
+          </p>
+          <div className="appearance-preset-grid">
+            {appearancePresets.map((theme) => (
+              <button
+                type="button"
+                key={theme.id}
+                className="appearance-preset"
+                aria-pressed={preset === theme.id}
+                onClick={() => setAppearancePreset(theme.id)}
+              >
+                <span className="appearance-swatches" aria-hidden="true">
+                  {(theme.id === 'default'
+                    ? theme.swatches
+                    : Object.values(theme.palettes[mode]).slice(0, 3)
+                  ).map((color, index) => (
+                    <span key={index} style={{ backgroundColor: color }} />
+                  ))}
+                </span>
+                <strong>{theme.name}</strong>
+                <span className="muted">{theme.description}</span>
+                {preset === theme.id && (
+                  <span className="appearance-preset-selected">
+                    {Object.keys(palettes.light).length || Object.keys(palettes.dark).length
+                      ? 'Customized'
+                      : 'Selected'}
                   </span>
-                  <strong>{theme.name}</strong>
-                  <span className="muted">{theme.description}</span>
-                  {preset === theme.id && (
-                    <span className="appearance-preset-selected">
-                      {Object.keys(palettes.light).length || Object.keys(palettes.dark).length
-                        ? 'Customized'
-                        : 'Selected'}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </fieldset>
+                )}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+        <div className="appearance-section">
           <div className="appearance-colors-heading">
             <h3>Custom colors</h3>
-            <span className="badge">{mode === 'light' ? 'Light theme' : 'Dark theme'}</span>
+            <Badge>{mode === 'light' ? 'Light theme' : 'Dark theme'}</Badge>
           </div>
           <p className="muted appearance-help">
             Choose a color or enter a hex code. Light and dark themes keep separate colors.
@@ -167,32 +162,32 @@ export function AppearanceSettings() {
           {colorFields.map((field) => (
             <ColorControl key={field.key} field={field} />
           ))}
-        </fieldset>
-        <div className="appearance-footer">
-          <p role="status" className="muted">
-            {status === 'loading'
-              ? 'Loading your account theme…'
-              : status === 'saving'
-                ? 'Saving to your account…'
-                : status === 'saved'
-                  ? 'Saved to your account.'
-                  : status === 'error'
-                    ? ready
-                      ? 'Applied here. Couldn’t save to your account. Please retry.'
-                      : 'Couldn’t load your account theme. Please retry.'
-                    : 'Sign in to save your theme to your account.'}
-          </p>
-          {status === 'error' && (
-            <Button variant="outline" onClick={retryAppearance}>
-              Retry
-            </Button>
-          )}
-          <Button variant="outline" disabled={!ready || !modified} onClick={resetAppearanceColors}>
-            <RotateCcw size={16} />
-            Reset {mode} colors
-          </Button>
         </div>
-      </CardContent>
+      </fieldset>
+      <div className="appearance-footer">
+        <p role="status" className="muted">
+          {status === 'loading'
+            ? 'Loading your account theme…'
+            : status === 'saving'
+              ? 'Saving to your account…'
+              : status === 'saved'
+                ? 'Saved to your account.'
+                : status === 'error'
+                  ? ready
+                    ? 'Applied here. Couldn’t save to your account. Please retry.'
+                    : 'Couldn’t load your account theme. Please retry.'
+                  : 'Sign in to save your theme to your account.'}
+        </p>
+        {status === 'error' && (
+          <Button variant="outline" onClick={retryAppearance}>
+            Retry
+          </Button>
+        )}
+        <Button variant="outline" disabled={!ready || !modified} onClick={resetAppearanceColors}>
+          <RotateCcw />
+          Reset {mode} colors
+        </Button>
+      </div>
     </Card>
   );
 }

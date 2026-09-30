@@ -4,8 +4,11 @@ declare global {
     harbor: {
       openSyncedItem: (input: { itemId: string }) => Promise<unknown>;
       status: () => Promise<any>;
+      testNotification: () => Promise<{ shown: boolean }>;
+      notificationSettings: () => Promise<void>;
       login: (input: { email: string; password: string }) => Promise<any>;
       request: (input: { path: string; method?: string; body?: unknown }) => Promise<any>;
+      disconnectBackup: (input: { id: string }) => Promise<{ disconnected: boolean }>;
       backupNow: (input: { id: string }) => Promise<{ queued: boolean }>;
       chooseRoot: (input: { mode: 'sync' | 'backup' }) => Promise<any>;
       rootSettings: (input: { id: string; paused: boolean; excluded: string[] }) => Promise<any>;
@@ -45,6 +48,7 @@ declare global {
       diagnostics: () => Promise<any>;
       logout: () => Promise<any>;
       onStatus: (callback: (state: any) => void) => () => void;
+      onIncoming: (callback: (content: import('./incoming').IncomingContent) => void) => () => void;
       onZipProgress: (
         callback: (
           progress:

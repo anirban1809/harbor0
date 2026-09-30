@@ -85,12 +85,12 @@ async function checkAppearance(page: Page, platform: string) {
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(page.locator('html')).not.toHaveClass('dark');
   await page.getByRole('button', { name: 'Light', exact: true }).click();
-  // Mixed light/dark surfaces must retain readable outline controls.
+  // Mixed light/dark surfaces must retain readable controls on the card.
   await page.getByRole('textbox', { name: 'Background hex color', exact: true }).fill('#000000');
   await page.getByRole('textbox', { name: 'Cards hex color', exact: true }).fill('#ffffff');
   await expect(page.getByRole('button', { name: 'Reset light colors', exact: true })).toHaveCSS(
     'color',
-    'rgb(255, 255, 255)',
+    'rgb(0, 0, 0)',
   );
   for (const [name, color] of [
     ['Accent', '#2563eb'],
@@ -127,6 +127,11 @@ async function checkAppearance(page: Page, platform: string) {
 async function checkEmptyViews(page: Page, platform: 'web' | 'desktop') {
   const empty = page.locator('.empty-state');
   const navigate = async (name: string) => {
+    if (name === 'Received' || name === 'Sent') {
+      await navigate('Shared');
+      await page.getByRole('tab', { name, exact: true }).click();
+      return;
+    }
     await page
       .getByRole('navigation', { name: 'Main navigation' })
       .getByRole(platform === 'web' ? 'link' : 'button', { name, exact: true })
@@ -153,11 +158,9 @@ async function checkEmptyViews(page: Page, platform: 'web' | 'desktop') {
     await upload;
   }
   for (const [section, title] of [
-    ['Favorites', 'No favorite files'],
     ['Trash', 'Trash is empty'],
-    ['Received', 'No received files'],
+    ['Received', platform === 'web' ? 'No received files' : 'No received transfers'],
     ['Sent', 'No sent files'],
-    ...(platform === 'web' ? [['Shared', 'No shared files']] : []),
   ]) {
     await navigate(section);
     await expect(empty.getByRole('heading', { name: title, exact: true })).toBeVisible();
@@ -285,7 +288,7 @@ try {
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Switch to light theme' }).click();
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole('link', { name: 'Favorites', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'My Drive', exact: true })).toBeVisible();
   if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth))
     throw new Error('Mobile horizontal overflow');
   await page.waitForTimeout(250);
@@ -318,9 +321,7 @@ try {
   await page.getByRole('button', { name: 'Clear search', exact: true }).click();
   await expect(page.getByPlaceholder('Search your files')).toHaveValue('');
   await page.getByRole('link', { name: 'Notifications', exact: true }).click();
-  await expect(
-    page.getByRole('heading', { name: 'No notifications', exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No notifications', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back to My Drive', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
@@ -339,14 +340,10 @@ try {
   await expect(
     page.getByRole('heading', { name: 'This view couldn’t be loaded.', exact: true }),
   ).toBeVisible({ timeout: 15000 });
-  await expect(page.getByRole('heading', { name: 'No shared files', exact: true })).toHaveCount(
-    0,
-  );
+  await expect(page.getByRole('heading', { name: 'No shared files', exact: true })).toHaveCount(0);
   failShared = false;
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
-  await expect(
-    page.getByRole('heading', { name: 'No shared files', exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No shared files', exact: true })).toBeVisible();
   if (errors.length) throw new Error(errors.join('\n'));
   console.log(
     'PASS: web login, file list/grid, dialog focus and Escape, menu, persisted theme, mobile overflow',
@@ -448,7 +445,7 @@ try {
   await expect(desktop.getByRole('status', { name: 'Loading files', exact: true })).toBeVisible();
   await desktop
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Favorites', exact: true })
+    .getByRole('button', { name: 'My Drive', exact: true })
     .click();
   await expect(desktop.locator('.file-entry-row')).toHaveCount(4);
   await desktop.waitForTimeout(1300);

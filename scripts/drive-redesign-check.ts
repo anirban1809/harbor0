@@ -111,7 +111,17 @@ function fixtureApi(initial: any[]) {
             status: 503,
             error: { code: 'REQUEST_FAILED', message: 'Sync folder lookup unavailable' },
           }
-        : { items: items.filter((item) => syncedIds.includes(item.id)) };
+        : {
+            items: items
+              .filter((item) => syncedIds.includes(item.id))
+              .map((item) => ({
+                ...item,
+                syncDevices: [
+                  { id: 'mac', name: 'MacBook Pro' },
+                  { id: 'pc', name: 'Office PC' },
+                ],
+              })),
+          };
     if (pathname === '/v1/users/me') {
       if (method === 'PATCH') appearance = body.appearance;
       return {
@@ -197,20 +207,15 @@ async function checkSeparation(page: Page, platform: string) {
       { ids, platform, fail, refresh },
     );
   }
+  await expect(page.getByRole('tab')).toHaveText(['Cloud', 'Backup', 'Sync']);
   await expect(page.getByRole('heading', { name: 'Cloud files', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Synced folders', exact: true })).toBeVisible();
   await mappings([], true);
   await page.reload();
-  await expect(page.locator('.file-entry-row')).toHaveCount(5);
-  await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Retry sync folder status' })).toBeVisible();
-  await expect(page.locator('.error')).toHaveCount(0);
-  await page.screenshot({
-    path: `${output}/${platform}-sync-lookup-unavailable.png`,
-    fullPage: true,
-  });
+  await expect(page.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
+  await expect(page.locator('.file-entry-row')).toHaveCount(0);
   await mappings(['projects'], false, false);
-  await page.getByRole('button', { name: 'Retry sync folder status' }).click();
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
 
   const cloud = page
     .locator('.drive-section')
@@ -221,6 +226,27 @@ async function checkSeparation(page: Page, platform: string) {
   await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
   await expect(cloud.getByRole('button', { name: 'Projects', exact: true })).toHaveCount(0);
   await expect(synced.getByRole('columnheader', { name: 'Sync status' })).toBeVisible();
+  await expect(synced.getByRole('columnheader', { name: 'Device', exact: true })).toHaveCount(0);
+  await expect(synced.locator('.file-device-column')).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 900 });
+  const compactSyncLayout = await synced.locator('.file-entry-row').evaluate((row) => {
+    return {
+      nameWidth: row.querySelector('td')!.getBoundingClientRect().width,
+      pageOverflows: document.documentElement.scrollWidth > innerWidth,
+    };
+  });
+  expect(compactSyncLayout.nameWidth).toBeGreaterThan(200);
+  expect(compactSyncLayout.pageOverflows).toBe(false);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(
+    page.getByRole('combobox', { name: 'Filter by type' }).locator('option:checked'),
+  ).toHaveText('Type: All items');
+  await expect(
+    page.getByRole('combobox', { name: 'Filter by modified date' }).locator('option:checked'),
+  ).toHaveText('Modified: Any time');
+  await expect(page.getByRole('button', { name: 'Sort', exact: true })).toContainText(
+    'Modified, newest first',
+  );
   await expect(synced.locator('td.file-sync-column .drive-sync-status')).toHaveText('Syncing');
   for (const state of ['SYNCED', 'SYNCING']) {
     await page.evaluate(
@@ -247,22 +273,21 @@ async function checkSeparation(page: Page, platform: string) {
     );
   }
 
-  await expect(cloud.locator('.file-entry-row')).toHaveCount(4);
   await mappings(['projects'], true);
   await expect(page.getByRole('button', { name: 'Retry sync folder status' })).toBeVisible();
   await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
-  await expect(page.locator('.file-entry-row')).toHaveCount(5);
+  await expect(page.locator('.file-entry-row')).toHaveCount(1);
   await mappings(['projects']);
   await expect(page.getByRole('button', { name: 'Retry sync folder status' })).toHaveCount(0);
-
-  await cloud.getByRole('checkbox', { name: 'Select all files on this page' }).check();
   await synced.getByRole('checkbox', { name: 'Select all files on this page' }).check();
-  await expect(page.locator('.drive-toolbar')).toContainText('5 selected');
-  await cloud.getByRole('checkbox', { name: 'Select all files on this page' }).uncheck();
   await expect(page.locator('.drive-toolbar')).toContainText('1 selected');
+  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
+  await expect(cloud.locator('.file-entry-row')).toHaveCount(4);
+  await expect(page.getByRole('button', { name: 'Clear selection' })).toHaveCount(0);
+  await cloud.getByRole('checkbox', { name: 'Select all files on this page' }).check();
+  await expect(page.locator('.drive-toolbar')).toContainText('4 selected');
   await page.getByRole('button', { name: 'Clear selection' }).click();
   await page.getByRole('combobox', { name: 'Filter by type' }).selectOption('image');
-  await expect(synced).toContainText('No matching items');
   await expect(cloud.locator('.file-entry-row')).toHaveCount(1);
   await page.getByRole('combobox', { name: 'Filter by type' }).selectOption('all');
   for (const width of [1440, 390]) {
@@ -272,6 +297,7 @@ async function checkSeparation(page: Page, platform: string) {
     await page.screenshot({ path: `${output}/${platform}-sections-${width}.png`, fullPage: true });
   }
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   await synced.getByRole('button', { name: 'Projects', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Engine notes.md', exact: true })).toBeVisible();
   await expect(page.locator('.drive-section')).toHaveCount(0);
@@ -289,10 +315,11 @@ async function checkSeparation(page: Page, platform: string) {
     .click();
   await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
   await mappings([]);
-  await expect(synced).toContainText('No synced folders');
+  await expect(page.getByRole('heading', { name: 'No synced folders', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
   await expect(cloud.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
   console.log(
-    `PASS ${platform}: separate cloud/synced tables, cross-section selection, filters, folder browsing, stopped mapping, responsive widths`,
+    `PASS ${platform}: Cloud/Backup/Sync tabs, per-tab selection, filters, folder browsing, stopped mapping, responsive widths`,
   );
 }
 async function check(page: Page, platform: string) {
@@ -334,7 +361,7 @@ async function check(page: Page, platform: string) {
     .click({ modifiers: ['Shift'] });
   await expect(page.locator('.drive-toolbar')).toContainText('3 selected');
   await expect(page.getByRole('combobox', { name: 'Filter by type' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  await page.getByRole('button', { name: 'Move to trash', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('Move 3 items to trash?');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
@@ -343,7 +370,6 @@ async function check(page: Page, platform: string) {
     'Open',
     'Download',
     'Send',
-    'Share',
     'Rename',
     'Move',
     'Add to favorites',
@@ -408,13 +434,17 @@ async function check(page: Page, platform: string) {
   await expect(page.getByRole('button', { name: 'Launch kit', exact: true })).toHaveCount(0);
   await page.getByRole('checkbox', { name: 'Select README.md', exact: true }).check();
   await page.getByRole('checkbox', { name: 'Select Brand guidelines.pdf', exact: true }).check();
-  await page.getByRole('button', { name: 'Share', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
   await page.getByRole('textbox', { name: 'To', exact: true }).fill('@test-recipient');
-  await page.getByRole('dialog').getByRole('button', { name: 'Share', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Send', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('checkbox', { name: 'Select README.md', exact: true }).check();
-  await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.getByRole('button', { name: 'Move to trash', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Move to trash', exact: true })
+    .click();
   await expect(page.getByRole('button', { name: 'README.md', exact: true })).toHaveCount(0);
   await page.evaluate(async (platform) => {
     if (platform === 'desktop')
@@ -438,7 +468,7 @@ async function check(page: Page, platform: string) {
   await page.screenshot({ path: `${output}/${platform}-dark.png` });
   if (errors.length) throw new Error(errors.join('\n'));
   console.log(
-    `PASS ${platform}: compact list, pagination, system files, account, filters, shift selection, details, persistent grid, inline creation/focus, rename, breadcrumbs, search scope, move, bulk share, trash confirmation, and responsive widths`,
+    `PASS ${platform}: compact list, pagination, system files, account, filters, shift selection, details, persistent grid, inline creation/focus, rename, breadcrumbs, search scope, move, bulk send, trash confirmation, and responsive widths`,
   );
 }
 async function checkRemoval(page: Page, platform: string) {
@@ -457,24 +487,20 @@ async function checkRemoval(page: Page, platform: string) {
       });
     window.dispatchEvent(new Event('focus'));
   }, platform);
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   const synced = page
     .locator('.drive-section')
     .filter({ has: page.getByRole('heading', { name: 'Synced folders', exact: true }) });
   await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: 'Select Projects', exact: true }).check();
-  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Move to trash', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Move', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Copy to cloud', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Share', exact: true })).toHaveCount(0);
+  for (const name of ['Download', 'Send', 'Copy to cloud'])
+    await expect(page.getByRole('button', { name, exact: true }).locator('svg')).toBeVisible();
   await page.keyboard.press('Delete');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByRole('checkbox', { name: 'Select Design', exact: true }).check();
-  await expect(page.locator('.drive-toolbar')).toContainText('2 selected');
-  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Move', exact: true })).toHaveCount(0);
-  await page.keyboard.press('Delete');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.getByRole('checkbox', { name: 'Select Projects', exact: true }).uncheck();
-  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Clear selection', exact: true }).click();
   await page.getByPlaceholder('Search your files').fill('Projects');
   await expect(page.getByRole('heading', { name: 'Search results', exact: true })).toBeVisible();
@@ -512,14 +538,15 @@ async function checkRemoval(page: Page, platform: string) {
   const cloud = page
     .locator('.drive-section')
     .filter({ has: page.getByRole('heading', { name: 'Cloud files', exact: true }) });
+  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
   await expect(
     cloud.getByRole('button', { name: 'Projects (cloud copy)', exact: true }),
   ).toBeVisible();
-  await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Actions for Projects (cloud copy)' }).click();
   await expect(page.getByRole('menuitem', { name: 'Move', exact: true })).toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Copy to cloud', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   await page.getByRole('button', { name: 'Actions for Projects', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Copy to cloud', exact: true }).click();
   await page.getByRole('radio', { name: /Keep synced/ }).check();
@@ -529,12 +556,28 @@ async function checkRemoval(page: Page, platform: string) {
     .getByRole('dialog')
     .getByRole('button', { name: 'Copy to cloud', exact: true })
     .click();
+  await expect(page.locator('.drive-feedback')).toHaveCount(0);
+  const activity = page.getByRole('button', { name: /^Activity notifications/ });
+  await expect(activity).toHaveAccessibleName(/unread/);
+  await activity.click();
+  const drawer = page.getByRole('dialog', { name: 'Activity', exact: true });
   await expect(
-    page.getByText('“Projects (cloud copy 2)” is kept synced with your local folder.'),
+    drawer.getByText('“Projects (cloud copy 2)” is kept synced with your local folder.'),
   ).toBeVisible();
+  await expect(drawer.getByText('“Projects (cloud copy)” saved in My Drive.')).toBeVisible();
+  await expect(page.locator('.activity-unread')).toHaveCount(0);
+  await page.screenshot({ path: `${output}/${platform}-activity.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await drawer.evaluate((el) => el.getBoundingClientRect().right <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `${output}/${platform}-activity-mobile.png` });
+  await page.keyboard.press('Escape');
+  await expect(activity).toBeFocused();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
   await expect(
     cloud.getByRole('button', { name: 'Projects (cloud copy 2)', exact: true }),
   ).toBeVisible();
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   await page.getByRole('button', { name: 'Actions for Projects', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Remove from sync', exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -542,6 +585,7 @@ async function checkRemoval(page: Page, platform: string) {
   await expect(dialog).toContainText('Local folders and files will stay where they are');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(synced.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
   await page.getByRole('button', { name: 'Actions for Projects', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Remove from sync', exact: true }).click();
   await dialog.getByRole('button', { name: 'Remove from sync', exact: true }).click();
@@ -570,14 +614,17 @@ try {
       );
       return route.fulfill({ status: result.status ?? 200, json: result });
     });
-    await page.goto('http://127.0.0.1:3000/drive');
+    await page.goto(process.env.DRIVE_CHECK_URL ?? 'http://127.0.0.1:3000/drive');
     await checkSeparation(page, 'web');
     await check(page, 'web');
     await checkRemoval(page, 'web');
-    const shares = api('/test/calls').filter(
-      (call: any) => call.raw === '/v1/shares' && call.method === 'POST',
+    const sends = api('/test/calls').filter(
+      (call: any) => call.raw === '/v1/transfers' && call.method === 'POST',
     );
-    if (shares.length !== 2) throw new Error('Bulk share did not reach both items');
+    expect(sends).toHaveLength(1);
+    expect(
+      sends[0].body.items.map((item: { driveItemId: string }) => item.driveItemId).sort(),
+    ).toEqual(['brief', 'readme']);
   }
 } finally {
   await browser.close();

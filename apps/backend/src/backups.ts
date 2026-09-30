@@ -27,8 +27,58 @@ export class Backups {
     }
     return root;
   }
+  async connected(tx: Transaction, userId: string, rootId: string, deviceId?: string) {
+    const root = await this.root(tx, userId, rootId, deviceId);
+    assert(
+      root.state !== 'REMOVED',
+      'BACKUP_DISCONNECTED',
+      'This folder is no longer connected for backup.',
+      409,
+    );
+    return root;
+  }
+  async get(userId: string, rootId: string) {
+    return { root: await this.root(new Transaction(this.service.repo), userId, rootId) };
+  }
+  async disconnect(userId: string, rootId: string) {
+    return transact(this.service.repo, async (tx) => {
+      const root = await this.root(tx, userId, rootId);
+      if (root.state !== 'REMOVED') {
+        root.state = 'REMOVED';
+        root.updatedAt = new Date().toISOString();
+        await tx.put(userPK(userId), `BACKUP#${root.id}`, root);
+        await this.service.record(tx, userId, 'BACKUP_DISCONNECTED', root.remoteRootDriveItemId);
+      }
+      return { root };
+    });
+  }
+  /** Remove a stopped backup and its run/restore history. Its cloud folder is untouched. */
+  async forget(userId: string, rootId: string) {
+    const repo = this.service.repo;
+    const root = await new Transaction(repo).get<BackupRoot>(userPK(userId), `BACKUP#${rootId}`);
+    if (!root) return { removed: true };
+    assert(
+      root.state === 'REMOVED',
+      'VALIDATION_ERROR',
+      'Stop backing up this folder before removing it.',
+      409,
+    );
+    const pk = partition(userId, rootId);
+    for (const prefix of ['ENTRY#', 'RUN#', 'RESTORE#', 'PENDING#']) {
+      for (;;) {
+        const page = await repo.query(pk, prefix, 25);
+        if (!page.rows.length) break;
+        await transact(repo, async (tx) => {
+          for (const row of page.rows) await tx.delete(pk, row.sk);
+        });
+      }
+    }
+    await transact(repo, (tx) => tx.delete(userPK(userId), `BACKUP#${rootId}`));
+    return { removed: true };
+  }
   async page(userId: string, rootId: string, prefix: string, cursor?: string) {
-    await this.root(new Transaction(this.service.repo), userId, rootId);
+    const root = await this.root(new Transaction(this.service.repo), userId, rootId);
+    if (prefix === 'PENDING#' && root.state === 'REMOVED') return { items: [], nextCursor: null };
     const page = await this.service.repo.query(partition(userId, rootId), prefix, 100, cursor);
     return { items: page.rows.map((row) => row.data), nextCursor: page.cursor };
   }
@@ -39,7 +89,7 @@ export class Backups {
     input: { id: string; trigger: BackupRun['trigger'] },
   ) {
     return transact(this.service.repo, async (tx) => {
-      await this.root(tx, userId, rootId, deviceId);
+      await this.connected(tx, userId, rootId, deviceId);
       const pk = partition(userId, rootId);
       const existing = await tx.get<BackupRun>(pk, `RUN#${input.id}`);
       if (existing) return { run: existing };
@@ -85,7 +135,7 @@ export class Backups {
   }
   async entry(userId: string, rootId: string, deviceId: string, runId: string, input: BackupEntry) {
     return transact(this.service.repo, async (tx) => {
-      const root = await this.root(tx, userId, rootId, deviceId);
+      const root = await this.connected(tx, userId, rootId, deviceId);
       const pk = partition(userId, rootId);
       const run = await tx.get<BackupRun>(pk, `RUN#${runId}`);
       assert(run, 'ITEM_NOT_FOUND', 'Backup run was not found.', 404);
@@ -115,7 +165,7 @@ export class Backups {
   }
   async finish(userId: string, rootId: string, deviceId: string, runId: string, error?: string) {
     return transact(this.service.repo, async (tx) => {
-      await this.root(tx, userId, rootId, deviceId);
+      await this.connected(tx, userId, rootId, deviceId);
       const pk = partition(userId, rootId);
       const run = await tx.get<BackupRun>(pk, `RUN#${runId}`);
       assert(run, 'ITEM_NOT_FOUND', 'Backup run was not found.', 404);
@@ -134,7 +184,7 @@ export class Backups {
     input: { id: string; itemId: string; versionId: string },
   ) {
     return transact(this.service.repo, async (tx) => {
-      const root = await this.root(tx, userId, rootId);
+      const root = await this.connected(tx, userId, rootId);
       const pk = partition(userId, rootId);
       const existing = await tx.get<BackupRestore>(pk, `RESTORE#${input.id}`);
       if (existing) {
@@ -162,7 +212,7 @@ export class Backups {
   }
   async restored(userId: string, rootId: string, deviceId: string, id: string, error?: string) {
     return transact(this.service.repo, async (tx) => {
-      await this.root(tx, userId, rootId, deviceId);
+      await this.connected(tx, userId, rootId, deviceId);
       const pk = partition(userId, rootId);
       const restore = await tx.get<BackupRestore>(pk, `RESTORE#${id}`);
       assert(restore, 'ITEM_NOT_FOUND', 'Restore request was not found.', 404);

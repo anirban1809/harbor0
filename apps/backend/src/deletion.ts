@@ -1,3 +1,4 @@
+import { assertBackupMutable } from './backup-policy';
 import type { DriveItem, FileVersion } from '@harbor/contracts';
 import { StorageService, userPK } from './domain';
 import { transact, type Transaction } from './repository';
@@ -29,6 +30,7 @@ export class DeletionWorkflows {
   }
   async detach(tx: Transaction, userId: string, item: DriveItem) {
     const s = this.service;
+    await assertBackupMutable(tx, userId, item.id, true);
     const id = item.id;
     const detached = {
       ...item,
@@ -64,6 +66,7 @@ export class DeletionWorkflows {
           await tx.delete(`PURGE#${id}`, key);
           return;
         }
+        await assertBackupMutable(tx, userId, item.id, true);
         await s.account(tx, userId);
         if (!item.purging) {
           item.purging = true;

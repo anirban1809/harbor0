@@ -1,0 +1,123 @@
+/* Theme tokens shared by the web and desktop apps.
+   The first block holds the colors people can customise in Settings → Appearance
+   (lib/appearance.ts writes overrides for them on <html>). Everything else is
+   derived from those, per surface, so custom palettes stay readable. */
+:root {
+  --background: #ffffff;
+  --foreground: #16181d;
+  --card: #ffffff;
+  --card-foreground: #16181d;
+  --popover: var(--card);
+  --popover-foreground: var(--card-foreground);
+  --sidebar: #f4f5f7;
+  --sidebar-foreground: #16181d;
+  --primary: #4353d9;
+  --primary-foreground: #ffffff;
+  --border: #e3e5ea;
+  --ring: var(--primary);
+  --destructive: #d33b3b;
+  --destructive-foreground: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+
+  --kind-folder: var(--primary);
+  --kind-image: #0e9384;
+
+  --shadow-pop: 0 10px 32px -8px rgb(16 18 24 / 0.18), 0 2px 6px -2px rgb(16 18 24 / 0.08);
+  --backdrop: rgb(16 18 24 / 0.32);
+
+  --font-sans:
+    'Geist Variable', 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --control: 34px;
+  --control-sm: 28px;
+  --control-lg: 40px;
+
+  --sidebar-width: 232px;
+  --gutter: 28px;
+  --ease: 140ms ease;
+
+  --surface: var(--background);
+  --on: var(--foreground);
+}
+
+.dark {
+  --background: #141518;
+  --foreground: #eceef1;
+  --card: #1b1d21;
+  --card-foreground: #eceef1;
+  --sidebar: #0d0e10;
+  --sidebar-foreground: #eceef1;
+  --primary: #8793ff;
+  --primary-foreground: #0e1024;
+  --border: #2b2e34;
+  --destructive: #f26d6d;
+  --destructive-foreground: #2a0a0a;
+  --success: #52c987;
+  --warning: #e5a949;
+  --kind-image: #3fd0c0;
+  --shadow-pop: 0 12px 36px -8px rgb(0 0 0 / 0.6), 0 2px 8px -2px rgb(0 0 0 / 0.4);
+  --backdrop: rgb(0 0 0 / 0.55);
+}
+
+/* Surfaces. An element that paints its own background names it here, and the
+   derived tokens below are recomputed against that background. */
+.sidebar,
+.auth-story {
+  --surface: var(--sidebar);
+  --on: var(--sidebar-foreground);
+}
+.card,
+.menu,
+.dialog,
+.drawer,
+.floating-card {
+  --surface: var(--card);
+  --on: var(--card-foreground);
+}
+.main-shell,
+.auth-form {
+  --surface: var(--background);
+  --on: var(--foreground);
+}
+
+:root,
+.sidebar,
+.auth-story,
+.card,
+.menu,
+.dialog,
+.drawer,
+.floating-card,
+.main-shell,
+.auth-form {
+  --text: var(--on);
+  --text-2: color-mix(in oklab, var(--on) 66%, var(--surface));
+  --text-3: color-mix(in oklab, var(--on) 50%, var(--surface));
+  --fill-1: color-mix(in oklab, var(--on) 4%, var(--surface));
+  --fill-2: color-mix(in oklab, var(--on) 7%, var(--surface));
+  --fill-3: color-mix(in oklab, var(--on) 11%, var(--surface));
+  --line: var(--border);
+  --accent-soft: color-mix(in oklab, var(--primary) 12%, var(--surface));
+  --accent-text: color-mix(in oklab, var(--primary) 84%, var(--on));
+  --danger-soft: color-mix(in oklab, var(--destructive) 11%, var(--surface));
+  --danger-text: color-mix(in oklab, var(--destructive) 88%, var(--on));
+  --success-soft: color-mix(in oklab, var(--success) 13%, var(--surface));
+  --success-text: color-mix(in oklab, var(--success) 88%, var(--on));
+  --warning-soft: color-mix(in oklab, var(--warning) 14%, var(--surface));
+  --warning-text: color-mix(in oklab, var(--warning) 88%, var(--on));
+  color: var(--text);
+}

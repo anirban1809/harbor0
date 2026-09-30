@@ -196,9 +196,22 @@ describe('synced folder visibility', () => {
     const a = await folder('Design');
     const b = await folder('Nested', 'alice', a.id);
     await service.registerDevice('alice', installation, 'mac');
-    await service.registerDevice('alice', { ...installation, devicePublicId: 'second' }, 'other');
+    await service.registerDevice(
+      'alice',
+      { ...installation, name: 'Work PC', devicePublicId: 'second' },
+      'other',
+    );
     await service.setSyncFolders('alice', 'mac', [a.id, b.id]);
     await service.setSyncFolders('alice', 'other', [a.id]);
+    const folders = (await service.syncFolders('alice')).items;
+    expect(folders.find((item) => item.id === a.id)?.syncDevices).toEqual([
+      { id: 'mac', name: 'My Mac' },
+      { id: 'other', name: 'Work PC' },
+    ]);
+    expect(folders.find((item) => item.id === b.id)?.syncDevices).toEqual([
+      { id: 'mac', name: 'My Mac' },
+    ]);
+    expect((await service.syncFolders('bob')).items).toEqual([]);
     expect((await service.syncFolders('alice')).items.map((item) => item.id).sort()).toEqual(
       [a.id, b.id].sort(),
     );

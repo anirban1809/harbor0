@@ -122,6 +122,7 @@ export const cloudCopySchema = z.object({
 });
 export type CloudCopy = z.infer<typeof cloudCopySchema>;
 export const itemSchema = z.object({
+  backupRootId: z.string().optional(),
   syncRemovedAt: z.string().nullable().optional(),
   cloudState: syncCloudState.optional(),
   id: z.string(),
@@ -139,6 +140,10 @@ export const itemSchema = z.object({
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
 });
+export const syncFolderSchema = itemSchema.extend({
+  syncDevices: z.array(z.object({ id: z.string(), name: z.string() })),
+});
+export type SyncFolderItem = z.infer<typeof syncFolderSchema>;
 export const versionSchema = z.object({
   cloudState: z.enum(['AVAILABLE', 'RELEASED']).optional(),
   id: z.string(),

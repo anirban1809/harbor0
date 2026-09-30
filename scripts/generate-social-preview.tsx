@@ -1,7 +1,8 @@
 import React from 'react';
 import { writeFile } from 'node:fs/promises';
 import { ImageResponse } from 'next/og';
-import { brandMarkPath, brandName } from '../apps/web/lib/brand';
+import { brandName } from '../apps/web/lib/brand';
+import { brandIconSrc } from '../apps/web/lib/brand-icon';
 
 const alt = 'harbor0 — File storage, backup, sync, and sharing. 100 GB free.';
 const size = { width: 1200, height: 630 };
@@ -21,15 +22,7 @@ function Image() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 20, fontSize: 56 }}>
-        <svg width="64" height="64" viewBox="0 0 40 40" fill="none">
-          <path
-            d={brandMarkPath}
-            stroke="#57534d"
-            strokeWidth="2.7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        <img src={brandIconSrc} width={64} height={64} alt="" />
         {brandName}
       </div>
       <div style={{ display: 'flex', marginTop: 90, fontSize: 64 }}>File storage and sync</div>

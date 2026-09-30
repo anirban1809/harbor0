@@ -13,9 +13,14 @@ await build({
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { SyncPage } from './apps/desktop/src/sync-page';
+import { SyncNotifications } from './apps/desktop/src/sync-notifications';
+import { useActivityFeed } from './apps/web/components/activity-notifications';
 function App() {
  const [roots, setRoots] = useState(window.fixtureRoots);
- return <main style={{padding:24}}><SyncPage roots={roots} jobs={[]} state={{running:false,paused:false,online:true,message:'Ready',queued:0,lastSync:null,active:null,issues:[],recent:[]}} deviceName="My computer" refresh={async()=>setRoots([...window.fixtureRoots])} openCloud={()=>{}} manageStorage={()=>{}} /></main>;
+ const feed = useActivityFeed('fixture');
+ const state = {running:false,paused:false,online:true,message:'Ready',queued:0,lastSync:null,active:null,issues:[],recent:[]};
+ const refresh = async()=>setRoots([...window.fixtureRoots]);
+ return <main className="app-shell" style={{padding:24}}><SyncNotifications feed={feed} roots={roots} jobs={[]} state={state} refresh={refresh} showBanner manageFolders={()=>{}} manageStorage={()=>{}}/><SyncPage roots={roots} jobs={[]} state={{running:false,paused:false,online:true,message:'Ready',queued:0,lastSync:null,active:null,issues:[],recent:[]}} deviceName="My computer" refresh={async()=>setRoots([...window.fixtureRoots])} openCloud={()=>{}} /></main>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
 `,
@@ -89,6 +94,7 @@ try {
           return { share };
         }
         if (input.path.endsWith('/respond')) {
+          if (w.failRespond) throw new Error('Could not respond to this invitation. Try again.');
           w.invitations[0].syncState = input.body.action;
           return { share: w.invitations[0] };
         }
@@ -143,6 +149,7 @@ try {
     .click();
   await expect(page.getByRole('dialog')).toContainText('No invitations yet.');
   await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
   await page.getByRole('button', { name: 'Accept invitation', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Accept and start syncing', exact: true }),
@@ -165,6 +172,24 @@ try {
       shareId: 'received-share',
     },
   });
+  // Dismissal keeps the invitation actionable; failed responses keep it visible for retry.
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Accept invitation', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss sync banner' }).click();
+  await expect(page.getByRole('region', { name: 'Sync action required' })).toHaveCount(0);
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
+  await page.evaluate(() => {
+    (window as any).failRespond = true;
+  });
+  await page.getByRole('button', { name: 'Reject', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Could not respond');
+  await expect(page.getByRole('button', { name: 'Accept invitation', exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).failRespond = false;
+  });
+  await page.getByRole('button', { name: 'Reject', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Accept invitation', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
   expect(errors).toEqual([]);
   console.log(
     'Shared sync UI: invite, remove access, choose local folder, accept, and recipient restrictions passed.',

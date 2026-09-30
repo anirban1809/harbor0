@@ -2,8 +2,6 @@ import { test, expect, type Page } from '@playwright/test';
 
 const pages = [
   ['My Drive', '/drive'],
-  ['Received', '/received'],
-  ['Sent', '/sent'],
   ['Shared', '/shared'],
   ['Favorites', '/favorites'],
   ['Trash', '/trash'],
@@ -109,10 +107,12 @@ test('links, shortcuts and browser history navigate without remounting the works
   // This preference is held in the workspace, so it also detects remounts.
   await page.getByRole('button', { name: 'Grid view', exact: true }).click();
   for (const [name, path] of pages) {
-    await page
-      .locator(name === 'Notifications' ? '.topbar' : '.sidebar')
-      .getByRole('link', { name, exact: true })
-      .click();
+    if (name === 'Notifications') {
+      await page.getByRole('button', { name: 'Activity notifications', exact: true }).click();
+      await page.getByRole('button', { name: 'All notifications', exact: true }).click();
+    } else {
+      await page.locator('.sidebar').getByRole('link', { name, exact: true }).click();
+    }
     await expect(page).toHaveURL(new RegExp(`${path}$`));
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
   }
@@ -274,4 +274,74 @@ test('an unavailable folder reports an error without falling back to root', asyn
   ).toBeVisible({ timeout: 15000 });
   await expect(page).toHaveURL(/\/drive\?folder=missing$/);
   expect(rootRequests).toEqual([]);
+});
+
+test('Shared tabs support direct links, reload, history and legacy links', async ({ page }) => {
+  await mockSession(page);
+  await page.goto('/shared');
+  const received = page.getByRole('tab', { name: 'Received', exact: true });
+  const sent = page.getByRole('tab', { name: 'Sent', exact: true });
+  await expect(received).toHaveAttribute('aria-selected', 'true');
+  await sent.click();
+  await expect(page).toHaveURL(/\/shared\?tab=sent$/);
+  await expect(sent).toHaveAttribute('aria-selected', 'true');
+  await page.reload();
+  await expect(sent).toHaveAttribute('aria-selected', 'true');
+  await page.goBack();
+  await expect(received).toHaveAttribute('aria-selected', 'true');
+  await page.goForward();
+  await expect(sent).toHaveAttribute('aria-selected', 'true');
+  for (const [path, tab] of [
+    ['/received', 'Received'],
+    ['/sent', 'Sent'],
+  ]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(tab === 'Sent' ? /\/shared\?tab=sent$/ : /\/shared$/);
+    await expect(page.getByRole('heading', { name: 'Shared', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: tab, exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  }
+});
+
+test('signing in preserves the selected Shared tab', async ({ page }) => {
+  await mockSession(page, false);
+  await page.goto('/shared?tab=sent');
+  await expect(page).toHaveURL(/\/login\?next=%2Fshared%3Ftab%3Dsent$/);
+  await page.getByLabel('Email', { exact: true }).fill('routing@example.test');
+  await page.getByLabel('Password', { exact: true }).fill('Example-password-123!');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page).toHaveURL(/\/shared\?tab=sent$/);
+  await expect(page.getByRole('tab', { name: 'Sent', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+});
+
+test('Shared keeps received and sent access grants in their matching tabs', async ({ page }) => {
+  await mockSession(page);
+  await page.route('**/api/v1/shares/*', async (route) => {
+    const sent = route.request().url().endsWith('/sent');
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: sent ? 'outgoing' : 'incoming',
+            ownerUserId: sent ? 'routing' : 'someone-else',
+            permission: 'VIEWER',
+            item: { ...folderItems[0], name: sent ? 'Team documents' : 'Client documents' },
+          },
+        ],
+      },
+    });
+  });
+  await page.goto('/shared');
+  await expect(page.getByRole('button', { name: /Client documents/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Team documents/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Remove access', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Sent', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Team documents/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Client documents/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Remove access', exact: true })).toBeVisible();
 });

@@ -88,6 +88,8 @@ try {
   await engine.stop();
   const old = new Date(Date.now() - BACKUP_QUIET_MS - 10000);
   await utimes(target, old, old);
+  // Let the synthetic timestamp change settle before a new macOS watcher starts.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
   for (const job of journal.jobs()) {
     delete job.payload.observedAt;
     journal.saveJob(job);
@@ -172,6 +174,56 @@ try {
     'Web restore request replaces the source file and reports completion without altering cloud history',
   );
   await page.screenshot({ path: '.cloud/live-backups.png', fullPage: true });
+  const current = (await api.request(`/v1/drive/items/${first.id}`)).item;
+  await assert.rejects(
+    api.request(`/v1/drive/items/${first.id}`, {
+      method: 'PATCH',
+      body: { operationId: randomUUID(), baseRevision: current.revision, name: 'Blocked.txt' },
+    }),
+    (error: any) => error.code === 'BACKUP_IMMUTABLE',
+  );
+  await assert.rejects(
+    api.request('/v1/drive/folders', {
+      method: 'POST',
+      body: { operationId: randomUUID(), parentId: root!.remoteId, name: 'Blocked' },
+    }),
+    (error: any) => error.code === 'BACKUP_IMMUTABLE',
+  );
+  pass('Live backend rejects edits and new folders inside connected backups');
+  await page.goto(web.WebUrl + '/drive');
+  await expect(page.getByRole('tab')).toHaveText(['Cloud', 'Backup', 'Sync']);
+  await expect(
+    page.getByRole('button', { name: new RegExp(`Actions for ${username}`) }),
+  ).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Backup', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(`Actions for ${username}`) }).click();
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Disconnect backup', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Disconnect backup', exact: true })
+    .click();
+  await expect(page.getByRole('tab', { name: 'Cloud', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('button', { name: new RegExp(`Actions for ${username}`) }).click();
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  assert.equal((await api.request(`/v1/drive/items/${first.id}/versions`)).items.length, 2);
+  await api.request(`/v1/drive/items/${first.id}`, {
+    method: 'PATCH',
+    body: {
+      operationId: randomUUID(),
+      baseRevision: current.revision,
+      name: 'Editable cloud notes.txt',
+    },
+  });
+  assert.equal(await readFile(target, 'utf8'), 'First archived version.');
+  pass(
+    'Live My Drive tabs keep backups read-only; disconnect moves the folder into Cloud, preserves versions and unlocks edits',
+  );
+  await page.screenshot({ path: '.cloud/live-drive-backups.png', fullPage: true });
   passed = true;
 } finally {
   await engine?.stop();
@@ -195,6 +247,7 @@ try {
     if (api && root?.remoteId) {
       const { item } = await api.request(`/v1/drive/items/${root.remoteId}`);
       assert.ok(item.name.startsWith(username), 'Refusing to delete an unrelated file');
+      await api.request(`/v1/backups/${root.backupId}`, { method: 'DELETE' });
       const { item: trashed } = await api.request(`/v1/drive/items/${item.id}`, {
         method: 'DELETE',
         body: { operationId: randomUUID(), baseRevision: item.revision },

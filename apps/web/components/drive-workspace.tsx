@@ -1,43 +1,70 @@
 'use client';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import * as Menu from '@radix-ui/react-dropdown-menu';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUpFromLine,
+  Download,
+  Send,
+  FolderInput,
+  CloudUpload,
+  Trash2,
+  Star,
+  Pencil,
+  Info,
   ChevronDown,
   ChevronRight,
   Folder,
   LayoutGrid,
   List,
-  MoreHorizontal,
   Plus,
   X,
 } from 'lucide-react';
 import type { CloudCopy, DriveItem, StorageUsage, SyncItemStatus } from '@harbor/contracts';
 import type { Transport } from '@harbor/api-client';
+import type { BackupRoot } from '../../../packages/contracts/src/backups';
+import { browserSession, applyOptimisticItems, type OptimisticChange } from '../lib/browser-cache';
+import { useDebouncedValue } from '../lib/use-debounced-value';
+import { LoadMoreFiles } from './load-more-files';
+import { driveLocations, type DriveLocation } from '../lib/drive-locations';
 import { operation } from '@harbor/api-client';
 import { defaultDriveFilters, driveView } from '../lib/drive-view';
 import { fileDate, fileKind, fileSize } from '../lib/file-metadata';
 import { FileCollection, FileCollectionSkeleton, FileLoadError } from './file-collection';
 import { EmptyState } from './empty-state';
+import type { ActivityUpdate } from './activity-notifications';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { Dialog } from './ui/dialog';
+import { Dialog, DialogActions, Drawer } from './ui/dialog';
+import { Alert } from './ui/alert';
+import { Badge } from './ui/badge';
+import { Radio } from './ui/checkbox';
+import { Field } from './ui/field';
 import {
-  Dialog as Panel,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from './ui/dialog-primitives';
+  ActionsMenu,
+  Menu,
+  MenuCheckboxItem,
+  MenuContent,
+  MenuItem,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from './ui/menu';
+import { Segmented } from './ui/segmented';
+import { Select } from './ui/select';
+import { Tab, TabList, TabPanel, Tabs } from './ui/tabs';
 
 type Item = DriveItem & {
+  location?: DriveLocation;
   localOnly?: boolean;
   syncStatus?: string;
   syncDetail?: string;
   syncProgress?: number;
+  syncDevices?: { id: string; name: string }[];
 };
 type Trail = { id: string; name: string }[];
 type Props = {
   request: Transport;
+  onActivity: (update: ActivityUpdate) => void;
   parentId: string | null;
   trail: Trail;
   breadcrumbs: ReactNode;
@@ -48,6 +75,7 @@ type Props = {
   refreshKey?: unknown;
   pendingItems?: Item[];
   syncedFolderIds?: string[];
+  localSyncDevices?: Record<string, { id: string; name: string }[]>;
   canOpenDeviceCopy?: boolean;
   onOpen: (item: DriveItem) => void;
   onUpload: () => void;
@@ -58,6 +86,9 @@ type Props = {
   onManageStorage: () => void;
   onRemoveSync?: (item: DriveItem) => Promise<unknown>;
   onSyncRemoved?: () => void;
+  onReadOnlyChange?: (readOnly: boolean) => void;
+  onRoot: () => void;
+  onDisconnectBackup?: (item: DriveItem) => Promise<unknown>;
 };
 const noPending: Item[] = [];
 async function allItems<T extends { id: string } = Item>(
@@ -85,10 +116,11 @@ async function allItems<T extends { id: string } = Item>(
 }
 export function DriveWorkspace({
   request,
+  onActivity,
   parentId,
   trail,
   breadcrumbs,
-  query,
+  query: searchQuery,
   onClearSearch,
   userId,
   storage,
@@ -105,9 +137,34 @@ export function DriveWorkspace({
   onManageStorage,
   onRemoveSync,
   onSyncRemoved,
+  onRoot,
+  onReadOnlyChange,
+  onDisconnectBackup,
 }: Props) {
+  const query = useDebouncedValue(searchQuery);
+  const lastRefresh = useRef(refreshKey);
+  const session = useMemo(() => browserSession(request, userId ?? 'anonymous'), [request, userId]);
+  const mutationEpoch = useRef(0);
+  const loadedView = useRef('');
+  const lastRevision = useRef(0);
+  const changesRef = useRef(new Map<string, OptimisticChange<Item>>());
+  const [changes, setChanges] = useState(changesRef.current);
+  const [pageRequest, setPageRequest] = useState({ key: '', count: 1 });
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const syncRemovedCallback = useRef(onSyncRemoved);
   syncRemovedCallback.current = onSyncRemoved;
+  const [activeTab, setActiveTab] = useState<DriveLocation>('Cloud');
+  const [backupFolders, setBackupFolders] = useState<Item[]>([]);
+  const [backupRoots, setBackupRoots] = useState<BackupRoot[]>([]);
+  const [catalogError, setCatalogError] = useState(false);
+  const changingTab = useRef(false);
+  const [backupRestore, setBackupRestore] = useState<{
+    item: Item;
+    versionId: string;
+    createdAt: string;
+    id: string;
+  } | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [syncedFolders, setSyncedFolders] = useState<Item[]>([]);
   const separateFolders = !parentId && !query;
@@ -117,9 +174,12 @@ export function DriveWorkspace({
   const [syncStatusError, setSyncStatusError] = useState(false);
   const [syncFoldersError, setSyncFoldersError] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  function setNotice(message: string) {
+    onActivity({ id: crypto.randomUUID(), message, status: 'info' });
+  }
   const [cloudCopies, setCloudCopies] = useState<CloudCopy[]>([]);
   const [copyStatusError, setCopyStatusError] = useState(false);
+  const copyConnectionInterrupted = useRef(false);
   const copyStates = useRef(new Map<string, CloudCopy['state']>());
   const copyOperations = useRef(new Map<string, string>());
   const changedCallback = useRef(onChanged);
@@ -176,6 +236,7 @@ export function DriveWorkspace({
         );
         setCopyStatusError(false);
         if (completed) {
+          session.data.clear();
           setRevision((value) => value + 1);
           changedCallback.current();
         }
@@ -193,6 +254,51 @@ export function DriveWorkspace({
     };
   }, [request]);
   useEffect(() => {
+    for (const copy of cloudCopies) {
+      onActivity({
+        id: `cloud-copy:${copy.id}`,
+        createdAt: copy.createdAt,
+        status:
+          copy.state === 'FAILED' || copy.syncStatus === 'ERROR' || copy.syncStatus === 'STOPPED'
+            ? 'error'
+            : copy.state === 'SAVING' || (copy.mode === 'SYNC' && copy.syncStatus !== 'SYNCED')
+              ? 'progress'
+              : 'success',
+        message:
+          copy.state === 'COMPLETED'
+            ? copy.mode === 'SYNC'
+              ? copy.syncStatus === 'ERROR' || copy.syncStatus === 'STOPPED'
+                ? `“${copy.name}”: ${copy.error ?? 'Sync has stopped. Check your linked device.'}`
+                : copy.syncStatus === 'WAITING'
+                  ? `“${copy.name}”: waiting for a linked device to sync files.`
+                  : copy.syncStatus === 'SYNCED'
+                    ? `“${copy.name}” is kept synced with your local folder.`
+                    : `Updating “${copy.name}” from your local folder…`
+              : `“${copy.name}” saved in My Drive.`
+            : copy.state === 'FAILED'
+              ? `Could not create “${copy.name}”. ${copy.error ?? 'Try Copy to cloud again.'}`
+              : copy.waiting
+                ? `Copying “${copy.name}”: waiting for files from a linked device. Keep a synced device online.`
+                : `Copying “${copy.name}” to My Drive…`,
+      });
+    }
+    if (copyStatusError && cloudCopies.some((copy) => copy.state === 'SAVING')) {
+      copyConnectionInterrupted.current = true;
+      onActivity({
+        id: 'cloud-copy-connection',
+        status: 'error',
+        message: 'Cloud copy progress is temporarily unavailable. Reconnecting…',
+      });
+    } else if (!copyStatusError && copyConnectionInterrupted.current) {
+      copyConnectionInterrupted.current = false;
+      onActivity({
+        id: 'cloud-copy-connection',
+        status: 'success',
+        message: 'Cloud copy progress is connected again.',
+      });
+    }
+  }, [cloudCopies, copyStatusError, onActivity]);
+  useEffect(() => {
     try {
       setGrid(localStorage.getItem('harbor-drive-view') === 'grid');
     } catch {}
@@ -208,42 +314,174 @@ export function DriveWorkspace({
     setCreating(false);
     setModal(null);
     setError('');
-    setNotice('');
     setFilters(defaultDriveFilters);
-  }, [parentId, query, scope]);
+  }, [parentId, query, scope, activeTab]);
+  const viewKey = JSON.stringify([userId, parentId, query, scope]);
+  const pages =
+    pageRequest.key === viewKey ? pageRequest.count : (session.views.get(viewKey)?.pages ?? 1);
+  const loadMore = useCallback(() => {
+    setPageRequest({ key: viewKey, count: pages + 1 });
+  }, [viewKey, pages]);
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
+    if (lastRefresh.current !== refreshKey || lastRevision.current !== revision) {
+      session.data.clear();
+      lastRefresh.current = refreshKey;
+      lastRevision.current = revision;
+    }
+    const cached = session.views.get(viewKey);
+    const sameView = loadedView.current === viewKey;
+    setLoading(!cached && !sameView);
+    if (cached) loadedView.current = viewKey;
     setLoadError('');
-    setItems([]);
-    setSyncStatuses({});
-    setSyncStatusError(false);
-    setSyncedFolders([]);
+    if (!sameView || cached) {
+      setItems(cached?.items ?? []);
+      setNextCursor(cached?.nextCursor ?? null);
+    }
+    if (!sameView) {
+      setSyncStatuses({});
+      setSyncStatusError(false);
+    }
+    if (!sameView || cached) {
+      setSyncedFolders(cached?.syncedFolders ?? []);
+      setBackupFolders(cached?.backupFolders ?? []);
+      setBackupRoots(cached?.backupRoots ?? []);
+    }
+    if (cached?.activeTab && parentId) setActiveTab(cached.activeTab);
     setSyncFoldersError(false);
-    let knownFolders: Item[] = [];
+    let knownFolders: Item[] = cached?.syncedFolders ?? (sameView ? syncedFolders : []);
+    let haveSyncCatalog = !!cached || sameView;
     const path =
       query && !(scope === 'folder' && parentId)
         ? `/v1/search?q=${encodeURIComponent(query)}`
         : `/v1/drive/folders/${encodeURIComponent(parentId ?? 'root')}/children`;
+    const read: Transport = (path, init) =>
+      session.data
+        .load(path, () => request(path))
+        .then((data) => {
+          init?.signal?.throwIfAborted();
+          return data;
+        });
+    async function readPages() {
+      const result: Item[] = [];
+      const seen = new Set<string>();
+      let next: string | null = null;
+      for (let page = 0; page < pages; page++) {
+        const data = await read(
+          path +
+            (next ? `${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(next)}` : ''),
+          { signal: controller.signal },
+        );
+        result.push(...data.items);
+        next = data.nextCursor ?? null;
+        if (!next) break;
+        if (seen.has(next)) throw new Error('Could not load the remaining files. Please retry.');
+        seen.add(next);
+      }
+      return {
+        items: [...new Map(result.map((item) => [item.id, item])).values()],
+        nextCursor: next,
+      };
+    }
     let fetching = false;
     async function update() {
       if (fetching) return;
       fetching = true;
+      setRefreshing(true);
+      const epoch = mutationEpoch.current;
       try {
-        const [driveResult, syncResult] = await Promise.allSettled([
-          pendingFolder ? [] : allItems(request, path, controller.signal),
-          allItems(request, '/v1/sync/folders', controller.signal),
+        const [driveResult, syncResult, backupsResult] = await Promise.allSettled([
+          pendingFolder ? { items: [], nextCursor: null } : readPages(),
+          allItems(read, '/v1/sync/folders', controller.signal),
+          allItems<BackupRoot>(read, '/v1/backups', controller.signal),
         ]);
         if (controller.signal.aborted) return;
         if (syncResult.status === 'fulfilled') {
           knownFolders = syncResult.value;
+          haveSyncCatalog = true;
           setSyncedFolders(knownFolders);
           setSyncFoldersError(false);
         } else {
           setSyncFoldersError(true);
+          if (!haveSyncCatalog) throw syncResult.reason;
         }
         if (driveResult.status === 'rejected') throw driveResult.reason;
-        const data = driveResult.value;
+        if (backupsResult.status === 'rejected') {
+          setCatalogError(true);
+          throw backupsResult.reason;
+        }
+        const roots = backupsResult.value.filter((root) => root.state !== 'REMOVED');
+        const backupMap = new Map(roots.map((root) => [root.remoteRootDriveItemId, root.id]));
+        const synced = new Set([...knownFolders.map((folder) => folder.id), ...syncedFolderIds]);
+        const ancestors = new Map<string, Item>(
+          driveResult.value.items.map((item) => [item.id, item]),
+        );
+        const classify = driveLocations(backupMap, synced, async (id) => {
+          const item = (await read(`/v1/drive/items/${id}`, { signal: controller.signal })).item;
+          ancestors.set(id, item);
+          return item;
+        });
+        const data = await Promise.all(
+          driveResult.value.items.map(async (item) => {
+            const category = await classify(item);
+            const syncDevices: NonNullable<Item['syncDevices']> = [];
+            let current: Item | undefined = item;
+            const seen = new Set<string>();
+            while (current && !seen.has(current.id)) {
+              seen.add(current.id);
+              syncDevices.push(
+                ...(knownFolders.find((folder) => folder.id === current!.id)?.syncDevices ?? []),
+              );
+              current = current.parentId ? ancestors.get(current.parentId) : undefined;
+            }
+            return { ...item, ...category, syncDevices };
+          }),
+        );
+        const archived = await Promise.all(
+          (activeTab === 'Backup' && separateFolders ? roots : []).map(async (root) => {
+            const item =
+              data.find((item) => item.id === root.remoteRootDriveItemId) ??
+              (
+                await read(`/v1/drive/items/${root.remoteRootDriveItemId}`, {
+                  signal: controller.signal,
+                })
+              ).item;
+            return { ...item, backupRootId: root.id, location: 'Backup' as const };
+          }),
+        );
+        let resolvedTab: DriveLocation | undefined;
+        if (parentId && !changingTab.current) {
+          const current = pendingFolder
+            ? { id: parentId, parentId: null }
+            : (await read(`/v1/drive/items/${parentId}`, { signal: controller.signal })).item;
+          const category = await classify(current);
+          resolvedTab = pendingFolder ? 'Sync' : category.location;
+          if (!controller.signal.aborted) setActiveTab(resolvedTab);
+        }
+        if (
+          controller.signal.aborted ||
+          epoch !== mutationEpoch.current ||
+          [...changesRef.current.values()].some((change) => change.pending)
+        )
+          return;
+        // Only an authoritative read started after the last save can retire optimistic changes.
+        changesRef.current = new Map();
+        setChanges(changesRef.current);
+        session.views.set(viewKey, {
+          items: data,
+          syncedFolders: knownFolders,
+          backupFolders: archived,
+          backupRoots: roots,
+          nextCursor: driveResult.value.nextCursor,
+          activeTab: resolvedTab,
+          pages,
+        });
+        loadedView.current = viewKey;
+        setNextCursor(driveResult.value.nextCursor);
+        if (!parentId) changingTab.current = false;
+        setBackupRoots(roots);
+        setBackupFolders(archived);
+        setCatalogError(false);
         setItems(data);
         setLoadError('');
         setSelected((previous) =>
@@ -261,20 +499,45 @@ export function DriveWorkspace({
         }
       } finally {
         fetching = false;
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     }
     void update();
     // Keep changes from other devices current without flashing a loading state.
-    const timer = window.setInterval(() => void update(), 15000);
-    const refreshOnFocus = () => void update();
+    const refreshOnFocus = () => {
+      if (document.visibilityState !== 'hidden') {
+        session.data.clear();
+        void update();
+      }
+    };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void update();
+    }, 15000);
     window.addEventListener('focus', refreshOnFocus);
+    window.addEventListener('online', refreshOnFocus);
     return () => {
       controller.abort();
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshOnFocus);
+      window.removeEventListener('online', refreshOnFocus);
     };
-  }, [request, parentId, query, scope, revision, refreshKey, pendingFolder, separateFolders]);
+  }, [
+    request,
+    parentId,
+    query,
+    scope,
+    revision,
+    refreshKey,
+    pendingFolder,
+    separateFolders,
+    session,
+    viewKey,
+    pages,
+    activeTab,
+  ]);
   const statusTargets = [...new Set([...items, ...syncedFolders].map((item) => item.id))]
     .sort()
     .join(',');
@@ -326,11 +589,22 @@ export function DriveWorkspace({
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [request, statusTargets, parentId, query, revision, refreshKey]);
-  const merged = [
-    ...new Map(
-      [...items, ...(separateFolders ? syncedFolders : [])].map((item) => [item.id, { ...item }]),
-    ).values(),
-  ];
+  const merged = applyOptimisticItems<Item>(
+    [
+      ...new Map(
+        [
+          ...items,
+          ...(separateFolders
+            ? syncedFolders.map((item) => ({ ...item, location: 'Sync' as const }))
+            : []),
+          ...(separateFolders ? backupFolders : []),
+        ].map((item) => [item.id, { ...item }]),
+      ).values(),
+    ],
+    changes,
+    parentId,
+    !!query,
+  );
   for (const item of merged) {
     const status = syncStatuses[item.id];
     if (!status) continue;
@@ -356,7 +630,7 @@ export function DriveWorkspace({
         (item) =>
           item.id === pending.id || (item.name === pending.name && item.type === pending.type),
       );
-      if (index < 0) merged.push(pending);
+      if (index < 0) merged.push({ ...pending, location: 'Sync' });
       else
         merged[index] = {
           ...merged[index],
@@ -369,13 +643,39 @@ export function DriveWorkspace({
     query && scope === 'folder' && parentId
       ? merged.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()))
       : merged;
-  const files = driveView(scoped, filters);
-  const cloudFiles = files.filter((item) => !syncIds.has(item.id));
-  const syncFiles = files.filter((item) => syncIds.has(item.id));
+  const files = driveView(
+    scoped.filter(
+      (item) =>
+        (item.backupRootId
+          ? 'Backup'
+          : (item.location ?? (syncIds.has(item.id) ? 'Sync' : 'Cloud'))) === activeTab,
+    ),
+    filters,
+  );
+  const canModify = (item: Item) => !item.backupRootId && !catalogError;
+  const canWriteHere =
+    !loading &&
+    !loadError &&
+    !catalogError &&
+    activeTab !== 'Backup' &&
+    (activeTab === 'Cloud' || !!parentId);
+  useEffect(() => {
+    onReadOnlyChange?.(!canWriteHere);
+  }, [canWriteHere, onReadOnlyChange]);
+  function changeTab(tab: DriveLocation) {
+    changingTab.current = true;
+    setActiveTab(tab);
+    setSelected([]);
+    setCreating(false);
+    onClearSearch();
+    onRoot();
+  }
   const selection = files.filter((item) => selected.includes(item.id));
-  const blocked = busy || selection.some((item) => item.localOnly);
+  const blocked = busy || selection.some((item) => item.localOnly || changes.get(item.id)?.pending);
   const canTrash = (item: Item) =>
-    !item.localOnly && (item.type !== 'FOLDER' || (!syncIds.has(item.id) && !syncFoldersError));
+    canModify(item) &&
+    !item.localOnly &&
+    (item.type !== 'FOLDER' || (!syncIds.has(item.id) && !syncFoldersError));
   const canTrashSelection = selection.length > 0 && selection.every(canTrash);
   const isSyncFolder = (item: Item) => item.type === 'FOLDER' && syncIds.has(item.id);
   const selectionHasSyncFolder = selection.some(isSyncFolder);
@@ -454,7 +754,9 @@ export function DriveWorkspace({
           setMoveFolders(
             data.filter(
               (item) =>
-                item.type === 'FOLDER' && !modal.items.some((selected) => selected.id === item.id),
+                item.type === 'FOLDER' &&
+                !item.backupRootId &&
+                !modal.items.some((selected) => selected.id === item.id),
             ),
           );
           setMoveLoading(false);
@@ -474,6 +776,8 @@ export function DriveWorkspace({
     try {
       await action();
       if (refresh) {
+        session.data.clear();
+        session.views.clear();
         setRevision((value) => value + 1);
         onChanged();
       }
@@ -486,6 +790,9 @@ export function DriveWorkspace({
     }
   }
   function show(mode: string, targets: Item[]) {
+    if (targets.some((item) => changesRef.current.get(item.id)?.pending)) return;
+    if (!['details', 'versions', 'disconnect-backup'].includes(mode) && !targets.every(canModify))
+      return;
     if (mode === 'trash' && !targets.every(canTrash)) return;
     if (mode === 'move' && targets.some(isSyncFolder)) return;
     if (mode === 'copy-cloud') {
@@ -493,9 +800,9 @@ export function DriveWorkspace({
       copyOperations.current = new Map(targets.map((item) => [item.id, operation().operationId]));
     }
     const active = document.activeElement;
-    const menuId = active?.closest('[role="menu"]')?.getAttribute('aria-labelledby');
-    modalReturnFocus.current = menuId
-      ? document.getElementById(menuId)
+    // A menu item unmounts with its menu, so return focus to the trigger that opened it.
+    modalReturnFocus.current = active?.closest('[role="menu"]')
+      ? document.querySelector<HTMLElement>('[aria-haspopup="menu"][aria-expanded="true"]')
       : active instanceof HTMLElement
         ? active
         : null;
@@ -503,22 +810,63 @@ export function DriveWorkspace({
     setMoveTrail([]);
     setModal({ mode, items: targets });
   }
-  function restoreModalFocus(event: Event) {
-    if (modalReturnFocus.current?.isConnected) {
-      event.preventDefault();
-      modalReturnFocus.current.focus();
-    }
+  const restoreModalFocus = () =>
+    modalReturnFocus.current?.isConnected ? modalReturnFocus.current : null;
+  async function optimistic(
+    targets: Item[],
+    transform: (item: Item) => Item,
+    save: (item: Item) => Promise<{ item?: Item } | unknown>,
+    done?: string,
+  ) {
+    if (targets.some((item) => changesRef.current.get(item.id)?.pending)) return;
+    setError('');
+    mutationEpoch.current++;
+    for (const item of targets)
+      changesRef.current.set(item.id, { item: transform(item), pending: true });
+    setChanges(new Map(changesRef.current));
+    session.data.clear();
+    session.views.clear();
+    const results = await Promise.allSettled(
+      targets.map(async (item) => {
+        try {
+          const result = (await save(item)) as { item?: Item } | undefined;
+          const next = result?.item ? { ...transform(item), ...result.item } : transform(item);
+          changesRef.current.set(item.id, { item: next, pending: false });
+        } catch (error) {
+          // Only this item is rolled back, including in a partially successful batch.
+          changesRef.current.delete(item.id);
+          throw new Error(`Could not save “${item.name}”. ${(error as Error).message}`);
+        } finally {
+          mutationEpoch.current++;
+          setChanges(new Map(changesRef.current));
+        }
+      }),
+    );
+    const errors = results.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason.message] : [],
+    );
+    if (errors.length) setError(errors.join(' '));
+    else if (done) setNotice(done);
+    session.data.clear();
+    session.views.clear();
+    // Preserve the currently visible folder while fresh data arrives.
+    setRevision((value) => value + 1);
+    onChanged();
   }
   async function favorite(targets: Item[]) {
-    await run(async () => {
-      for (const item of targets)
-        await request(`/v1/drive/items/${item.id}/favorite`, {
+    if (!targets.every(canModify)) return;
+    await optimistic(
+      targets,
+      (item) => ({ ...item, favorite: !item.favorite }),
+      (item) =>
+        request(`/v1/drive/items/${item.id}/favorite`, {
           method: item.favorite ? 'DELETE' : 'PUT',
           body: { ...operation(), baseRevision: item.revision },
-        });
-    });
+        }),
+    );
   }
   function openItem(item: Item) {
+    if (changesRef.current.get(item.id)?.pending) return;
     if (
       item.type === 'FILE' &&
       item.cloudState &&
@@ -552,6 +900,36 @@ export function DriveWorkspace({
     }
     if (mode === 'trash' && !targets.every(canTrash)) {
       setModal(null);
+      return;
+    }
+    if (['rename', 'move', 'trash'].includes(mode)) {
+      const destination = moveTrail.at(-1)?.id ?? null;
+      setModal(null);
+      setSelected([]);
+      await optimistic(
+        targets,
+        (item) => ({
+          ...item,
+          ...(mode === 'rename' ? { name: values.name } : {}),
+          ...(mode === 'move' ? { parentId: destination } : {}),
+          ...(mode === 'trash' ? { deletedAt: new Date().toISOString() } : {}),
+        }),
+        (item) =>
+          request(`/v1/drive/items/${item.id}${mode === 'move' ? '/move' : ''}`, {
+            method: mode === 'rename' ? 'PATCH' : mode === 'move' ? 'POST' : 'DELETE',
+            body: {
+              ...operation(),
+              baseRevision: item.revision,
+              ...(mode === 'rename' ? { name: values.name } : {}),
+              ...(mode === 'move' ? { parentId: destination } : {}),
+            },
+          }),
+        mode === 'trash'
+          ? `Moved ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`} to trash.`
+          : mode === 'move'
+            ? `Moved ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`} to ${moveTrail.at(-1)?.name ?? 'My Drive'}.`
+            : undefined,
+      );
       return;
     }
     const recipient = {
@@ -607,6 +985,10 @@ export function DriveWorkspace({
               method: 'POST',
               body: { ...base, parentId: moveTrail.at(-1)?.id ?? null },
             });
+          if (mode === 'disconnect-backup') {
+            if (onDisconnectBackup) await onDisconnectBackup(item);
+            else await request(`/v1/backups/${item.backupRootId}`, { method: 'DELETE' });
+          }
           if (mode === 'remove-sync') {
             if (onRemoveSync) await onRemoveSync(item);
             else await request(`/v1/sync/folders/${item.id}`, { method: 'DELETE' });
@@ -618,7 +1000,10 @@ export function DriveWorkspace({
     if (completed) {
       setModal(null);
       setSelected([]);
-      if (mode === 'remove-sync') {
+      if (mode === 'disconnect-backup') {
+        changeTab('Cloud');
+        setNotice('Backup disconnected. Its folder and versions are now in Cloud.');
+      } else if (mode === 'remove-sync') {
         const removed = new Set(targets.map((item) => item.id));
         setItems((previous) => previous.filter((item) => !removed.has(item.id)));
         setSyncedFolders((previous) => previous.filter((item) => !removed.has(item.id)));
@@ -628,66 +1013,72 @@ export function DriveWorkspace({
           mode === 'copy-cloud'
             ? 'Cloud copy started. You can keep using My Drive while it finishes.'
             : mode === 'send'
-              ? 'Files sent.'
-              : 'Changes saved.',
+              ? `Sent ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`}. Track it in Shared → Sent.`
+              : mode === 'share'
+                ? 'Access shared.'
+                : 'Changes saved.',
         );
     } else setRevision((value) => value + 1); // Reconcile successful items if a later operation failed.
   }
   function menu(item: Item) {
     return (
-      <Menu.Root>
-        <Menu.Trigger
-          className="icon-button"
-          aria-label={`Actions for ${item.name}`}
-          disabled={item.localOnly}
-        >
-          <MoreHorizontal size={18} />
-        </Menu.Trigger>
-        <Menu.Portal>
-          <Menu.Content className="dropdown" align="end" sideOffset={5}>
-            <Menu.Item onSelect={() => openItem(item)}>Open</Menu.Item>
-            <Menu.Separator />
-            <Menu.Item disabled={busy} onSelect={() => void download([item])}>
-              {item.type === 'FOLDER' ? 'Download as ZIP' : 'Download'}
-            </Menu.Item>
-            <Menu.Item onSelect={() => show('send', [item])}>Send</Menu.Item>
-            <Menu.Item onSelect={() => show('share', [item])}>Share</Menu.Item>
-            <Menu.Separator />
-            <Menu.Item onSelect={() => show('rename', [item])}>Rename</Menu.Item>
+      <ActionsMenu
+        label={`Actions for ${item.name}`}
+        disabled={item.localOnly || changes.get(item.id)?.pending}
+      >
+        <MenuItem onClick={() => openItem(item)}>Open</MenuItem>
+        <MenuSeparator />
+        {(!item.backupRootId || !canOpenDeviceCopy) && (
+          <MenuItem disabled={busy} onClick={() => void download([item])}>
+            {item.type === 'FOLDER' ? 'Download as ZIP' : 'Download'}
+          </MenuItem>
+        )}
+        {canModify(item) && (
+          <>
+            <MenuItem onClick={() => show('send', [item])}>Send</MenuItem>
+            <MenuSeparator />
+            <MenuItem onClick={() => show('rename', [item])}>Rename</MenuItem>
             {isSyncFolder(item) ? (
-              <Menu.Item disabled={busy} onSelect={() => show('copy-cloud', [item])}>
+              <MenuItem disabled={busy} onClick={() => show('copy-cloud', [item])}>
                 Copy to cloud
-              </Menu.Item>
+              </MenuItem>
             ) : (
-              <Menu.Item onSelect={() => show('move', [item])}>Move</Menu.Item>
+              <MenuItem onClick={() => show('move', [item])}>Move</MenuItem>
             )}
-            <Menu.Item onSelect={() => void favorite([item])}>
-              {item.favorite ? 'Remove favorite' : 'Add to favorites'}
-            </Menu.Item>
-            <Menu.Separator />
-            <Menu.Item onSelect={() => show('details', [item])}>View details</Menu.Item>
-            {item.type === 'FILE' && (
-              <Menu.Item onSelect={() => show('versions', [item])}>Version history</Menu.Item>
+            {!isSyncFolder(item) && (
+              <MenuItem onClick={() => void favorite([item])}>
+                {item.favorite ? 'Remove favorite' : 'Add to favorites'}
+              </MenuItem>
             )}
-            <Menu.Separator />
-            {item.type === 'FOLDER' && syncIds.has(item.id) && (
-              <Menu.Item onSelect={() => show('remove-sync', [item])}>Remove from sync</Menu.Item>
-            )}
-            {canTrash(item) && (
-              <Menu.Item className="danger-text" onSelect={() => show('trash', [item])}>
-                Move to trash
-              </Menu.Item>
-            )}
-          </Menu.Content>
-        </Menu.Portal>
-      </Menu.Root>
+            <MenuSeparator />
+          </>
+        )}
+        <MenuItem onClick={() => show('details', [item])}>View details</MenuItem>
+        {item.type === 'FILE' && (
+          <MenuItem onClick={() => show('versions', [item])}>Version history</MenuItem>
+        )}
+        <MenuSeparator />
+        {backupRoots.some((root) => root.remoteRootDriveItemId === item.id) && (
+          <MenuItem onClick={() => show('disconnect-backup', [item])}>Disconnect backup</MenuItem>
+        )}
+        {canModify(item) && item.type === 'FOLDER' && syncIds.has(item.id) && (
+          <MenuItem tone="danger" onClick={() => show('remove-sync', [item])}>
+            Remove from sync
+          </MenuItem>
+        )}
+        {canTrash(item) && (
+          <MenuItem tone="danger" onClick={() => show('trash', [item])}>
+            Move to trash
+          </MenuItem>
+        )}
+      </ActionsMenu>
     );
   }
   function renderFiles(entries: Item[], label = 'Drive files') {
     return (
       <>
         {syncStatusError && (
-          <p className="muted" role="status">
+          <p className="muted drive-feedback" role="status">
             Sync status is temporarily unavailable.
           </p>
         )}
@@ -700,21 +1091,36 @@ export function DriveWorkspace({
           selected={selected}
           onSelectionChange={setSelected}
           onOpen={openItem}
-          canOpen={(item) => !item.localOnly || item.type === 'FOLDER'}
+          canOpen={(item) =>
+            !changes.get(item.id)?.pending && (!item.localOnly || item.type === 'FOLDER')
+          }
           renderActions={menu}
           statusColumn={
             label.startsWith('Synced folders') || entries.some((item) => !!item.syncStatus)
           }
           renderStatus={(item) =>
-            item.syncStatus && (
-              <span
-                className={`drive-sync-status ${item.syncStatus === 'Synced' ? 'is-synced' : item.syncStatus === 'Syncing' ? 'is-syncing' : ''}`}
-                title={item.syncDetail}
-                aria-label={item.syncStatus + ' — ' + (item.syncDetail ?? '')}
-              >
-                {item.syncStatus}
-                {item.syncProgress !== undefined ? ` · ${item.syncProgress}%` : ''}
-              </span>
+            changes.get(item.id)?.pending ? (
+              <Badge className="drive-sync-status" role="status">
+                Saving…
+              </Badge>
+            ) : (
+              item.syncStatus && (
+                <Badge
+                  tone={
+                    item.syncStatus === 'Synced'
+                      ? 'success'
+                      : item.syncStatus === 'Syncing'
+                        ? 'accent'
+                        : 'neutral'
+                  }
+                  className={`drive-sync-status ${item.syncStatus === 'Synced' ? 'is-synced' : item.syncStatus === 'Syncing' ? 'is-syncing' : ''}`}
+                  title={item.syncDetail}
+                  aria-label={item.syncStatus + ' — ' + (item.syncDetail ?? '')}
+                >
+                  {item.syncStatus}
+                  {item.syncProgress !== undefined ? ` · ${item.syncProgress}%` : ''}
+                </Badge>
+              )
             )
           }
         />
@@ -722,48 +1128,36 @@ export function DriveWorkspace({
     );
   }
   function renderSections() {
+    const title =
+      activeTab === 'Backup'
+        ? 'Backup folders'
+        : activeTab === 'Sync'
+          ? 'Synced folders'
+          : 'Cloud files';
     return (
-      <div className="drive-sections">
-        {[
-          {
-            title: syncFoldersError ? 'Files' : 'Cloud files',
-            entries: cloudFiles,
-            empty: syncFoldersError ? 'No files' : 'No cloud files',
-          },
-          { title: 'Synced folders', entries: syncFiles, empty: 'No synced folders' },
-        ].map(({ title, entries, empty }) => (
-          <section className="drive-section" aria-label={title} key={title}>
-            <div className="drive-section-heading">
-              <h2>{title}</h2>
-              <span>
-                {entries.length}{' '}
-                {title === 'Synced folders'
-                  ? entries.length === 1
-                    ? 'folder'
-                    : 'folders'
-                  : entries.length === 1
-                    ? 'item'
-                    : 'items'}
-              </span>
-            </div>
-            {title === 'Synced folders' && syncFoldersError && (
-              <div className="drive-feedback" role="status">
-                <span>Sync folder status is unavailable. Your files are still accessible.</span>{' '}
-                <Button variant="ghost" size="sm" onClick={() => setRevision((value) => value + 1)}>
-                  Retry sync folder status
-                </Button>
-              </div>
-            )}
-            {entries.length ? (
-              renderFiles(entries, `${title} table`)
-            ) : title === 'Synced folders' && syncFoldersError ? null : (
-              <p className="drive-section-empty">
-                {filters.type !== 'all' || filters.modified !== 'all' ? 'No matching items' : empty}
-              </p>
-            )}
-          </section>
-        ))}
-      </div>
+      <section className="drive-section" aria-label={title}>
+        <div className="sr-only">
+          <h2>{title}</h2>
+          <span>{files.length} items</span>
+        </div>
+        {activeTab === 'Sync' && syncFoldersError && (
+          <Alert
+            tone="warning"
+            action={
+              <Button
+                variant="link"
+                aria-label="Retry sync folder status"
+                onClick={() => setRevision((value) => value + 1)}
+              >
+                Retry
+              </Button>
+            }
+          >
+            Sync folders could not be loaded.
+          </Alert>
+        )}
+        {renderFiles(files, `${title} table`)}
+      </section>
     );
   }
   return (
@@ -778,7 +1172,12 @@ export function DriveWorkspace({
         )
           return;
         if (event.key === 'Escape') setSelected([]);
-        if (event.key === 'F2' && selection.length === 1 && !blocked) {
+        if (
+          event.key === 'F2' &&
+          selection.length === 1 &&
+          !blocked &&
+          selection.every(canModify)
+        ) {
           event.preventDefault();
           show('rename', selection);
         }
@@ -808,113 +1207,92 @@ export function DriveWorkspace({
         event.stopPropagation();
         dragDepth.current = 0;
         setDragging(false);
-        if (!pendingFolder && event.dataTransfer.files.length)
+        if (canWriteHere && !pendingFolder && event.dataTransfer.files.length)
           void run(() => onDropFiles(Array.from(event.dataTransfer.files)));
       }}
     >
-      <div className="page-heading drive-heading">
-        <h1>{query ? 'Search results' : 'My Drive'}</h1>
-        <div className="heading-actions">
-          <Button
-            variant="outline"
-            disabled={busy || pendingFolder}
-            onClick={() => setCreating(true)}
-          >
-            <Plus size={16} />
-            New folder
-          </Button>
-          <Button disabled={busy || pendingFolder} onClick={onUpload}>
-            <ArrowUpFromLine size={16} />
-            Upload files
-          </Button>
-        </div>
-      </div>
-      <nav className="breadcrumbs drive-breadcrumbs" aria-label="Drive location">
-        {breadcrumbs}
-      </nav>
-      {query && (
-        <div className="drive-search-scope">
-          <span>Results for “{query}”</span>
-          {parentId && (
-            <select
-              aria-label="Search scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value)}
+      <Tabs className="drive-tabs" value={activeTab} onValueChange={changeTab}>
+        <div className="page-heading drive-heading">
+          <div className="drive-title">
+            <h1>{query ? 'Search results' : 'My Drive'}</h1>
+            <TabList className="drive-location-tabs" aria-label="Drive storage locations">
+              {(['Cloud', 'Backup', 'Sync'] as const).map((tab) => (
+                <Tab key={tab} value={tab} id={`drive-tab-${tab}`}>
+                  {tab}
+                </Tab>
+              ))}
+            </TabList>
+          </div>
+          <div className="heading-actions">
+            <Button
+              variant="outline"
+              disabled={busy || pendingFolder || !canWriteHere}
+              onClick={() => setCreating(true)}
             >
-              <option value="all">Search all files</option>
-              <option value="folder">Search this folder</option>
-            </select>
-          )}
-          <button onClick={onClearSearch} aria-label="Clear search">
-            <X size={16} />
-          </button>
+              <Plus />
+              New folder
+            </Button>
+            <Button disabled={busy || pendingFolder || !canWriteHere} onClick={onUpload}>
+              <ArrowUpFromLine />
+              Upload files
+            </Button>
+          </div>
         </div>
-      )}
-      {storage &&
-        storage.quotaBytes > 0 &&
-        (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.9 && (
-          <div className="drive-capacity" role="status">
-            <span>
-              {fileSize(storage.usedBytes)} of {fileSize(storage.quotaBytes)} used. You’re running
-              low on storage.
-            </span>
-            <button onClick={onManageStorage}>Manage storage</button>
+        {parentId && (
+          <nav className="breadcrumbs drive-breadcrumbs" aria-label="Drive location">
+            {breadcrumbs}
+          </nav>
+        )}
+        {query && (
+          <div className="drive-search-scope">
+            <span>Results for “{query}”</span>
+            {parentId && (
+              <Select
+                aria-label="Search scope"
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+              >
+                <option value="all">Search all files</option>
+                <option value="folder">Search this folder</option>
+              </Select>
+            )}
+            <Button variant="ghost" size="icon" onClick={onClearSearch} aria-label="Clear search">
+              <X />
+            </Button>
           </div>
         )}
-      {loadError && (
-        <p className="error" role="alert">
-          {loadError}
-        </p>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="drive-feedback" role="status">
-          {notice}
-        </p>
-      )}
-      {cloudCopies.map((copy) => (
-        <p
-          className={copy.state === 'FAILED' ? 'error' : 'drive-feedback'}
-          role="status"
-          key={copy.id}
-        >
-          {copy.state === 'COMPLETED'
-            ? copy.mode === 'SYNC'
-              ? copy.syncStatus === 'ERROR' || copy.syncStatus === 'STOPPED'
-                ? `“${copy.name}”: ${copy.error}`
-                : copy.syncStatus === 'WAITING'
-                  ? `“${copy.name}”: waiting for a linked device to sync files.`
-                  : copy.syncStatus === 'SYNCED'
-                    ? `“${copy.name}” is kept synced with your local folder.`
-                    : `Updating “${copy.name}” from your local folder…`
-              : `“${copy.name}” saved in My Drive.`
-            : copy.state === 'FAILED'
-              ? `Could not create “${copy.name}”. ${copy.error ?? 'Try Copy to cloud again.'}`
-              : copy.waiting
-                ? `Copying “${copy.name}”: waiting for files from a linked device. Keep a synced device online.`
-                : `Copying “${copy.name}” to My Drive…`}
-        </p>
-      ))}
-      {copyStatusError && cloudCopies.some((copy) => copy.state === 'SAVING') && (
-        <p role="status" className="muted">
-          Cloud copy progress is temporarily unavailable. Reconnecting…
-        </p>
-      )}
-      <div className="drive-toolbar">
-        {selection.length ? (
-          <>
-            <strong aria-live="polite">{selection.length} selected</strong>
-            <div className="drive-selection-actions">
-              {['Download', 'Send', 'Share', ...(selectionHasSyncFolder ? [] : ['Move'])].map(
-                (label) => (
+        {storage &&
+          storage.quotaBytes > 0 &&
+          (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.9 && (
+            <Alert
+              tone="warning"
+              className="drive-capacity"
+              action={
+                <Button variant="link" onClick={onManageStorage}>
+                  Manage storage
+                </Button>
+              }
+            >
+              {fileSize(storage.usedBytes)} of {fileSize(storage.quotaBytes)} used. You’re running
+              low on storage.
+            </Alert>
+          )}
+        {loadError && <Alert tone="error">{loadError}</Alert>}
+        {error && <Alert tone="error">{error}</Alert>}
+        <div className="drive-toolbar">
+          {selection.length ? (
+            <>
+              <strong aria-live="polite">{selection.length} selected</strong>
+              <div className="drive-selection-actions">
+                {[
+                  ...(!canOpenDeviceCopy || selection.every(canModify) ? ['Download'] : []),
+                  ...(selection.every(canModify)
+                    ? ['Send', ...(selectionHasSyncFolder ? [] : ['Move'])]
+                    : []),
+                ].map((label) => (
                   <Button
                     key={label}
                     variant="ghost"
-                    size="sm"
                     disabled={blocked}
                     onClick={() =>
                       label === 'Download'
@@ -922,102 +1300,130 @@ export function DriveWorkspace({
                         : show(label.toLowerCase(), selection)
                     }
                   >
+                    {label === 'Download' ? (
+                      <Download aria-hidden="true" />
+                    ) : label === 'Send' ? (
+                      <Send aria-hidden="true" />
+                    ) : (
+                      <FolderInput aria-hidden="true" />
+                    )}
                     {label}
                   </Button>
-                ),
-              )}
-              {selection.every(isSyncFolder) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={blocked}
-                  onClick={() => show('copy-cloud', selection)}
-                >
-                  Copy to cloud
-                </Button>
-              )}
-              {canTrashSelection && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={blocked}
-                  onClick={() => show('trash', selection)}
-                >
-                  Delete
-                </Button>
-              )}
-              <Menu.Root>
-                <Menu.Trigger className="icon-button" aria-label="More selection actions">
-                  <MoreHorizontal size={17} />
-                </Menu.Trigger>
-                <Menu.Portal>
-                  <Menu.Content className="dropdown">
-                    <Menu.Item disabled={blocked} onSelect={() => void favorite(selection)}>
-                      Toggle favorites
-                    </Menu.Item>
-                    {selection.length === 1 && (
-                      <>
-                        <Menu.Item disabled={blocked} onSelect={() => show('rename', selection)}>
-                          Rename
-                        </Menu.Item>
-                        <Menu.Item disabled={blocked} onSelect={() => show('details', selection)}>
-                          View details
-                        </Menu.Item>
-                      </>
-                    )}
-                  </Menu.Content>
-                </Menu.Portal>
-              </Menu.Root>
-            </div>
-            <button
-              className="icon-button"
-              onClick={() => setSelected([])}
-              aria-label="Clear selection"
-            >
-              <X size={17} />
-            </button>
-          </>
-        ) : (
-          <>
-            <span className="drive-item-count">
-              {loading ? 'Loading…' : `${files.length} items`}
-            </span>
-            <div className="drive-filters">
-              <select
-                aria-label="Filter by type"
-                value={filters.type}
-                onChange={(e) => {
-                  setSelected([]);
-                  setFilters({ ...filters, type: e.target.value });
-                }}
+                ))}
+                {selection.every(isSyncFolder) && (
+                  <Button
+                    variant="ghost"
+                    disabled={blocked}
+                    onClick={() => show('copy-cloud', selection)}
+                  >
+                    <CloudUpload aria-hidden="true" />
+                    Copy to cloud
+                  </Button>
+                )}
+                {canTrashSelection && (
+                  <Button
+                    variant="ghost"
+                    disabled={blocked}
+                    onClick={() => show('trash', selection)}
+                  >
+                    <Trash2 aria-hidden="true" />
+                    Move to trash
+                  </Button>
+                )}
+                <ActionsMenu label="More selection actions" className="drive-selection-menu">
+                  {!selectionHasSyncFolder && (
+                    <MenuItem
+                      disabled={blocked || !selection.every(canModify)}
+                      onClick={() => void favorite(selection)}
+                    >
+                      <Star aria-hidden="true" /> Toggle favorites
+                    </MenuItem>
+                  )}
+                  {selection.length === 1 && (
+                    <>
+                      <MenuItem
+                        disabled={blocked || !selection.every(canModify)}
+                        onClick={() => show('rename', selection)}
+                      >
+                        <Pencil aria-hidden="true" /> Rename
+                      </MenuItem>
+                      <MenuItem disabled={blocked} onClick={() => show('details', selection)}>
+                        <Info aria-hidden="true" /> View details
+                      </MenuItem>
+                    </>
+                  )}
+                </ActionsMenu>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="drive-clear-selection"
+                onClick={() => setSelected([])}
+                aria-label="Clear selection"
               >
-                <option value="all">Type · All</option>
-                <option value="folders">Folders</option>
-                <option value="files">Files</option>
-                <option value="image">Images</option>
-                <option value="video">Videos</option>
-                <option value="audio">Audio</option>
-              </select>
-              <select
-                aria-label="Filter by modified date"
-                value={filters.modified}
-                onChange={(e) => {
-                  setSelected([]);
-                  setFilters({ ...filters, modified: e.target.value });
-                }}
-              >
-                <option value="all">Modified · Any time</option>
-                <option value="1">Last 24 hours</option>
-                <option value="7">Last 7 days</option>
-                <option value="30">Last 30 days</option>
-              </select>
-              <Menu.Root>
-                <Menu.Trigger className="drive-sort">
-                  Sort <ChevronDown size={13} />
-                </Menu.Trigger>
-                <Menu.Portal>
-                  <Menu.Content className="dropdown" align="end">
-                    <Menu.RadioGroup
+                <X />
+              </Button>
+            </>
+          ) : (
+            <>
+              <span className="drive-item-count">
+                {loading
+                  ? 'Loading…'
+                  : `${files.length}${nextCursor ? '+' : ''} ${files.length === 1 ? 'item' : 'items'}`}
+              </span>
+              <div className="drive-filters">
+                <Select
+                  aria-label="Filter by type"
+                  active={filters.type !== 'all'}
+                  value={filters.type}
+                  onChange={(e) => {
+                    setSelected([]);
+                    setFilters({ ...filters, type: e.target.value });
+                  }}
+                >
+                  <option value="all">Type: All items</option>
+                  <option value="folders">Type: Folders</option>
+                  <option value="files">Type: Files</option>
+                  <option value="image">Type: Images</option>
+                  <option value="video">Type: Videos</option>
+                  <option value="audio">Type: Audio</option>
+                </Select>
+                <Select
+                  aria-label="Filter by modified date"
+                  active={filters.modified !== 'all'}
+                  value={filters.modified}
+                  onChange={(e) => {
+                    setSelected([]);
+                    setFilters({ ...filters, modified: e.target.value });
+                  }}
+                >
+                  <option value="all">Modified: Any time</option>
+                  <option value="1">Modified: Last 24 hours</option>
+                  <option value="7">Modified: Last 7 days</option>
+                  <option value="30">Modified: Last 30 days</option>
+                </Select>
+                <Menu>
+                  <MenuTrigger
+                    render={<Button variant="outline" className="drive-sort" />}
+                    aria-label="Sort"
+                  >
+                    Sort:{' '}
+                    {
+                      {
+                        'name-asc': 'Name, A–Z',
+                        'name-desc': 'Name, Z–A',
+                        'size-asc': 'Size, smallest first',
+                        'size-desc': 'Size, largest first',
+                        'created-asc': 'Created, oldest first',
+                        'created-desc': 'Created, newest first',
+                        'modified-asc': 'Modified, oldest first',
+                        'modified-desc': 'Modified, newest first',
+                      }[filters.sort]
+                    }
+                    <ChevronDown className="drive-sort-chevron" />
+                  </MenuTrigger>
+                  <MenuContent align="start">
+                    <MenuRadioGroup
                       value={filters.sort}
                       onValueChange={(sort) => setFilters({ ...filters, sort })}
                     >
@@ -1031,183 +1437,249 @@ export function DriveWorkspace({
                         ['created-desc', 'Created, newest first'],
                         ['created-asc', 'Created, oldest first'],
                       ].map(([value, label]) => (
-                        <Menu.RadioItem key={value} value={value}>
-                          <span className="drive-menu-check">
-                            {filters.sort === value ? '✓' : ''}
-                          </span>
+                        <MenuRadioItem key={value} value={value}>
                           {label}
-                        </Menu.RadioItem>
+                        </MenuRadioItem>
                       ))}
-                    </Menu.RadioGroup>
-                    <Menu.Separator />
-                    <Menu.CheckboxItem
+                    </MenuRadioGroup>
+                    <MenuSeparator />
+                    <MenuCheckboxItem
                       checked={filters.foldersFirst}
                       onCheckedChange={(foldersFirst) => setFilters({ ...filters, foldersFirst })}
                     >
-                      {filters.foldersFirst ? '✓ ' : ''}Folders first
-                    </Menu.CheckboxItem>
-                    <Menu.CheckboxItem
+                      Folders first
+                    </MenuCheckboxItem>
+                    <MenuCheckboxItem
                       checked={filters.showSystem}
                       onCheckedChange={(showSystem) => setFilters({ ...filters, showSystem })}
                     >
-                      {filters.showSystem ? '✓ ' : ''}Show system files
-                    </Menu.CheckboxItem>
-                  </Menu.Content>
-                </Menu.Portal>
-              </Menu.Root>
-            </div>
-            <div className="view-switch">
-              <button aria-label="List view" aria-pressed={!grid} onClick={() => changeView(false)}>
-                <List size={17} />
-              </button>
-              <button aria-label="Grid view" aria-pressed={grid} onClick={() => changeView(true)}>
-                <LayoutGrid size={17} />
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-      {creating && (
-        <form
-          className="drive-new-folder"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const name = String(new FormData(event.currentTarget).get('name'));
-            void run(async () => {
-              const { item } = await request('/v1/drive/folders', {
-                method: 'POST',
-                body: { ...operation(), parentId, name },
-              });
-              focusId.current = item.id;
-              setSelected([item.id]);
-              setFilters(defaultDriveFilters);
-              setCreating(false);
-              if (query) onClearSearch();
-            });
-          }}
-        >
-          <Folder size={20} />
-          <Input
-            name="name"
-            aria-label="Folder name"
-            autoFocus
-            required
-            maxLength={240}
-            placeholder="Folder name"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') setCreating(false);
-            }}
-          />
-          <Button size="sm" disabled={busy}>
-            Create
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setCreating(false)}>
-            Cancel
-          </Button>
-        </form>
-      )}
-      <div ref={collection} className="drive-content">
-        {loading ? (
-          <div className="drive-collection">
-            <FileCollectionSkeleton compact grid={grid} />
-          </div>
-        ) : loadError && !files.length ? (
-          <FileLoadError onRetry={() => setRevision((value) => value + 1)} />
-        ) : files.length === 0 && !separateFolders ? (
-          <EmptyState
-            icon={<Folder />}
-            title={
-              query || filters.type !== 'all' || filters.modified !== 'all'
-                ? 'No matching files'
-                : 'This folder is empty'
-            }
-            description={
-              query || filters.type !== 'all' || filters.modified !== 'all'
-                ? 'Try a different search or reset your filters.'
-                : 'Upload files or create a folder to get started.'
-            }
-            actions={
-              query || filters.type !== 'all' || filters.modified !== 'all' ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setFilters(defaultDriveFilters);
-                    onClearSearch();
-                  }}
-                >
-                  Clear search and filters
-                </Button>
-              ) : (
-                <>
-                  <Button disabled={busy || pendingFolder} onClick={onUpload}>
-                    Upload files
+                      Show system files
+                    </MenuCheckboxItem>
+                  </MenuContent>
+                </Menu>
+                {(filters.type !== 'all' || filters.modified !== 'all') && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setSelected([]);
+                      setFilters({ ...filters, type: 'all', modified: 'all' });
+                    }}
+                  >
+                    Clear filters
                   </Button>
+                )}
+              </div>
+              <Segmented
+                label="View"
+                className="view-switch"
+                value={grid ? 'grid' : 'list'}
+                onValueChange={(view) => changeView(view === 'grid')}
+                options={[
+                  { value: 'list', label: 'List view', icon: <List />, iconOnly: true },
+                  { value: 'grid', label: 'Grid view', icon: <LayoutGrid />, iconOnly: true },
+                ]}
+              />
+            </>
+          )}
+        </div>
+        {creating && canWriteHere && (
+          <form
+            className="drive-new-folder"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const name = String(new FormData(event.currentTarget).get('name'));
+              const now = new Date().toISOString();
+              const temporary: Item = {
+                id: `pending:${crypto.randomUUID()}`,
+                parentId,
+                name,
+                normalizedName: name.toLowerCase(),
+                ownerUserId: userId ?? '',
+                type: 'FOLDER',
+                mimeType: null,
+                sizeBytes: 0,
+                currentVersionId: null,
+                revision: 0,
+                favorite: false,
+                createdAt: now,
+                updatedAt: now,
+                deletedAt: null,
+                location: activeTab,
+                localOnly: true,
+              };
+              setCreating(false);
+              setFilters(defaultDriveFilters);
+              if (query) onClearSearch();
+              void optimistic(
+                [temporary],
+                (item) => item,
+                async () => {
+                  const { item } = await request('/v1/drive/folders', {
+                    method: 'POST',
+                    body: { ...operation(), parentId, name },
+                  });
+                  focusId.current = item.id;
+                  setSelected([item.id]);
+                  return { item: { ...item, localOnly: false, location: activeTab } };
+                },
+              );
+            }}
+          >
+            <span className="file-entry-icon" data-kind="folder">
+              <Folder aria-hidden="true" />
+            </span>
+            <Input
+              name="name"
+              aria-label="Folder name"
+              autoFocus
+              required
+              maxLength={240}
+              placeholder="Folder name"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setCreating(false);
+              }}
+            />
+            <Button disabled={busy}>Create</Button>
+            <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
+              Cancel
+            </Button>
+          </form>
+        )}
+        <TabPanel ref={collection} value={activeTab} className="drive-content" id="drive-files">
+          {loading ? (
+            <div className="drive-collection">
+              <FileCollectionSkeleton compact grid={grid} />
+            </div>
+          ) : (loadError || (activeTab === 'Sync' && syncFoldersError)) && !files.length ? (
+            <FileLoadError onRetry={() => setRevision((value) => value + 1)} />
+          ) : files.length === 0 ? (
+            <EmptyState
+              icon={<Folder />}
+              title={
+                query || filters.type !== 'all' || filters.modified !== 'all'
+                  ? 'No matching files'
+                  : activeTab === 'Backup' && !parentId
+                    ? 'No backup folders'
+                    : activeTab === 'Sync' && !parentId
+                      ? 'No synced folders'
+                      : parentId
+                        ? 'This folder is empty'
+                        : 'No files yet'
+              }
+              description={
+                query || filters.type !== 'all' || filters.modified !== 'all'
+                  ? 'Try a different search or reset your filters.'
+                  : activeTab === 'Backup'
+                    ? parentId
+                      ? 'Files appear here after their first backup.'
+                      : 'Your backed-up folders will appear here.'
+                    : activeTab === 'Sync'
+                      ? parentId
+                        ? 'Files will appear here when this folder syncs.'
+                        : 'Your synced folders will appear here.'
+                      : 'Upload files or create a folder to get started.'
+              }
+              actions={
+                query || filters.type !== 'all' || filters.modified !== 'all' ? (
                   <Button
                     variant="outline"
-                    disabled={busy || pendingFolder}
-                    onClick={() => setCreating(true)}
+                    onClick={() => {
+                      setFilters(defaultDriveFilters);
+                      onClearSearch();
+                    }}
                   >
-                    New folder
+                    Clear search and filters
                   </Button>
-                </>
-              )
-            }
-          />
-        ) : (
-          <>
-            {separateFolders ? renderSections() : renderFiles(files)}
-            {grid && (
-              <button
-                className="drive-select-all"
-                onClick={() => setSelected(files.map((item) => item.id))}
-              >
-                Select all files
-              </button>
-            )}
-          </>
+                ) : canWriteHere ? (
+                  <>
+                    <Button disabled={busy || pendingFolder || !canWriteHere} onClick={onUpload}>
+                      Upload files
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={busy || pendingFolder || !canWriteHere}
+                      onClick={() => setCreating(true)}
+                    >
+                      New folder
+                    </Button>
+                  </>
+                ) : undefined
+              }
+            />
+          ) : (
+            <>
+              {separateFolders ? renderSections() : renderFiles(files)}
+              {grid && (
+                <Button
+                  variant="link"
+                  className="drive-select-all"
+                  onClick={() => setSelected(files.map((item) => item.id))}
+                >
+                  Select all files
+                </Button>
+              )}
+            </>
+          )}
+          {nextCursor && !loading && (
+            <LoadMoreFiles loading={refreshing} error={!!loadError} onLoad={loadMore} />
+          )}
+        </TabPanel>
+        {onUploadFolder && canWriteHere && (
+          <Button variant="link" className="drive-folder-upload" onClick={onUploadFolder}>
+            Upload a folder
+          </Button>
         )}
-      </div>
-      {onUploadFolder && (
-        <button className="drive-folder-upload" onClick={onUploadFolder}>
-          Upload a folder
-        </button>
-      )}
-      {dragging && (
-        <div className="drive-drop-target" role="status">
-          <ArrowUpFromLine size={32} />
-          <strong>
-            {pendingFolder ? 'This folder is still syncing' : `Drop files to upload to ${location}`}
-          </strong>
-        </div>
-      )}
-      <Panel
-        open={modal?.mode === 'details'}
-        onOpenChange={(open) => {
-          if (!open) setModal(null);
-        }}
-      >
-        <DialogContent className="drive-details-panel" onCloseAutoFocus={restoreModalFocus}>
-          <DialogTitle>File details</DialogTitle>
-          <DialogDescription>Information about this item.</DialogDescription>
+        {dragging && (
+          <div className="drive-drop-target" role="status">
+            <ArrowUpFromLine size={32} />
+            <strong>
+              {!canWriteHere
+                ? 'Uploads are unavailable in this location'
+                : pendingFolder
+                  ? 'This folder is still syncing'
+                  : `Drop files to upload to ${location}`}
+            </strong>
+          </div>
+        )}
+        <Drawer
+          open={modal?.mode === 'details'}
+          onOpenChange={(open) => {
+            if (!open) setModal(null);
+          }}
+          className="drive-details-panel"
+          finalFocus={restoreModalFocus}
+          title="File details"
+          description="Information about this item."
+          footer={
+            modal?.mode === 'details' && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const item = modal.items[0];
+                  setModal(null);
+                  onOpen(item);
+                }}
+              >
+                Open
+              </Button>
+            )
+          }
+        >
           {modal?.mode === 'details' &&
             (() => {
               const item = modal.items[0];
               return (
                 <>
-                  <h2>{item.name}</h2>
-                  <dl>
+                  <h3 className="drive-details-name">{item.name}</h3>
+                  <dl className="details">
                     {[
                       ['Type', fileKind(item)],
                       ['Size', item.type === 'FOLDER' ? '—' : fileSize(item.sizeBytes)],
                       ['Location', detailLocation],
                       ['Created', fileDate(item.createdAt).full],
                       ['Modified', fileDate(item.updatedAt).full],
-                      ['Owner', item.ownerUserId === userId ? 'You' : item.ownerUserId],
+                      ['Owner', item.ownerUserId === userId ? 'You' : 'Shared with you'],
                       ['Sharing', sharing],
-                      ['Revision', String(item.revision)],
-                      ...(item.currentVersionId
-                        ? [['Current version', item.currentVersionId]]
-                        : []),
                     ].map(([label, value]) => (
                       <div key={label}>
                         <dt>{label}</dt>
@@ -1215,239 +1687,304 @@ export function DriveWorkspace({
                       </div>
                     ))}
                   </dl>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setModal(null);
-                      onOpen(item);
-                    }}
-                  >
-                    Open
-                  </Button>
                 </>
               );
             })()}
-        </DialogContent>
-      </Panel>
-      <Dialog
-        open={!!modal && modal.mode !== 'details'}
-        onCloseAutoFocus={restoreModalFocus}
-        onOpenChange={(open) => {
-          if (!open && !busy) setModal(null);
-        }}
-        title={
-          modal?.mode === 'copy-cloud'
-            ? 'Copy to cloud?'
-            : modal?.mode === 'remove-sync'
-              ? `Remove “${modal.items[0].name}” from sync?`
-              : modal?.mode === 'trash'
-                ? `Move ${modal.items.length === 1 ? modal.items[0].name : `${modal.items.length} items`} to trash?`
-                : modal?.mode === 'versions'
-                  ? 'Version history'
-                  : `${modal?.mode ? modal.mode[0].toUpperCase() + modal.mode.slice(1) : ''} ${modal?.items.length === 1 ? modal.items[0].name : `${modal?.items.length ?? 0} items`}`
-        }
-        description={
-          modal?.mode === 'copy-cloud'
-            ? 'Choose how this folder is copied to Cloud files in My Drive. Both options use your cloud storage. Keep a linked device online to provide files.'
-            : modal?.mode === 'remove-sync'
-              ? 'Stop syncing on all linked devices and remove this folder from the app. Local folders and files will stay where they are. Offline devices will stop syncing when they reconnect.'
-              : modal?.mode === 'trash'
-                ? 'You can restore these items from Trash.'
-                : modal?.mode === 'send'
-                  ? 'Send a copy to a person. They must sign in to receive it.'
-                  : modal?.mode === 'share'
-                    ? 'Give a registered person access to the original files.'
-                    : undefined
-        }
-      >
-        {modal?.mode === 'versions' ? (
-          <>
-            {metadataError ? (
-              <p role="alert">{metadataError}</p>
-            ) : versions === null ? (
-              <p role="status">Loading versions…</p>
-            ) : !versions.length ? (
-              <EmptyState
-                compact
-                icon={<Folder />}
-                title="No versions to show"
-                description="Saved versions will appear here when available."
-              />
-            ) : (
-              versions.map((version) => (
-                <div className="drive-version" key={version.id}>
-                  <span>
-                    Version {version.versionNumber}
-                    <small>
-                      {fileDate(version.createdAt).full} · {fileSize(version.sizeBytes)}
-                      {version.cloudState === 'RELEASED' ? ' · Cloud copy removed' : ''}
-                    </small>
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy || version.cloudState === 'RELEASED'}
-                    onClick={() => void run(() => onDownload(modal.items[0], version.id), false)}
-                  >
-                    Download
-                  </Button>
-                  {version.id !== modal.items[0].currentVersionId && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={busy || version.cloudState === 'RELEASED'}
-                      onClick={() =>
-                        void run(async () => {
-                          await request(
-                            `/v1/drive/items/${modal.items[0].id}/versions/${version.id}/restore`,
-                            {
-                              method: 'POST',
-                              body: { ...operation(), baseRevision: modal.items[0].revision },
-                            },
-                          );
+        </Drawer>
+        <Dialog
+          open={!!modal && modal.mode !== 'details'}
+          finalFocus={restoreModalFocus}
+          onOpenChange={(open) => {
+            if (!open && !busy) setModal(null);
+          }}
+          title={
+            modal?.mode === 'disconnect-backup'
+              ? 'Disconnect backup?'
+              : modal?.mode === 'copy-cloud'
+                ? 'Copy to cloud?'
+                : modal?.mode === 'remove-sync'
+                  ? `Remove “${modal.items[0].name}” from sync?`
+                  : modal?.mode === 'trash'
+                    ? `Move ${modal.items.length === 1 ? modal.items[0].name : `${modal.items.length} items`} to trash?`
+                    : modal?.mode === 'versions'
+                      ? 'Version history'
+                      : `${modal?.mode ? modal.mode[0].toUpperCase() + modal.mode.slice(1) : ''} ${modal?.items.length === 1 ? modal.items[0].name : `${modal?.items.length ?? 0} items`}`
+          }
+          description={
+            modal?.mode === 'disconnect-backup'
+              ? 'Stop backing up this folder. All archived files and versions will remain in Cloud and become editable. Local files stay where they are.'
+              : modal?.mode === 'copy-cloud'
+                ? 'Choose how this folder is copied to Cloud files in My Drive. Both options use your cloud storage. Keep a linked device online to provide files.'
+                : modal?.mode === 'remove-sync'
+                  ? 'Stop syncing on all linked devices and remove this folder from the app. Local folders and files will stay where they are. Offline devices will stop syncing when they reconnect.'
+                  : modal?.mode === 'trash'
+                    ? `You can restore ${modal.items.length === 1 ? 'this item' : 'these items'} from Trash.`
+                    : modal?.mode === 'send'
+                      ? 'Send a copy to a person. They must sign in to receive it.'
+                      : modal?.mode === 'share'
+                        ? 'Give a registered person access to the original files.'
+                        : undefined
+          }
+        >
+          {modal?.mode === 'versions' ? (
+            <>
+              {error && <Alert tone="error">{error}</Alert>}
+              {metadataError ? (
+                <Alert tone="error">{metadataError}</Alert>
+              ) : versions === null ? (
+                <p role="status">Loading versions…</p>
+              ) : !versions.length ? (
+                <EmptyState
+                  compact
+                  icon={<Folder />}
+                  title="No versions to show"
+                  description="Saved versions will appear here when available."
+                />
+              ) : (
+                versions.map((version) => (
+                  <div className="list-row drive-version" key={version.id}>
+                    <span className="list-row-text">
+                      <strong>Version {version.versionNumber}</strong>
+                      <small>
+                        {fileDate(version.createdAt).full} · {fileSize(version.sizeBytes)}
+                        {version.cloudState === 'RELEASED' ? ' · Cloud copy removed' : ''}
+                      </small>
+                    </span>
+                    {(!modal.items[0].backupRootId || !canOpenDeviceCopy) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy || version.cloudState === 'RELEASED'}
+                        onClick={() =>
+                          void run(() => onDownload(modal.items[0], version.id), false)
+                        }
+                      >
+                        Download
+                      </Button>
+                    )}
+                    {modal.items[0].backupRootId && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => {
+                          setBackupRestore({
+                            item: modal.items[0],
+                            versionId: version.id,
+                            createdAt: version.createdAt,
+                            id: crypto.randomUUID(),
+                          });
                           setModal(null);
-                        })
-                      }
-                    >
-                      Restore
-                    </Button>
-                  )}
-                </div>
-              ))
-            )}
-          </>
-        ) : (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submit(
-                Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>,
-              );
-            }}
-          >
-            {modal?.mode === 'copy-cloud' && (
-              <fieldset className="cloud-copy-options">
-                <legend>Copy options</legend>
-                <label>
-                  <input type="radio" name="copyMode" value="SNAPSHOT" defaultChecked />
-                  <span>
-                    <strong>One-time snapshot</strong>
-                    <small>
-                      Copy the current contents once. Future sync changes will not affect the copy.
-                    </small>
-                  </span>
-                </label>
-                <label>
-                  <input type="radio" name="copyMode" value="SYNC" />
-                  <span>
-                    <strong>Keep synced</strong>
-                    <small>
-                      Local additions, edits, renames, and deletions update the cloud copy. Cloud
-                      edits do not change the local folder.
-                    </small>
-                  </span>
-                </label>
-              </fieldset>
-            )}
-            {modal?.mode === 'rename' && (
-              <label>
-                Name
-                <Input name="name" required maxLength={240} defaultValue={modal.items[0].name} />
-              </label>
-            )}
-            {['send', 'share'].includes(modal?.mode ?? '') && (
-              <label>
-                To
-                <Input name="recipient" placeholder="@username or email" required />
-              </label>
-            )}
-            {modal?.mode === 'share' && (
-              <label>
-                Permission
-                <select name="permission">
-                  <option value="VIEWER">Can view</option>
-                  <option value="EDITOR">Can edit</option>
-                </select>
-              </label>
-            )}
-            {modal?.mode === 'move' && (
-              <div className="drive-move-picker">
-                <nav className="breadcrumbs" aria-label="Destination">
-                  <button type="button" onClick={() => setMoveTrail([])}>
-                    My Drive
-                  </button>
-                  {moveTrail.map((entry, index) => (
-                    <span key={entry.id}>
-                      <ChevronRight size={13} />
+                        }}
+                      >
+                        Restore locally
+                      </Button>
+                    )}
+                    {!modal.items[0].backupRootId &&
+                      version.id !== modal.items[0].currentVersionId && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busy || version.cloudState === 'RELEASED'}
+                          onClick={() =>
+                            void run(async () => {
+                              await request(
+                                `/v1/drive/items/${modal.items[0].id}/versions/${version.id}/restore`,
+                                {
+                                  method: 'POST',
+                                  body: { ...operation(), baseRevision: modal.items[0].revision },
+                                },
+                              );
+                              setModal(null);
+                              setNotice(
+                                `Restored version ${version.versionNumber} of ${modal.items[0].name}.`,
+                              );
+                            })
+                          }
+                        >
+                          Restore
+                        </Button>
+                      )}
+                  </div>
+                ))
+              )}
+            </>
+          ) : (
+            <form
+              className="form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submit(
+                  Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>,
+                );
+              }}
+            >
+              {modal?.mode === 'copy-cloud' && (
+                <fieldset className="choice-list cloud-copy-options">
+                  <legend>Copy options</legend>
+                  <label className="choice">
+                    <Radio name="copyMode" value="SNAPSHOT" defaultChecked />
+                    <span>
+                      <strong>One-time snapshot</strong>
+                      <small>
+                        Copy the current contents once. Future sync changes will not affect the
+                        copy.
+                      </small>
+                    </span>
+                  </label>
+                  <label className="choice">
+                    <Radio name="copyMode" value="SYNC" />
+                    <span>
+                      <strong>Keep synced</strong>
+                      <small>
+                        Local additions, edits, renames, and deletions update the cloud copy. Cloud
+                        edits do not change the local folder.
+                      </small>
+                    </span>
+                  </label>
+                </fieldset>
+              )}
+              {modal?.mode === 'rename' && (
+                <Field label="Name">
+                  <Input
+                    name="name"
+                    required
+                    maxLength={240}
+                    defaultValue={modal.items[0].name}
+                    onFocus={(event) => {
+                      // Select the name without its extension so typing replaces only the name.
+                      const input = event.currentTarget;
+                      const dot =
+                        modal.items[0].type === 'FILE' ? input.value.lastIndexOf('.') : -1;
+                      input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+                    }}
+                  />
+                </Field>
+              )}
+              {['send', 'share'].includes(modal?.mode ?? '') && (
+                <Field label="To">
+                  <Input name="recipient" placeholder="@username or email" required />
+                </Field>
+              )}
+              {modal?.mode === 'share' && (
+                <Field label="Permission">
+                  <Select name="permission" block>
+                    <option value="VIEWER">Can view</option>
+                    <option value="EDITOR">Can edit</option>
+                  </Select>
+                </Field>
+              )}
+              {modal?.mode === 'move' && (
+                <div className="drive-move-picker">
+                  <nav className="breadcrumbs" aria-label="Destination">
+                    <button type="button" onClick={() => setMoveTrail([])}>
+                      My Drive
+                    </button>
+                    {moveTrail.map((entry, index) => (
+                      <span key={entry.id}>
+                        <ChevronRight size={13} />
+                        <button
+                          type="button"
+                          onClick={() => setMoveTrail(moveTrail.slice(0, index + 1))}
+                        >
+                          {entry.name}
+                        </button>
+                      </span>
+                    ))}
+                  </nav>
+                  {moveLoading ? (
+                    <p>Loading folders…</p>
+                  ) : moveError ? (
+                    <Alert tone="error">{moveError}</Alert>
+                  ) : moveFolders.length ? (
+                    moveFolders.map((folder) => (
                       <button
                         type="button"
-                        onClick={() => setMoveTrail(moveTrail.slice(0, index + 1))}
+                        className="picker-row drive-destination"
+                        key={folder.id}
+                        onClick={() => setMoveTrail([...moveTrail, folder])}
                       >
-                        {entry.name}
+                        <Folder size={16} />
+                        <span>{folder.name}</span>
+                        <ChevronRight size={14} />
                       </button>
-                    </span>
-                  ))}
-                </nav>
-                {moveLoading ? (
-                  <p>Loading folders…</p>
-                ) : moveError ? (
-                  <p role="alert">{moveError}</p>
-                ) : moveFolders.length ? (
-                  moveFolders.map((folder) => (
-                    <button
-                      type="button"
-                      className="drive-destination"
-                      key={folder.id}
-                      onClick={() => setMoveTrail([...moveTrail, folder])}
-                    >
-                      <Folder size={17} />
-                      {folder.name}
-                      <ChevronRight size={14} />
-                    </button>
-                  ))
-                ) : (
-                  <p className="muted">No subfolders</p>
-                )}
-              </div>
-            )}
-            {error && (
-              <p className="error" role="alert">
-                {error}
-              </p>
-            )}
-            <div className="dialog-actions">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setModal(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                disabled={busy || (modal?.mode === 'move' && (moveLoading || !!moveError))}
-                variant={modal?.mode === 'trash' ? 'destructive' : 'default'}
-              >
-                {busy
-                  ? 'Saving…'
-                  : modal?.mode === 'copy-cloud'
-                    ? 'Copy to cloud'
-                    : modal?.mode === 'remove-sync'
-                      ? 'Remove from sync'
-                      : modal?.mode === 'trash'
-                        ? 'Move to trash'
-                        : modal?.mode === 'move'
-                          ? 'Move here'
-                          : modal?.mode === 'send'
-                            ? 'Send'
-                            : modal?.mode === 'share'
-                              ? 'Share'
-                              : 'Save'}
-              </Button>
-            </div>
-          </form>
-        )}
-      </Dialog>
+                    ))
+                  ) : (
+                    <p className="muted">No subfolders</p>
+                  )}
+                </div>
+              )}
+              {error && <Alert tone="error">{error}</Alert>}
+              <DialogActions>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setModal(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  disabled={busy || (modal?.mode === 'move' && (moveLoading || !!moveError))}
+                  variant={modal?.mode === 'trash' ? 'danger' : 'primary'}
+                >
+                  {busy
+                    ? 'Working…'
+                    : modal?.mode === 'disconnect-backup'
+                      ? 'Disconnect backup'
+                      : modal?.mode === 'copy-cloud'
+                        ? 'Copy to cloud'
+                        : modal?.mode === 'remove-sync'
+                          ? 'Remove from sync'
+                          : modal?.mode === 'trash'
+                            ? 'Move to trash'
+                            : modal?.mode === 'move'
+                              ? 'Move here'
+                              : modal?.mode === 'send'
+                                ? 'Send'
+                                : modal?.mode === 'share'
+                                  ? 'Share'
+                                  : 'Save'}
+                </Button>
+              </DialogActions>
+            </form>
+          )}
+        </Dialog>
+        <Dialog
+          open={!!backupRestore}
+          onOpenChange={(open) => {
+            if (!open && !busy) setBackupRestore(null);
+          }}
+          title="Restore this local file?"
+          description={`Replace the current local copy of ${backupRestore?.item.name ?? 'this file'} with the version saved ${backupRestore ? fileDate(backupRestore.createdAt).full : ''}. The archive will stay unchanged. The source computer must be online with backups running.`}
+        >
+          <DialogActions>
+            <Button variant="outline" disabled={busy} onClick={() => setBackupRestore(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  if (!backupRestore) return;
+                  await request(`/v1/backups/${backupRestore.item.backupRootId}/restores`, {
+                    method: 'POST',
+                    body: {
+                      id: backupRestore.id,
+                      itemId: backupRestore.item.id,
+                      versionId: backupRestore.versionId,
+                    },
+                  });
+                  setBackupRestore(null);
+                  setNotice('Local restore requested. Track progress in Backups → History.');
+                })
+              }
+            >
+              Restore locally
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </Tabs>
     </section>
   );
 }

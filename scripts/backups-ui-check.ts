@@ -8,6 +8,7 @@ function fixture() {
   const calls: any[] = [];
   const root = {
     id: 'backup1',
+    state: 'ACTIVE',
     deviceId: 'device1',
     localPathDisplayName: 'Documents',
     remoteRootDriveItemId: 'cloud1',
@@ -20,6 +21,21 @@ function fixture() {
     type: 'FILE',
     sizeBytes: 2400,
   };
+  const folder = {
+    id: 'cloud1',
+    name: 'Documents backup',
+    type: 'FOLDER',
+    parentId: null,
+    revision: 1,
+  };
+  const syncFolder = {
+    id: 'sync1',
+    name: 'Team sync',
+    type: 'FOLDER',
+    parentId: null,
+    revision: 1,
+  };
+  const cloudFile = { ...file, id: 'cloud-file', name: 'Cloud notes.md', parentId: null };
   const restores: any[] = [];
   return (raw: string, method = 'GET', body: any = {}) => {
     calls.push({ raw, method, body });
@@ -35,6 +51,19 @@ function fixture() {
           reservedBytes: 0,
         },
       };
+    if (p === '/v1/backups/backup1' && method === 'DELETE') {
+      root.state = 'REMOVED';
+      return { root };
+    }
+    if (p === '/v1/sync/folders') return { items: [syncFolder] };
+    if (p === '/v1/drive/folders/root/children') return { items: [folder, syncFolder, cloudFile] };
+    if (p === '/v1/drive/folders/sync1/children')
+      return { items: [{ ...file, id: 'sync-file', name: 'Synced notes.md', parentId: 'sync1' }] };
+    if (p === '/v1/drive/items/cloud1') return { item: folder };
+    if (p === '/v1/drive/items/sync1') return { item: syncFolder };
+    if (p === '/v1/drive/items/file1') return { item: file };
+    if (p === '/v1/drive/items/nested')
+      return { item: { id: 'nested', name: 'Research', type: 'FOLDER', parentId: 'cloud1' } };
     if (p === '/v1/backups') return { items: [root] };
     if (p === '/v1/drive/folders/cloud1/children')
       return {
@@ -111,12 +140,13 @@ async function check(page: Page, desktop: boolean) {
       .getByRole('navigation', { name: 'Main navigation' })
       .getByRole('button', { name: 'Backups', exact: true })
       .click();
-  await expect(page.getByRole('tab')).toHaveText(['Archives', 'Backups', 'Restore/Export']);
+  await expect(page.getByRole('tab')).toHaveText(['Files & versions', 'History']);
+  await expect(page.locator('.backup-summary')).toContainText('Documents');
+  await expect(page.locator('.backup-summary')).toContainText('Last backed up');
+  await expect(page.getByRole('button', { name: 'Refresh' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Project notes.md' }).click();
-  await expect(page.getByText('Version 1', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export', exact: true })).toHaveCount(
-    desktop ? 0 : 2,
-  );
+  await expect(page.getByText(/^Version 1 ·/)).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Download this version/ })).toHaveCount(2);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 950 });
     expect(
@@ -129,21 +159,25 @@ async function check(page: Page, desktop: boolean) {
   }
   await page.setViewportSize({ width: 1440, height: 950 });
   await page.getByRole('button', { name: 'Restore', exact: true }).last().click();
-  await expect(page.getByRole('dialog')).toContainText('Any current local edits will be replaced.');
-  await page.getByRole('button', { name: 'Restore version', exact: true }).click();
-  await expect(page.getByText('Waiting for the source computer')).toBeVisible();
-  await page.getByRole('tab', { name: 'Backups', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('download this version instead');
+  await page.getByRole('dialog').getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(page.locator('.backup-notice')).toContainText('Follow its progress in History');
+  await expect(page.getByRole('tab', { name: /^History/ })).toContainText('1 waiting');
+  await page.getByRole('tab', { name: /^History/ }).click();
+  await expect(page.getByText(/Will be restored (the next time|in a moment)/)).toBeVisible();
   await page.getByRole('button', { name: /Automatic backup/ }).click();
   await expect(page.locator('.backup-run-files')).toContainText('Project notes.md');
   if (desktop) {
     await page.getByRole('button', { name: 'Back up now', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Backup queued');
+    await expect(page.locator('.backup-notice')).toContainText('Backup started');
+    await page.getByRole('button', { name: 'Pause', exact: true }).click();
+    await expect(page.locator('.backup-notice')).toContainText('Backups paused');
   }
   await page.screenshot({
     path: `${output}/${desktop ? 'desktop' : 'web'}-runs.png`,
     fullPage: true,
   });
-  await page.getByRole('tab', { name: 'Archives', exact: true }).click();
+  await page.getByRole('tab', { name: 'Files & versions', exact: true }).click();
   await page.getByRole('button', { name: 'Research', exact: true }).click();
   await expect(page.getByRole('button', { name: /Research draft.txt/ })).toBeVisible();
   await page
@@ -153,9 +187,74 @@ async function check(page: Page, desktop: boolean) {
   await page.getByRole('button', { name: 'Project notes.md' }).click();
   if (!desktop) {
     const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Export', exact: true }).last().click();
+    await page
+      .getByRole('button', { name: /^Download this version/ })
+      .last()
+      .click();
     expect((await download).suggestedFilename()).toBe('notes.md');
   }
+  if (desktop)
+    await page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('button', { name: 'My Drive', exact: true })
+      .click();
+  else await page.goto('http://127.0.0.1:3000/drive');
+  await expect(page.getByRole('tab')).toHaveText(['Cloud', 'Backup', 'Sync']);
+  await expect(page.locator('.file-entry-label')).toContainText(['Cloud notes.md']);
+  await expect(
+    page.getByRole('button', { name: 'Actions for Documents backup', exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Sync', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Actions for Team sync', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Actions for Cloud notes.md', exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Backup', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'New folder', exact: true })).toBeDisabled();
+  await expect(page.locator('.upload-button')).toBeDisabled();
+  await page.getByRole('button', { name: 'Actions for Documents backup', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: 'Move to trash', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Open', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Backup', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('button', { name: 'Actions for Project notes.md', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Version history', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Restore locally', exact: true })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 950 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(
+      false,
+    );
+    await page.screenshot({
+      path: `${output}/${desktop ? 'desktop' : 'web'}-drive-backup-${width}.png`,
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 950 });
+  await page.getByRole('tab', { name: 'Backup', exact: true }).click();
+  await page.getByRole('button', { name: 'Actions for Documents backup', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Disconnect backup', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('Cloud');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Disconnect backup', exact: true })
+    .click();
+  await expect(page.getByRole('tab', { name: 'Cloud', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('button', { name: 'Actions for Documents backup', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Rename', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Move to trash', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   expect(errors).toEqual([]);
 }
 const browser = await chromium.launch();
@@ -226,13 +325,21 @@ try {
       sync: { online: true, queued: 0, paused: false, issues: [], recent: [], driveItems: [] },
     }));
     handler('request', (input) => api(input.path, input.method, input.body));
+    handler('disconnectBackup', () => api('/v1/backups/backup1', 'DELETE'));
+    handler('disconnectUnused', () => null);
     handler('backupNow', (input) => api('/test/backupNow', 'POST', input));
     handler('chooseRoot', () => null);
+    handler('rootSettings', (input) => api('/test/rootSettings', 'POST', input));
   }, fixture.toString());
   await page.reload();
   await check(page, true);
   const calls = await page.evaluate(() => window.harbor.request({ path: '/test/calls' }));
   expect(calls).toContainEqual({ raw: '/test/backupNow', method: 'POST', body: { id: 'local1' } });
+  expect(calls).toContainEqual({
+    raw: '/test/rootSettings',
+    method: 'POST',
+    body: { id: 'local1', paused: true, excluded: [] },
+  });
 } finally {
   await app.close();
   await rm(profile, { recursive: true, force: true });

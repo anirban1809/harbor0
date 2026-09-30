@@ -13,3 +13,4 @@ test-results/
 *.tsbuildinfo
 .DS_Store
 .cloud/
+apps/desktop/.dev-runtime/

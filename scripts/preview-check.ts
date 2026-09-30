@@ -69,7 +69,7 @@ const server = createServer(async (req, res) => {
     return;
   }
   const pathname = new URL(req.url!, 'http://127.0.0.1:9100').pathname;
-  if (pathname === '/v1/auth/refresh') {
+  if (pathname === '/v1/auth/refresh' || pathname === '/v1/auth/login') {
     res.setHeader('Content-Type', 'application/json');
     res.end(
       JSON.stringify({
@@ -77,6 +77,19 @@ const server = createServer(async (req, res) => {
         refreshToken: 'preview-test-refresh',
         expiresIn: 3600,
       }),
+    );
+    return;
+  }
+  if (pathname.startsWith('/v1/') && pathname !== '/v1/downloads') {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify(
+        pathname === '/v1/users/me'
+          ? { user: { id: 'demo', displayName: 'Preview test' } }
+          : pathname === '/v1/auth/session'
+            ? { device: { id: 'preview-device', devicePublicId: 'preview-device' } }
+            : { items: [], nextCursor: null },
+      ),
     );
     return;
   }
@@ -157,11 +170,33 @@ async function checks(page: Page, platform: string) {
   };
   await expect(page.getByRole('heading', { name: 'My Drive', exact: true })).toBeVisible();
   await open('text');
+  await expect(dialog).not.toHaveAttribute('aria-modal', 'true');
+  await expect(page.locator('.dialog-backdrop')).toHaveCount(0);
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await expect
+    .poll(async () => {
+      const box = await dialog.boundingBox();
+      return Math.round(box!.x + box!.width);
+    })
+    .toBe(viewport.width);
+  const trayBox = await dialog.boundingBox();
+  expect(trayBox!.x + trayBox!.width).toBeCloseTo(viewport.width, 0);
+  expect(trayBox!.y).toBe(0);
+  expect(trayBox!.height).toBe(viewport.height);
+  expect(trayBox!.width).toBe(480);
+  const information = dialog.getByRole('region', { name: 'File information' });
+  await expect(information).toContainText('Text document');
+  await expect(information).toContainText('Created');
+  await expect(information).toContainText('Modified');
   await expect(page.getByLabel('Text preview')).toContainText(
     '<script>window.previewExecuted = true</script>',
   );
   expect(await page.evaluate(() => (window as any).previewExecuted)).toBeUndefined();
   await page.screenshot({ path: `${output}/${platform}-text.png` });
+  // A second file can be opened directly while the non-modal tray remains open.
+  await open('image');
+  await expect(information).toContainText('PNG file');
+  await open('text');
   await close();
   await expect(page.getByRole('button', { name: names.text, exact: true })).toBeFocused();
   await open('image');
@@ -220,7 +255,7 @@ async function checks(page: Page, platform: string) {
   await expect(page.getByLabel('Text preview')).toContainText('Hello from harbor0');
   await close();
   await page.getByRole('button', { name: `Actions for ${names.text}`, exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Preview', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Open', exact: true }).click();
   await expect(page.getByLabel('Text preview')).toContainText('Hello from harbor0');
   await close();
   if (platform === 'web') {
@@ -233,7 +268,9 @@ async function checks(page: Page, platform: string) {
       true,
     );
     const box = await dialog.boundingBox();
-    expect(box!.width).toBeLessThan(390);
+    expect(box!.width).toBe(390);
+    expect(box!.x).toBe(0);
+    await expect(dialog.getByRole('button', { name: 'Download', exact: true })).toBeInViewport();
     await page.screenshot({ path: `${output}/web-mobile.png` });
     await close();
   }
@@ -267,7 +304,9 @@ try {
           storage: { usedBytes: 100, quotaBytes: 100000000000, reservedBytes: 0 },
         },
       });
-    return route.fulfill({ json: { items, nextCursor: null } });
+    return route.fulfill({
+      json: { items: url.includes('/children') ? items : [], nextCursor: null },
+    });
   });
   await page.goto('http://127.0.0.1:3000');
   await checks(page, 'web');
@@ -305,12 +344,18 @@ try {
                   body: JSON.stringify(input.body),
                 })
               ).json()
-            : { items: fixtures, nextCursor: null },
+            : {
+                items: input.path.includes('/children') ? fixtures : [],
+                nextCursor: null,
+              },
       }));
     },
     { fixtures: items, fixtureOrigin },
   );
   await window.reload();
+  await window.evaluate(() =>
+    globalThis.window.harbor.login({ email: 'preview@example.test', password: 'preview-fixture' }),
+  );
   await checks(window, 'desktop');
   expect(ranges).toContain('text');
   expect(ranges).toContain('video');

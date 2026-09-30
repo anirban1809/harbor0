@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { lstat, readdir, rm } from 'node:fs/promises';
-import type { ApiClient } from '@harbor/api-client';
+import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
-import { contained, safeParents } from './paths';
+import { contained, internalPath, safeParents } from './paths';
 import { downloadFile } from './transfers';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
@@ -18,7 +18,7 @@ export class FolderBackups {
   ) {}
   private ignored(root: Root, relative: string) {
     return (
-      relative.split('/').some((p) => p.startsWith('.harbor-') || p.endsWith('.harbor-part')) ||
+      internalPath(relative) ||
       root.excluded.some((p) => relative === p || relative.startsWith(p + '/'))
     );
   }
@@ -57,6 +57,9 @@ export class FolderBackups {
       this.journal.root(root);
     }
     const url = `/v1/backups/${root.backupId}`;
+    const { root: connection } = await this.api.request(url);
+    if (connection.state === 'REMOVED')
+      throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
     await this.restores(root, url);
     const key = `backup-run:${root.id}`;
     let run = this.journal.get<PendingRun | null>(key);
@@ -119,6 +122,7 @@ export class FolderBackups {
           try {
             if (!job.payload.backupEntry) {
               job.payload.backupManual = run.trigger === 'MANUAL';
+              job.payload.backupRunId = run.id;
               await perform(root, job);
             }
             let entry = job.payload.backupEntry as BackupEntry | undefined;
@@ -168,6 +172,13 @@ export class FolderBackups {
             // Retain upload state and the run for network retries, including acknowledgement loss.
             if (error instanceof TypeError || (error as { status?: number }).status! >= 500)
               throw error;
+            if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
+            if (job.payload.upload?.uploadId) {
+              await this.api.request(`/v1/uploads/${job.payload.upload.uploadId}`, {
+                method: 'DELETE',
+              });
+              job.payload.upload = { operationId: crypto.randomUUID() };
+            }
             job.attempts++;
             job.payload.retryAfter = Date.now() + 60000;
             job.error = (error as Error).message;
@@ -212,6 +223,9 @@ export class FolderBackups {
             destination,
             undefined,
             async () => {
+              const { root: connection } = await this.api.request(url);
+              if (connection.state === 'REMOVED')
+                throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
               await safeParents(root.localPath, relativePath);
               const current = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
                 if (error.code !== 'ENOENT') throw error;

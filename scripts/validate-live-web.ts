@@ -225,7 +225,7 @@ try {
   checks.push(
     'Live removal hides the folder and prevents both reconnecting devices from restoring it',
   );
-  await page.locator('.drive-account-trigger').click();
+  await page.locator('.topbar').getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible({
     timeout: 15000,

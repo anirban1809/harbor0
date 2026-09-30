@@ -1,6 +1,6 @@
-export const metadata = { title: 'Received — harbor0' };
+export const metadata = { title: 'Shared — harbor0' };
 
-// Content lives in the shared shell so uploads survive route changes.
+// Legacy links are redirected to the matching Shared tab by the workspace shell.
 export default function Page() {
   return null;
 }

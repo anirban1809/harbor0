@@ -1,3 +1,4 @@
+import { assertBackupMutable } from './backup-policy';
 import { randomUUID } from 'node:crypto';
 import type { ShareGrant } from '@harbor/contracts';
 import { StorageService, userPK } from './domain';
@@ -21,6 +22,7 @@ export class SyncSharing {
       { action: 'syncInvite', ...input },
       async (tx) => {
         const item = await this.service.owned(tx, userId, input.driveItemId);
+        await assertBackupMutable(tx, userId, item.id, true);
         assert(item.type === 'FOLDER', 'VALIDATION_ERROR', 'Choose a synced folder.');
         await tx.get(userPK(userId), 'SYNC_MEMBERSHIP');
         const mappings = await new Transaction(this.service.repo).list<{ folderIds: string[] }>(

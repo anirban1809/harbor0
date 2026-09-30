@@ -14,8 +14,8 @@ export async function preSignup(event: PreSignUpTriggerEvent) {
     );
     assert(
       !existing ||
-      existing.email === email ||
-      (!existing.userId && (existing.reservedUntil ?? Infinity) < Date.now()),
+        existing.email === email ||
+        (!existing.userId && (existing.reservedUntil ?? Infinity) < Date.now()),
       'USERNAME_TAKEN',
       'This username is taken.',
       409,

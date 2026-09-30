@@ -9,6 +9,7 @@ import { CloudCopies } from './cloud-copies';
 import { Backups } from './backups';
 import {
   backupEntrySchema,
+  backupRootSchema,
   backupRunSchema,
   backupRestoreSchema,
 } from '../../../packages/contracts/src/backups';
@@ -769,7 +770,7 @@ export function createApp(
     '/v1/sync/folders',
     'List synced folders across devices',
     undefined,
-    z.object({ items: z.array(c.itemSchema) }),
+    z.object({ items: z.array(c.syncFolderSchema) }),
     async (ctx) => service.syncFolders(userId(ctx)),
   );
   add(
@@ -980,6 +981,56 @@ export function createApp(
     assert(id, 'FORBIDDEN', 'Use the desktop app for this action.', 403);
     return id;
   };
+  add(
+    'get',
+    '/v1/backups/:id',
+    'Get backup connection',
+    undefined,
+    z.object({ root: backupRootSchema }),
+    async (ctx) => backupWorkflows.get(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'delete',
+    '/v1/backups/:id',
+    'Disconnect backup and keep its cloud folder',
+    undefined,
+    z.object({ root: backupRootSchema }),
+    async (ctx) => backupWorkflows.disconnect(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/forget',
+    'Remove a stopped backup and its history from the list',
+    undefined,
+    z.object({ removed: z.boolean() }),
+    async (ctx) => backupWorkflows.forget(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/folders',
+    'Create folder in a backup run',
+    folderBody,
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) =>
+      service.createFolder(userId(ctx), i, {
+        rootId: p(ctx, 'id'),
+        runId: p(ctx, 'runId'),
+        deviceId: backupDevice(ctx),
+      }),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/uploads',
+    'Append a backup file version',
+    c.uploadInput,
+    anyObject,
+    async (ctx, i) =>
+      service.createUpload(userId(ctx), i, backupDevice(ctx), {
+        rootId: p(ctx, 'id'),
+        runId: p(ctx, 'runId'),
+        deviceId: backupDevice(ctx),
+      }),
+  );
   for (const [collection, schema, prefix] of [
     ['runs', backupRunSchema, 'RUN#'],
     ['restores', backupRestoreSchema, 'RESTORE#'],

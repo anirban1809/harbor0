@@ -118,6 +118,25 @@ it('backs up a real folder through HTTP routes, deduplicates content, keeps vers
     journal.enqueue(root.id, 'Nested/notes.txt', 'delete');
     await engine.tick();
     expect((await api.request(`/v1/drive/items/${first.id}/versions`)).items).toHaveLength(2);
+    await writeFile(target, 'local edits after disconnect');
+    journal.enqueue(root.id, 'Nested/notes.txt', 'upsert');
+    await api.request(`/v1/backups/${remote.id}`, { method: 'DELETE' });
+    await engine.tick();
+    expect(journal.roots()).toHaveLength(0);
+    expect(journal.jobs()).toHaveLength(0);
+    expect(await readFile(target, 'utf8')).toBe('local edits after disconnect');
+    expect((await api.request(`/v1/drive/items/${first.id}/versions`)).items).toHaveLength(2);
+    const current = (await api.request(`/v1/drive/items/${first.id}`)).item;
+    expect(current.backupRootId).toBeUndefined();
+    await api.request(`/v1/drive/items/${first.id}`, {
+      method: 'PATCH',
+      body: {
+        operationId: crypto.randomUUID(),
+        baseRevision: current.revision,
+        name: 'Cloud notes.txt',
+      },
+    });
+    expect((await api.list(nested.id)).items[0].name).toBe('Cloud notes.txt');
   } finally {
     await engine.stop();
     fetchMock.mockRestore();

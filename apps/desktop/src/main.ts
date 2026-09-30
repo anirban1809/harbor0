@@ -25,7 +25,9 @@ import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { SyncEngine } from './sync';
 import { syncView } from './sync-view';
-import type { SyncRuntime } from './sync-state';
+import { FolderDiskUsageCache } from './folder-disk-usage';
+const folderDiskUsage = new FolderDiskUsageCache();
+import { stickyIssue, type SyncRuntime } from './sync-state';
 import { uploadFile, downloadFile, downloadFolderZip, type UploadState } from './transfers';
 import { contained, safeSegment, safeParents } from './paths';
 import {
@@ -35,6 +37,7 @@ import {
 } from './config';
 import { DesktopSession, isSessionError } from './session';
 import { cloudLocation, localDirectory } from './sync-mapping';
+import { IncomingMonitor, type IncomingContent } from './incoming';
 // Keep existing credentials and sync state when the display name changes.
 const legacyDataPath = app.isPackaged
   ? path.join(app.getPath('appData'), 'Harbor')
@@ -60,6 +63,10 @@ let stoppingSync: Promise<void> = Promise.resolve();
 const operations = new Set<Promise<unknown>>();
 let engine: SyncEngine | undefined;
 let quitting = false;
+let incomingMonitor: IncomingMonitor | undefined;
+let incomingTimer: ReturnType<typeof setInterval> | undefined;
+const incomingNotifications = new Set<Notification>();
+let notificationError: string | null = null;
 const localSelections = new Map<string, string>();
 const rendererPath = path.join(__dirname, 'renderer/index.html');
 const securePath = () => path.join(app.getPath('userData'), 'credentials.bin');
@@ -79,6 +86,10 @@ const session = new DesktopSession({
   },
   clear: () => rm(securePath(), { force: true }),
   signedOut() {
+    incomingMonitor?.stop();
+    incomingMonitor = undefined;
+    for (const notification of incomingNotifications) notification.close();
+    incomingNotifications.clear();
     const previous = engine;
     engine = undefined;
     accountReady = false;
@@ -152,6 +163,24 @@ async function connected() {
   engine.state.paused = journal.get<boolean>('paused') ?? false;
   await engine.start();
   accountReady = true;
+  incomingMonitor?.stop();
+  const monitor: IncomingMonitor = new IncomingMonitor({
+    seen: activeJournal.get<string[]>('incomingNotifications') ?? [],
+    save: (seen) => activeJournal.set('incomingNotifications', seen),
+    active: () => accountReady && !authTransition && journal === activeJournal && !quitting,
+    request: async (endpoint) => {
+      const operation = api.request(endpoint);
+      operations.add(operation);
+      try {
+        return await operation;
+      } finally {
+        operations.delete(operation);
+      }
+    },
+    notify: (content) => notifyIncoming(content, monitor),
+  });
+  incomingMonitor = monitor;
+  setTimeout(() => void monitor.poll(), 0);
   window?.webContents.send('harbor:authenticated');
   return { user };
 }
@@ -201,8 +230,66 @@ function notify(title: string, body: string) {
   if (Notification.isSupported()) {
     const notification = new Notification({ title, body });
     notification.on('click', () => window.show());
-    notification.show();
+    void presentNotification(notification);
   }
+}
+function presentNotification(notification: Notification): Promise<boolean> {
+  incomingNotifications.add(notification);
+  notification.on('close', () => incomingNotifications.delete(notification));
+  return new Promise((resolve) => {
+    const timeout = setTimeout(
+      () => finish('No response from the system notification service.'),
+      10000,
+    );
+    const shown = () => finish(null);
+    const failed = (_event: unknown, error: string) => finish(error);
+    function finish(error: string | null) {
+      clearTimeout(timeout);
+      notification.removeListener('show', shown);
+      notification.removeListener('failed', failed);
+      notificationError = error;
+      if (error) {
+        incomingNotifications.delete(notification);
+        console.error(JSON.stringify({ event: 'desktop_notification_failed', message: error }));
+      }
+      resolve(!error);
+    }
+    notification.once('show', shown);
+    notification.once('failed', failed);
+    try {
+      notification.show();
+    } catch (error) {
+      finish((error as Error).message);
+    }
+  });
+}
+async function notifyIncoming(content: IncomingContent, monitor: IncomingMonitor) {
+  if (!Notification.isSupported()) {
+    notificationError = 'Desktop notifications are not supported on this computer.';
+    return false;
+  }
+  const sender = content.kind === 'sync' ? content.item.owner : content.item.sender;
+  const names =
+    content.kind === 'sync'
+      ? content.item.name
+      : content.item.displayNames?.join(', ') ||
+        content.item.items
+          .filter((entry) => !entry.parentEntryId)
+          .map((entry) => entry.displayName)
+          .join(', ') ||
+        'Files';
+  const notification = new Notification({
+    title: content.kind === 'sync' ? 'Sync folder received' : 'Content received',
+    body: `${sender.displayName} sent ${names}. Open to accept or reject.`,
+  });
+  notification.on('click', () => {
+    if (!accountReady || authTransition || incomingMonitor !== monitor) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+    window.webContents.send('harbor:incoming', content);
+  });
+  return presentNotification(notification);
 }
 app
   .whenReady()
@@ -217,7 +304,7 @@ app
       minHeight: 620,
       title: 'harbor0',
       icon: path.join(__dirname, 'icon.png'),
-      backgroundColor: '#f8faf9',
+      backgroundColor: '#f4f5f7',
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -280,11 +367,13 @@ app
       return {
         configured,
         configurationError,
+        notificationError,
         development,
         signedIn: session.signedIn && accountReady,
         roots: (accountReady ? journal.roots() : []).map((r) => ({
           ...r,
           ...journal.fileCounts(r.id),
+          diskSizeBytes: r.mode === 'sync' ? folderDiskUsage.read(r.localPath) : undefined,
           localPathDisplayName: path.basename(r.localPath),
           localPathDisplay: r.localPath.startsWith(os.homedir() + path.sep)
             ? '~' + r.localPath.slice(os.homedir().length)
@@ -338,6 +427,26 @@ app
     ipc('request', rendererRequestSchema, async (input) =>
       api.request(input.path, { method: input.method, body: input.body }),
     );
+    ipc('testNotification', z.undefined(), async () => {
+      if (!Notification.isSupported())
+        throw new Error('Desktop notifications are not supported on this computer.');
+      const shown = await presentNotification(
+        new Notification({
+          title: 'harbor0 notifications',
+          body: 'Notifications are working. Incoming files and sync invitations will appear here.',
+        }),
+      );
+      if (!shown) throw new Error(notificationError ?? 'Could not show a desktop notification.');
+      return { shown };
+    });
+    ipc('notificationSettings', z.undefined(), async () => {
+      if (process.platform === 'darwin')
+        await shell.openExternal(
+          'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+        );
+      else if (process.platform === 'win32') await shell.openExternal('ms-settings:notifications');
+      else throw new Error('Open Notifications in your desktop system settings.');
+    });
     ipc(
       'previewText',
       z.object({ driveItemId: z.string().min(1).max(256) }).strict(),
@@ -391,6 +500,11 @@ app
       };
       await engine.addRoot(root);
       return { id: root.id };
+    });
+    ipc('disconnectBackup', z.object({ id: z.string() }).strict(), async ({ id }) => {
+      if (!engine) throw new Error('Sign in first.');
+      await engine.disconnectBackup(id);
+      return { disconnected: true };
     });
     ipc('backupNow', z.object({ id: z.string() }).strict(), async ({ id }) => {
       if (!engine) throw new Error('Sign in first.');
@@ -483,14 +597,28 @@ app
             .catch(async (error) => {
               if (!automatic || !(error instanceof ApiError) || error.code !== 'NAME_CONFLICT')
                 throw error;
-              // Use a separate, stable operation for the collision fallback so retries remain safe.
-              const hash = createHash('sha256').update(`sync-folder:${operationId}`).digest('hex');
-              const fallbackId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
-              return api.createFolder(
-                `${newFolderName.slice(0, 155)} (${operationId})`,
-                remoteId,
-                fallbackId,
-              );
+              // Number the folder like a file manager would. Each attempt uses its own stable
+              // operation so retries remain safe.
+              for (let number = 2; ; number++) {
+                const hash = createHash('sha256')
+                  .update(`sync-folder:${operationId}:${number}`)
+                  .digest('hex');
+                const fallbackId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+                try {
+                  return await api.createFolder(
+                    `${newFolderName.slice(0, 190)} ${number}`,
+                    remoteId,
+                    fallbackId,
+                  );
+                } catch (numbered) {
+                  if (
+                    number >= 50 ||
+                    !(numbered instanceof ApiError) ||
+                    numbered.code !== 'NAME_CONFLICT'
+                  )
+                    throw numbered;
+                }
+              }
             });
           const { item } = result;
           root.remoteId = item.id;
@@ -537,10 +665,10 @@ app
     );
     ipc('reviewSyncConflict', z.object({ id: z.string() }).strict(), async (input) => {
       const issue = engine?.state.issues.find(
-        (issue) => issue.id === input.id && issue.code === 'CONFLICT',
+        (issue) => issue.id === input.id && stickyIssue(issue),
       );
       const root = journal.roots().find((root) => root.id === issue?.rootId);
-      if (!root || !issue?.conflictPath) throw new Error('Conflict was not found.');
+      if (!root || !issue?.conflictPath) throw new Error('The preserved copy was not found.');
       const filename = contained(root.localPath, issue.conflictPath);
       await stat(filename);
       shell.showItemInFolder(contained(root.localPath, issue.conflictPath));
@@ -696,7 +824,8 @@ app
     ipc('reveal', z.object({ rootId: z.string() }).strict(), async (input) => {
       const root = journal.roots().find((r) => r.id === input.rootId);
       if (!root) throw new Error('Unknown folder.');
-      await shell.openPath(root.localPath);
+      const error = await shell.openPath(root.localPath);
+      if (error) throw new Error(error);
       return {};
     });
     ipc('diagnostics', z.undefined(), async () => {
@@ -742,7 +871,11 @@ app
       }
       return { loggedOut: true };
     });
-    powerMonitor.on('resume', () => void engine?.tick());
+    incomingTimer = setInterval(() => void incomingMonitor?.poll(), 10000);
+    powerMonitor.on('resume', () => {
+      void engine?.tick();
+      void incomingMonitor?.poll();
+    });
     app.on('activate', () => window.show());
     await window.loadFile(rendererPath);
     authTransition = true;
@@ -772,6 +905,8 @@ app
   });
 app.on('before-quit', () => {
   quitting = true;
+  clearInterval(incomingTimer);
+  incomingMonitor?.stop();
   void engine?.stop();
 });
 app.on('window-all-closed', () => {

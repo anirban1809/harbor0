@@ -23,6 +23,12 @@ import {
 import { assert, DomainError } from './errors';
 import { transact, Transaction, type Repository } from './repository';
 import type { ObjectStorage } from './storage';
+import {
+  backupForItem,
+  assertBackupMutable,
+  assertBackupWrite,
+  type BackupWrite,
+} from './backup-policy';
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { ArchiveWorkflows } from './archives';
 import { CloudCopies } from './cloud-copies';
@@ -56,6 +62,7 @@ export type Upload = {
   userId: string;
   deviceId: string | null;
   ownerUserId?: string;
+  backupWrite?: BackupWrite;
   targetParentId: string | null;
   targetName: string;
   expectedSizeBytes: number;
@@ -367,17 +374,28 @@ export class StorageService {
   async createFolder(
     userId: string,
     input: { parentId: string | null; name: string; operationId: string },
+    backupWrite?: BackupWrite,
   ) {
-    return this.operation(userId, input.operationId, { action: 'folder', ...input }, async (tx) => {
-      const owner = input.parentId
-        ? (await this.authorized(tx, userId, input.parentId, true)).owner
-        : userId;
-      await this.parent(tx, owner, input.parentId);
-      const item = this.newItem(owner, input.parentId, input.name, 'FOLDER');
-      await this.reserveName(tx, item);
-      await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
-      return { item };
-    });
+    return this.operation(
+      userId,
+      input.operationId,
+      { action: 'folder', ...input, ...(backupWrite ? { backupWrite } : {}) },
+      async (tx) => {
+        const owner = input.parentId
+          ? (await this.authorized(tx, userId, input.parentId, !backupWrite)).owner
+          : userId;
+        if (backupWrite) {
+          assert(owner === userId, 'FORBIDDEN', 'Backup folders must belong to you.', 403);
+          await this.checkDevice(userId, backupWrite.deviceId);
+          await assertBackupWrite(tx, owner, input.parentId, backupWrite);
+        }
+        await this.parent(tx, owner, input.parentId);
+        const item = this.newItem(owner, input.parentId, input.name, 'FOLDER');
+        await this.reserveName(tx, item);
+        await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
+        return { item };
+      },
+    );
   }
   async list(userId: string, parentId: string | null, limit = 100, cursor?: string) {
     const tx = new Transaction(this.repo);
@@ -396,7 +414,7 @@ export class StorageService {
     return {
       items: (
         await Promise.all(
-          items.map(async (i) => {
+          items.map(async (i): Promise<DriveItem | null> => {
             if (!i || i.deletedAt || i.syncRemovedAt) return null;
             const stagingId = (i as StagedItem).stagingId;
             if (
@@ -404,7 +422,7 @@ export class StorageService {
               (await tx.get<Save>(`SAVE#${stagingId}`, 'META'))?.state !== 'COMPLETED'
             )
               return null;
-            return i;
+            return { ...i, backupRootId: (await backupForItem(tx, userId, i.id))?.id };
           }),
         )
       ).filter((i): i is DriveItem => !!i),
@@ -437,6 +455,8 @@ export class StorageService {
         );
       }
       const item = await this.owned(tx, ownerId, itemId, true);
+      await assertBackupMutable(tx, ownerId, itemId, true);
+      if (input.parentId) await assertBackupMutable(tx, ownerId, input.parentId);
       assert(
         item.revision === input.baseRevision,
         'REVISION_CONFLICT',
@@ -499,7 +519,9 @@ export class StorageService {
   async metadata(userId: string, itemId: string) {
     const tx = new Transaction(this.repo);
     const { item } = await this.authorized(tx, userId, itemId);
-    return { item };
+    return {
+      item: { ...item, backupRootId: (await backupForItem(tx, item.ownerUserId, item.id))?.id },
+    };
   }
   async browseSpecial(
     userId: string,
@@ -538,22 +560,33 @@ export class StorageService {
           continue;
         }
       }
-      items.push(i);
+      items.push({ ...i, backupRootId: (await backupForItem(tx, userId, i.id))?.id });
     }
     if (filter.recent === 'true') items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return { items, nextCursor: page.cursor };
   }
-  async createUpload(userId: string, input: UploadInput, deviceId?: string) {
+  async createUpload(
+    userId: string,
+    input: UploadInput,
+    deviceId?: string,
+    backupWrite?: BackupWrite,
+  ) {
     const initial = await this.operation(
       userId,
       input.operationId,
-      { action: 'upload', ...input },
+      { action: 'upload', ...input, ...(backupWrite ? { backupWrite } : {}) },
       async (tx) => {
         const owner = input.driveItemId
-          ? (await this.authorized(tx, userId, input.driveItemId, true)).owner
+          ? (await this.authorized(tx, userId, input.driveItemId, !backupWrite)).owner
           : input.parentId
-            ? (await this.authorized(tx, userId, input.parentId, true)).owner
+            ? (await this.authorized(tx, userId, input.parentId, !backupWrite)).owner
             : userId;
+        if (backupWrite) {
+          assert(owner === userId, 'FORBIDDEN', 'Backup folders must belong to you.', 403);
+          await this.checkDevice(userId, backupWrite.deviceId);
+          await assertBackupWrite(tx, owner, input.driveItemId ?? input.parentId, backupWrite);
+          await assertBackupWrite(tx, owner, input.parentId, backupWrite);
+        }
         await this.parent(tx, owner, input.parentId);
         let prior: DriveItem | undefined;
         if (input.driveItemId) {
@@ -589,6 +622,7 @@ export class StorageService {
           id: uid(),
           userId,
           ownerUserId: owner,
+          ...(backupWrite ? { backupWrite } : {}),
           deviceId: deviceId ?? null,
           targetParentId: prior?.parentId ?? input.parentId,
           targetName: prior?.name ?? input.name,
@@ -665,6 +699,11 @@ export class StorageService {
   }
   async authorizeUpload(tx: Transaction, actor: string, upload: Upload) {
     const owner = upload.ownerUserId ?? actor;
+    const destination = upload.baseRevision !== null ? upload.itemId : upload.targetParentId;
+    if (upload.backupWrite) {
+      await this.checkDevice(owner, upload.backupWrite.deviceId);
+      await assertBackupWrite(tx, owner, destination, upload.backupWrite);
+    } else await assertBackupMutable(tx, owner, destination);
     if (owner !== actor) {
       const target = upload.baseRevision !== null ? upload.itemId : upload.targetParentId;
       assert(target, 'FORBIDDEN', 'A shared destination is required.', 403);
@@ -905,6 +944,7 @@ export class StorageService {
     assert(locator, 'ITEM_NOT_FOUND', 'Item was not found.', 404);
     const owner = locator.userId;
     const item = await this.owned(tx, owner, itemId);
+    if (write) await assertBackupMutable(tx, owner, itemId);
     if (owner === userId) return { item, owner };
     let current: DriveItem | undefined = item;
     let permission: ShareGrant | undefined;
@@ -1029,6 +1069,7 @@ export class StorageService {
       { action: 'restoreVersion', itemId, versionId, ...input },
       async (tx) => {
         const item = await this.owned(tx, userId, itemId);
+        await assertBackupMutable(tx, userId, itemId);
         assert(
           item.revision === input.baseRevision,
           'REVISION_CONFLICT',
@@ -1460,6 +1501,7 @@ export class StorageService {
           return saved!;
         }
         await this.parent(tx, userId, input.targetParentId);
+        await assertBackupMutable(tx, userId, input.targetParentId);
         const account = await this.account(tx, userId);
         assert(
           t.totalSizeBytes <= storageUsage(account).availableBytes,
@@ -1527,6 +1569,7 @@ export class StorageService {
   ) {
     return this.operation(userId, input.operationId, { action: 'share', ...input }, async (tx) => {
       await this.owned(tx, userId, input.driveItemId);
+      await assertBackupMutable(tx, userId, input.driveItemId, true);
       const recipient = await this.resolveRecipient(tx, input.recipient);
       assert(
         recipient.recipientUserId && recipient.recipientUserId !== userId,
@@ -1744,6 +1787,7 @@ export class StorageService {
             await tx.get(userPK(locator.userId), 'SYNC_MEMBERSHIP');
           const { item, owner } = await this.authorized(lookup, userId, id, true);
           if (item.type !== 'FOLDER') continue;
+          await assertBackupMutable(tx, owner, id, true);
           if (owner !== userId) {
             const grant = await lookup.get<ShareGrant>(userPK(userId), `ACCESS#${id}`);
             assert(
@@ -1794,6 +1838,7 @@ export class StorageService {
         'Sync folder was not found.',
         404,
       );
+      await assertBackupMutable(tx, userId, folderId, true);
       if (item.syncRemovedAt) return { ok: true };
       // Keep a tombstone so offline clients cannot silently restore this mapping.
       await tx.get(userPK(userId), 'SYNC_MEMBERSHIP');
@@ -1821,11 +1866,28 @@ export class StorageService {
       'SYNCFOLDERS#',
     );
     const ids = new Set(mappings.flatMap((mapping) => mapping.folderIds));
-    const items: DriveItem[] = [];
+    const devices = (await this.devices(userId)).items.filter((device) => !device.revokedAt);
+    const byKey = new Map(
+      devices.map((device) => [
+        device.devicePublicId ? `installation:${device.devicePublicId}` : `session:${device.id}`,
+        device,
+      ]),
+    );
+    const items: (DriveItem & { syncDevices: { id: string; name: string }[] })[] = [];
     for (const id of ids) {
       try {
         const { item } = await this.authorized(tx, userId, id);
-        if (item.type === 'FOLDER') items.push(item);
+        if (item.type === 'FOLDER' && !(await backupForItem(tx, item.ownerUserId, item.id)))
+          items.push({
+            ...item,
+            syncDevices: mappings
+              .filter((mapping) => mapping.folderIds.includes(id))
+              .flatMap((mapping) => {
+                const device = byKey.get(mapping.key);
+                return device ? [{ id: device.id, name: device.name }] : [];
+              })
+              .sort((a, b) => a.name.localeCompare(b.name)),
+          });
       } catch (error) {
         if (
           !(error instanceof DomainError) ||

@@ -27,10 +27,11 @@ const server = createServer(async (request, response) => {
       '.woff2': 'font/woff2',
       '.txt': 'text/plain',
     };
+    const content = await readFile(file);
     response.writeHead(200, {
       'Content-Type': types[path.extname(file)] ?? 'application/octet-stream',
     });
-    response.end(await readFile(file));
+    response.end(content);
   } catch {
     response.writeHead(404).end();
   }
@@ -91,10 +92,16 @@ try {
     });
   });
   await page.goto(url);
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Main navigation' })
+      .getByRole('link', { name: 'Favorites', exact: true }),
+  ).toHaveCount(0);
+  expect([403, 404]).toContain((await page.request.get(new URL('/favorites', url).href)).status());
   await expect(page.locator('.file-entry-row')).toHaveCount(1);
   const upload = page.locator('.upload-button');
   await expect(upload).toHaveCSS('display', 'flex');
-  await expect(upload).toHaveCSS('border-radius', '10px');
+  await expect(upload).toHaveCSS('border-radius', '8px');
   await expect(upload).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   const tokenColor = (token: string) =>
     page.evaluate((token) => {
@@ -119,22 +126,31 @@ try {
   await expect(page.locator('.drive-storage')).toContainText('37.0 KB of 100.0 GB');
   await expect(page.locator('.files-table caption')).toHaveCSS('position', 'absolute');
   await expect(page.locator('.files-table caption')).toHaveCSS('width', '1px');
-  // Rows grow with file metadata, wrapping, and fonts. Verify the shared table
-  // surface and spacing rather than the old compact table's fixed row height.
-  const table = page.locator('.drive-collection .data-table');
+  // Keep the flat, compact file-browser surface consistent in the published export.
+  const table = page.locator('.drive-collection .table');
   const tableScroll = page.getByRole('region', { name: 'Cloud files table', exact: true });
   await expect(table).toBeVisible();
   await expect(table).toHaveCSS('border-collapse', 'collapse');
   await expect(tableScroll).toHaveCSS('overflow-x', 'auto');
-  await expect(tableScroll).toHaveCSS('border-top-width', '1px');
-  await expect(tableScroll).toHaveCSS('background-color', await tokenColor('--card'));
-  await expect(table.locator('th').first()).toHaveCSS(
-    'background-color',
-    await tokenColor('--muted'),
-  );
-  await expect(table.locator('th').first()).toHaveCSS('padding', '12px 16px');
-  await expect(table.locator('tbody td').first()).toHaveCSS('padding', '18px 16px');
-  await expect(table.locator('.file-entry-label small')).toHaveText('Markdown document');
+  await expect(tableScroll).toHaveCSS('border-top-width', '0px');
+  await expect(tableScroll).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(table.locator('th').first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(table.locator('th').first()).toHaveCSS('padding', '0px 12px');
+  await expect(table.locator('tbody td').first()).toHaveCSS('padding', '8px 12px');
+  await expect(table.locator('tbody td').first()).toHaveCSS('border-bottom-width', '1px');
+  await expect(table.locator('.file-entry-icon')).toHaveCSS('width', '28px');
+  await expect(table.locator('.file-entry-label small')).toHaveCount(0);
+  for (const [tab, title] of [
+    ['Backup', 'No backup folders'],
+    ['Sync', 'No synced folders'],
+  ]) {
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+    await expect(page.locator('.empty-state').getByRole('heading', { name: title })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Filter by type', exact: true })).toBeVisible();
+    await expect(page.getByText('Backup files are read-only', { exact: false })).toHaveCount(0);
+  }
+  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
+  await expect(table).toBeVisible();
   await page.getByRole('button', { name: 'New folder', exact: true }).click();
   const folderName = page.getByRole('textbox', { name: 'Folder name', exact: true });
   await expect(folderName).toBeFocused();
@@ -149,8 +165,8 @@ try {
   await page.getByRole('button', { name: 'Grid view', exact: true }).click();
   const card = page.locator('.drive-collection .file-entry-card').first();
   await expect(card).toHaveCSS('border-top-width', '1px');
-  await expect(card).toHaveCSS('border-radius', '8px');
-  await expect(card).toHaveCSS('padding-top', '16px');
+  await expect(card).toHaveCSS('border-radius', '12px');
+  await expect(card).toHaveCSS('padding-top', '12px');
   const lightCardColor = await card.evaluate((el) => getComputedStyle(el).backgroundColor);
   await page.getByRole('button', { name: 'List view', exact: true }).click();
   await page.evaluate(() => document.fonts.ready);

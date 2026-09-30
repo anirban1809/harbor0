@@ -351,7 +351,7 @@ try {
         body: { ...op(), baseRevision: item.revision },
       });
       await engine.tick();
-      const recovered = (await readdir(local)).find((f) => f.startsWith('.harbor-recovered-'));
+      const recovered = (await readdir(local)).find((f) => f.includes('(Recovered by harbor0 '));
       assert(recovered);
       assert.equal(await readFile(path.join(local, recovered, 'child.txt'), 'utf8'), 'keep me');
     });

@@ -43,6 +43,7 @@ beforeEach(async () => {
   journal.root(root);
   api = new ApiClient(async (url, init) => {
     calls.push({ url, body: init?.body });
+    if (url === '/v1/backups/backup') return { root: { state: 'ACTIVE' } };
     if (url.endsWith('/pending-restores')) return { items: pending };
     if (url.endsWith('/files') && failEntry) {
       failEntry = false;
@@ -91,6 +92,10 @@ it('waits a full hour from the latest write or observed change and retains defer
 it('on demand rescans recent files, respects exclusions, ignores symlinks, and persists a manual run', async () => {
   await file('nested/recent.txt');
   await file('ignored/private.txt');
+  await file('.DS_Store');
+  await file('nested/.DS_Store');
+  await file('nested/._recent.txt');
+  await file('nested/Thumbs.db');
   await symlink(path.join(directory, 'nested/recent.txt'), path.join(directory, 'link.txt'));
   journal.finish(journal.jobs().find((j) => j.relativePath === 'nested/recent.txt')!.id);
   await backups.request(root);

@@ -6,7 +6,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "tsx build.ts",
-    "dev": "npm run build && electron .",
+    "dev": "npm run build && tsx dev.ts",
     "package": "npm run build && electron-builder"
   },
   "productName": "harbor0",

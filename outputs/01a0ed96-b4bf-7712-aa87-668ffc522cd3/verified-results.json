@@ -1,0 +1,47 @@
+{
+  "base": {
+    "revenue": 280,
+    "cost": 1885.4,
+    "profit": -1605.4,
+    "draw": 0,
+    "accounts": "Not viable",
+    "paid": "Not viable",
+    "paidContribution": 5.699999999999999
+  },
+  "paidShare0.1": {
+    "revenue": 1400,
+    "cost": 2507,
+    "profit": -1107,
+    "draw": 0,
+    "accounts": 55573,
+    "paid": 5558,
+    "paidContribution": 5.699999999999999
+  },
+  "paidShare0.15": {
+    "revenue": 2100,
+    "cost": 2895.5,
+    "profit": -795.5,
+    "draw": 0,
+    "accounts": 12777,
+    "paid": 1917,
+    "paidContribution": 5.699999999999999
+  },
+  "paidShare0.2": {
+    "revenue": 2800,
+    "cost": 3284,
+    "profit": -484,
+    "draw": 0,
+    "accounts": 7219,
+    "paid": 1444,
+    "paidContribution": 5.699999999999999
+  },
+  "lowerFreeCost": {
+    "revenue": 280,
+    "cost": 1417.94,
+    "profit": -1137.94,
+    "draw": 0,
+    "accounts": 83279,
+    "paid": 1666,
+    "paidContribution": 5.699999999999999
+  }
+}

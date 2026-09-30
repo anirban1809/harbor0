@@ -153,6 +153,10 @@ export class Journal {
       .prepare('SELECT id FROM jobs WHERE root_id=? AND relative_path=? AND kind=?')
       .get(rootId, relativePath, kind);
     if (existing) {
+      // A fresh local change retries immediately instead of waiting out an earlier failure.
+      this.db
+        .prepare("UPDATE jobs SET payload=json_remove(payload, '$.retryAt') WHERE id=?")
+        .run(existing.id as string);
       if (entry)
         this.db
           .prepare("UPDATE jobs SET payload=json_set(payload, '$.entry', json(?)) WHERE id=?")

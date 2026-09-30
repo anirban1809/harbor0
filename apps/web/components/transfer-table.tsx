@@ -1,10 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowDownToLine, File, Folder } from 'lucide-react';
+import { ArrowDownToLine, File, FileImage, FileText, Folder } from 'lucide-react';
 import type { ManifestEntry, Transfer } from '@harbor/contracts';
 import { Button } from './ui/button';
-import { DataTable } from './ui/data-table';
+import { DataTable } from './ui/table';
+import { Alert } from './ui/alert';
+import { Badge } from './ui/badge';
 
 export type TransferView = Transfer & {
   items: ManifestEntry[];
@@ -48,6 +50,25 @@ function TransferDate({ value }: { value: string | null }) {
   );
 }
 
+function TransferFileIcon({ entry }: { entry?: ManifestEntry }) {
+  const Icon =
+    entry?.itemType === 'FOLDER'
+      ? Folder
+      : entry?.mimeType?.startsWith('image/')
+        ? FileImage
+        : entry?.mimeType?.includes('pdf') || entry?.mimeType?.startsWith('text/')
+          ? FileText
+          : File;
+  return (
+    <span
+      className="file-entry-icon"
+      data-kind={Icon === Folder ? 'folder' : Icon === FileImage ? 'image' : 'document'}
+    >
+      <Icon size={18} aria-hidden="true" />
+    </span>
+  );
+}
+
 function TransferRow({
   transfer: t,
   direction,
@@ -73,7 +94,14 @@ function TransferRow({
           ? 'Saving…'
           : t.savedAt
             ? 'Saved to My Drive'
-            : t.state.replaceAll('_', ' ').toLowerCase();
+            : ({
+                PENDING_RECIPIENT_SIGNUP: 'Waiting for sign-up',
+                PENDING: received ? 'Waiting for you' : 'Waiting for recipient',
+                ACCEPTED: 'Accepted',
+                DECLINED: 'Declined',
+                CANCELLED: 'Cancelled',
+                EXPIRED: 'Expired',
+              }[t.state] ?? t.state);
   async function more() {
     if (!cursor) return;
     setLoading(true);
@@ -94,18 +122,14 @@ function TransferRow({
         <div className="transfer-file-list">
           {entries.map((entry) => (
             <div className="transfer-file" key={entry.id}>
-              {entry.itemType === 'FOLDER' ? <Folder size={18} /> : <File size={18} />}
-              <span title={entry.relativePath}>
+              <TransferFileIcon entry={entry} />
+              <span className="transfer-file-label" title={entry.relativePath}>
                 <strong>{entry.displayName}</strong>
-                <small>
-                  {entry.parentEntryId ? `${entry.relativePath} · ` : ''}
-                  {entry.itemType === 'FOLDER' ? 'Folder' : bytes(entry.sizeBytes)}
-                </small>
               </span>
               {received && t.state === 'ACCEPTED' && ready && entry.itemType === 'FILE' && (
                 <Button
                   variant="ghost"
-                  size="icon"
+                  size="icon-sm"
                   disabled={busy}
                   aria-label={`Download ${entry.displayName}`}
                   title={`Download ${entry.displayName}`}
@@ -120,22 +144,18 @@ function TransferRow({
             (t.displayNames?.length ? t.displayNames : ['Files being prepared']).map(
               (name, index) => (
                 <div className="transfer-file" key={`${index}:${name}`}>
-                  <File size={18} />
+                  <TransferFileIcon />
                   <strong>{name}</strong>
                 </div>
               ),
             )}
         </div>
         {cursor && (
-          <Button variant="ghost" disabled={loading || busy} onClick={() => void more()}>
+          <Button variant="ghost" size="sm" disabled={loading || busy} onClick={() => void more()}>
             {loading ? 'Loading…' : 'Load more files'}
           </Button>
         )}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
+        {error && <Alert tone="error">{error}</Alert>}
       </td>
       <td>
         <div className="transfer-contact">
@@ -151,23 +171,45 @@ function TransferRow({
         <TransferDate value={t.expiresAt} />
       </td>
       <td>
-        <span className={`badge ${t.state === 'ACCEPTED' ? 'success' : ''}`}>{status}</span>
-        {t.failure && <p className="error">{t.failure}</p>}
+        <Badge
+          tone={
+            t.preparationState === 'FAILED'
+              ? 'danger'
+              : t.state === 'ACCEPTED'
+                ? 'success'
+                : t.state.startsWith('PENDING')
+                  ? 'accent'
+                  : 'neutral'
+          }
+        >
+          {status}
+        </Badge>
+        {t.failure && (
+          <Alert tone="error" role="none">
+            {t.failure}
+          </Alert>
+        )}
       </td>
       <td>
         <div className="transfer-actions">
           {received && t.state === 'PENDING' && ready && (
             <>
-              <Button disabled={busy} onClick={() => void onAction(t, 'accept')}>
+              <Button size="sm" disabled={busy} onClick={() => void onAction(t, 'accept')}>
                 Accept
               </Button>
-              <Button variant="outline" disabled={busy} onClick={() => void onAction(t, 'decline')}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void onAction(t, 'decline')}
+              >
                 Decline
               </Button>
             </>
           )}
           {received && t.state === 'ACCEPTED' && ready && (
             <Button
+              size="sm"
               variant="outline"
               disabled={busy || !!t.savedAt || t.saveState === 'SAVING'}
               onClick={() => void onAction(t, 'save')}
@@ -178,7 +220,12 @@ function TransferRow({
           {!received &&
             t.preparationState !== 'BUILDING' &&
             ['PENDING', 'PENDING_RECIPIENT_SIGNUP'].includes(t.state) && (
-              <Button variant="outline" disabled={busy} onClick={() => void onAction(t, 'cancel')}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void onAction(t, 'cancel')}
+              >
                 Cancel transfer
               </Button>
             )}
@@ -193,6 +240,7 @@ function TransferRow({
 export function TransferTable(props: Props) {
   return (
     <DataTable
+      align="top"
       className="transfer-table"
       containerClassName="transfer-table-scroll"
       label={`${props.direction} files`}

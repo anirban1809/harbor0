@@ -1,9 +1,11 @@
 import path from 'node:path';
+import os from 'node:os';
 import { FolderBackups, backupReady } from './backups';
 import { SyncReceipts } from './sync-receipts';
-import { mkdir, lstat, rename, rm, access } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, access, readdir } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
+  stickyIssue,
   syncIssueCode,
   type SyncRuntime,
   type SyncIssue,
@@ -13,8 +15,18 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { DriveItem } from '@harbor/contracts';
 import { Journal, type Root, type LocalJob } from './journal';
-import { contained, safeParents, safeSegment, conflictName } from './paths';
+import {
+  contained,
+  internalPath,
+  metadataSegment,
+  recoveredName,
+  safeParents,
+  safeSegment,
+  conflictName,
+} from './paths';
 import { uploadFile, downloadFile, hashFile, type UploadState } from './transfers';
+// Failed files and folders retry with growing delays (4s up to 5 minutes).
+const retryDelay = (attempts: number) => Math.min(300_000, 2000 * 2 ** Math.min(attempts, 10));
 export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
@@ -38,6 +50,8 @@ export class SyncEngine {
   private confirmationWork?: Promise<void>;
   private confirmationController = new AbortController();
   private nextConfirmationAt = 0;
+  private rootRetry = new Map<string, { attempts: number; at: number }>();
+  private waiting = new Map<string, { rootId: string; relativePath: string }>();
   state: SyncRuntime = {
     running: false,
     paused: false,
@@ -58,7 +72,10 @@ export class SyncEngine {
     this.receipts = new SyncReceipts(api, journal);
     this.backups = new FolderBackups(api, journal);
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
-    this.state.issues = journal.get<SyncIssue[]>('syncIssues') ?? [];
+    // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
+    this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
+      (issue) => issue.code !== 'AUTH_INVALID',
+    );
     this.state.recent = journal.get<SyncActivityItem[]>('syncRecent') ?? [];
   }
   async start() {
@@ -70,7 +87,7 @@ export class SyncEngine {
         root = { ...root, paused: true };
         this.journal.root(root);
         this.state.issues = this.state.issues.filter(
-          (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+          (issue) => issue.rootId !== root.id || stickyIssue(issue),
         );
         this.state.issues.push({
           id: `${root.id}:mapping`,
@@ -104,7 +121,7 @@ export class SyncEngine {
   }
   private ignored(root: Root, relative: string) {
     return (
-      relative.split('/').some((p) => p.startsWith('.harbor-') || p.endsWith('.harbor-part')) ||
+      internalPath(relative) ||
       root.excluded.some((p) => relative === p || relative.startsWith(p + '/'))
     );
   }
@@ -177,9 +194,17 @@ export class SyncEngine {
   pause(paused: boolean) {
     this.state.paused = paused;
     this.journal.set('paused', paused);
-    if (!paused)
+    if (!paused) {
       for (const root of this.journal.roots())
         if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+      // Resuming is also the user's way to retry failed work now.
+      this.rootRetry.clear();
+      for (const job of this.journal.jobs())
+        if (job.payload.retryAt) {
+          delete job.payload.retryAt;
+          this.journal.saveJob(job);
+        }
+    }
     this.emit();
   }
   private emit(progressOnly = false) {
@@ -187,6 +212,7 @@ export class SyncEngine {
     if (progressOnly && now - this.lastProgressEmit < 100) return;
     this.lastProgressEmit = now;
     this.state.queued = this.journal.jobCount();
+    this.state.waiting = [...this.waiting.values()];
     this.changed({ ...this.state });
   }
   validateRoot(root: Root) {
@@ -219,6 +245,17 @@ export class SyncEngine {
     this.mutation = task.catch(() => {});
     return task;
   }
+  async disconnectBackup(id: string) {
+    const root = this.journal.roots().find((r) => r.id === id && r.mode === 'backup');
+    if (!root) throw new Error('Backup folder was not found on this computer.');
+    const roots = (await this.api.request('/v1/backups')).items;
+    const backup = roots.find(
+      (entry: { remoteRootDriveItemId: string }) => entry.remoteRootDriveItemId === root.remoteId,
+    );
+    if (!backup) throw new Error('Backup connection was not found.');
+    await this.api.request(`/v1/backups/${backup.id}`, { method: 'DELETE' });
+    await this.removeRoot(root.id);
+  }
   async backupNow(id: string) {
     const root = this.journal.roots().find((r) => r.id === id && r.mode === 'backup');
     if (!root) throw new Error('Backup folder was not found on this computer.');
@@ -243,8 +280,9 @@ export class SyncEngine {
       if (previous.localPath !== root.localPath || previous.remoteId !== root.remoteId)
         this.journal.resetRootFiles(root.id);
       this.journal.root({ ...root, needsReconcile: root.mode === 'sync' });
+      this.rootRetry.delete(root.id);
       this.state.issues = this.state.issues.filter(
-        (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+        (issue) => issue.rootId !== root.id || stickyIssue(issue),
       );
       this.persistIssues();
     });
@@ -285,6 +323,7 @@ export class SyncEngine {
     await this.watchers.get(root.id)?.close();
     this.watchers.delete(root.id);
     this.journal.removeRoot(root.id);
+    this.forgetWaiting(root.id);
     this.state.issues = this.state.issues.filter((issue) => issue.rootId !== root.id);
     this.persistIssues();
     this.emit();
@@ -297,26 +336,79 @@ export class SyncEngine {
     });
   }
   dismissConflict(id: string) {
-    this.state.issues = this.state.issues.filter(
-      (issue) => issue.id !== id || issue.code !== 'CONFLICT',
-    );
+    this.state.issues = this.state.issues.filter((issue) => issue.id !== id || !stickyIssue(issue));
     this.persistIssues();
     this.emit();
   }
   private persistIssues() {
     this.journal.set('syncIssues', this.state.issues);
   }
-  private issue(rootId: string, error: unknown, relativePath?: string) {
-    const code = syncIssueCode(error);
+  private forgetWaiting(rootId: string) {
+    for (const [id, item] of this.waiting) if (item.rootId === rootId) this.waiting.delete(id);
+  }
+  // Errors that are not about one file or folder: stop the pass and retry everything later.
+  private interrupts(error: unknown) {
+    if (error instanceof ApiError)
+      return (
+        error.status >= 500 ||
+        error.status === 429 ||
+        ['AUTH_INVALID', 'DEVICE_REVOKED', 'SYNC_REMOVED', 'SYNC_CURSOR_EXPIRED'].includes(
+          error.code,
+        )
+      );
+    return (
+      error instanceof TypeError ||
+      ['AbortError', 'TimeoutError'].includes((error as Error | undefined)?.name ?? '')
+    );
+  }
+  private rootFailed(root: Root, error: unknown) {
+    const attempts = (this.rootRetry.get(root.id)?.attempts ?? 0) + 1;
+    this.rootRetry.set(root.id, { attempts, at: Date.now() + retryDelay(attempts) });
+    // A full reconcile repairs whatever this pass could not apply.
+    const current = this.journal.roots().find((item) => item.id === root.id);
+    if (current && !current.needsReconcile) this.journal.root({ ...current, needsReconcile: true });
+    this.issue(root.id, error);
+  }
+  private issue(rootId: string, error: unknown, relativePath?: string, jobId?: string) {
+    const root = this.journal.roots().find((item) => item.id === rootId);
+    const failedPath = (error as NodeJS.ErrnoException)?.path;
+    // Filesystem errors below the folder itself concern one item, not the folder's own access.
+    const inside =
+      root && typeof failedPath === 'string' ? path.relative(root.localPath, failedPath) : '';
+    const nested = !!inside && !inside.startsWith('..') && !path.isAbsolute(inside);
+    const item = !!jobId || nested;
+    const code = syncIssueCode(error, item);
     this.state.issues = this.state.issues.filter(
-      (issue) => issue.rootId !== rootId || issue.code === 'CONFLICT',
+      (issue) =>
+        issue.rootId !== rootId ||
+        stickyIssue(issue) ||
+        (jobId ? issue.jobId !== jobId : !!issue.jobId),
     );
     this.state.issues.push({
-      id: `${rootId}:${code}`,
+      id: jobId ? `job:${jobId}` : `${rootId}:${code}`,
       rootId,
       code,
-      relativePath,
+      relativePath: relativePath ?? (nested ? inside.split(path.sep).join('/') : undefined),
       message: (error as Error).message,
+      at: new Date().toISOString(),
+      ...(jobId ? { jobId } : {}),
+      ...(item ? { scope: 'item' as const } : {}),
+    });
+    this.persistIssues();
+    this.emit();
+  }
+  private deviceName() {
+    return this.journal.get<string>('deviceName') || os.hostname();
+  }
+  private recovered(root: Root, relativePath: string, recoveredPath: string) {
+    this.state.issues.push({
+      id: crypto.randomUUID(),
+      rootId: root.id,
+      code: 'FOLDER_RECOVERED',
+      relativePath,
+      conflictPath: recoveredPath,
+      message:
+        'This folder was removed from sync elsewhere. The copy on this computer was kept under a new name and no longer syncs.',
       at: new Date().toISOString(),
     });
     this.persistIssues();
@@ -372,6 +464,7 @@ export class SyncEngine {
   async reconcile(root: Root) {
     if (root.mode === 'backup' || root.paused || this.state.paused || this.stopped) return;
     const seen = new Set<string>();
+    this.forgetWaiting(root.id);
     const walk = async (parent: string | null) => {
       let cursor: string | undefined;
       do {
@@ -537,7 +630,7 @@ export class SyncEngine {
         if (
           root.mode === 'sync' &&
           this.state.issues.some(
-            (issue) => issue.rootId === root.id && issue.code === 'FOLDER_MISSING',
+            (issue) => issue.rootId === root.id && issue.code === 'FOLDER_MISSING' && !issue.scope,
           )
         ) {
           // A disappearing volume can generate unlink events for every child.
@@ -547,12 +640,26 @@ export class SyncEngine {
         if (!this.watchers.has(root.id)) await this.watch(root);
         available.add(root.id);
         this.currentRootId = root.id;
+        // Keep a problem visible while its file or folder is still waiting to retry.
+        const retrying = (this.rootRetry.get(root.id)?.at ?? 0) > Date.now();
+        const queued = new Set(this.journal.jobs().map((job) => job.id));
         this.state.issues = this.state.issues.filter(
-          (issue) => issue.rootId !== root.id || issue.code === 'CONFLICT',
+          (issue) =>
+            issue.rootId !== root.id ||
+            stickyIssue(issue) ||
+            (issue.jobId ? queued.has(issue.jobId) : retrying),
         );
-        if (root.needsReconcile && root.mode === 'sync') {
-          await this.reconcile(root);
+        if (root.needsReconcile && root.mode === 'sync' && !retrying) {
+          try {
+            await this.reconcile(root);
+          } catch (error) {
+            if (this.interrupts(error)) throw error;
+            // One blocked folder must not stop the others or this folder's own uploads.
+            this.rootFailed(root, error);
+            continue;
+          }
           if (this.stopped || this.state.paused) return;
+          this.rootRetry.delete(root.id);
           const current = this.journal.roots().find((item) => item.id === root.id);
           if (current) this.journal.root({ ...current, needsReconcile: false });
         }
@@ -562,12 +669,19 @@ export class SyncEngine {
         .filter((r) => r.mode === 'backup' && !r.paused && available.has(r.id))) {
         if (this.stopped || this.state.paused) return;
         this.currentRootId = root.id;
-        await this.backups.process(
-          root,
-          (r, job) => this.localJob(r, job),
-          () => this.stopped || this.state.paused,
-        );
+        try {
+          await this.backups.process(
+            root,
+            (r, job) => this.localJob(r, job),
+            () => this.stopped || this.state.paused,
+          );
+        } catch (error) {
+          if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED')
+            await this.detachRoot(root);
+          else throw error;
+        }
       }
+      const full = new Set<string>();
       for (const job of this.journal.jobs()) {
         if (this.stopped || this.state.paused) return;
         const root = this.journal.roots().find((r) => r.id === job.rootId);
@@ -576,21 +690,35 @@ export class SyncEngine {
           root.mode === 'backup' ||
           !available.has(root.id) ||
           root.paused ||
-          this.ignored(root, job.relativePath)
+          this.ignored(root, job.relativePath) ||
+          (job.payload.retryAt ?? 0) > Date.now() ||
+          (job.kind === 'upsert' && full.has(root.id))
         )
           continue;
         this.currentRootId = root.id;
         try {
           await this.localJob(root, job);
           this.journal.finish(job.id);
+          if (this.state.issues.some((issue) => issue.jobId === job.id)) {
+            this.state.issues = this.state.issues.filter((issue) => issue.jobId !== job.id);
+            this.persistIssues();
+          }
           this.state.active = null;
           this.emit();
         } catch (e) {
           job.attempts++;
           job.error = (e as Error).message;
-          if (!(e instanceof TypeError)) this.issue(root.id, e, job.relativePath);
+          if (this.interrupts(e)) {
+            this.journal.saveJob(job);
+            throw e;
+          }
+          // One failing file waits for its own retry; the rest of the queue keeps moving.
+          job.payload.retryAt = Date.now() + retryDelay(job.attempts);
           this.journal.saveJob(job);
-          throw e;
+          // Every further upload would fail the same way until storage is freed.
+          if (e instanceof ApiError && e.code === 'STORAGE_QUOTA_EXCEEDED') full.add(root.id);
+          this.issue(root.id, e, job.relativePath, job.id);
+          this.state.active = null;
         }
       }
       if (this.stopped || this.state.paused) return;
@@ -600,25 +728,42 @@ export class SyncEngine {
       while (more && !this.stopped) {
         const page = await this.api.changes(cursor);
         for (const change of page.changes) {
+          if (change.type === 'BACKUP_DISCONNECTED')
+            for (const root of this.journal
+              .roots()
+              .filter((r) => r.mode === 'backup' && r.remoteId === change.entityId))
+              await this.detachRoot(root);
           if (change.type === 'SYNC_FOLDER_REMOVED')
             for (const root of this.journal.roots().filter((r) => r.mode === 'sync')) {
               if (root.remoteId === change.entityId) await this.detachRoot(root);
               else this.excludeRemovedFolder(root, change.entityId);
             }
+          // Folders waiting to retry are repaired by their next reconcile instead.
+          const targets = () =>
+            this.journal
+              .roots()
+              .filter(
+                (r) =>
+                  r.mode === 'sync' &&
+                  !r.shareId &&
+                  !r.paused &&
+                  available.has(r.id) &&
+                  !this.rootRetry.has(r.id),
+              );
+          const apply = async (root: Root, work: () => Promise<void>) => {
+            this.currentRootId = root.id;
+            try {
+              await work();
+            } catch (error) {
+              if (this.interrupts(error)) throw error;
+              this.rootFailed(root, error);
+            }
+          };
           if (change.type === 'TRANSFER_SAVED')
-            for (const root of this.journal
-              .roots()
-              .filter((r) => r.mode === 'sync' && !r.shareId && !r.paused && available.has(r.id))) {
-              this.currentRootId = root.id;
-              await this.reconcile(root);
-            }
-          if (change.item)
-            for (const root of this.journal
-              .roots()
-              .filter((r) => r.mode === 'sync' && !r.shareId && !r.paused && available.has(r.id))) {
-              this.currentRootId = root.id;
-              await this.remoteItem(root, change.item);
-            }
+            for (const root of targets()) await apply(root, () => this.reconcile(root));
+          const item = change.item;
+          if (item)
+            for (const root of targets()) await apply(root, () => this.remoteItem(root, item));
         }
         cursor = page.nextCursor;
         this.journal.set('cursor', cursor);
@@ -627,7 +772,7 @@ export class SyncEngine {
       if (this.stopped || this.state.paused) return;
       this.currentRootId = '';
       this.state.issues = this.state.issues.filter(
-        (issue) => issue.rootId !== '' || issue.code === 'CONFLICT',
+        (issue) => issue.rootId !== '' || stickyIssue(issue),
       );
       this.persistIssues();
       await this.api.request('/v1/sync/checkpoints', {
@@ -664,11 +809,16 @@ export class SyncEngine {
       }
       this.state.online = !(e instanceof TypeError);
       this.state.message = (e as Error).message;
+      // An ended session returns the app to sign-in by itself; there is nothing to fix here.
+      const sessionEnded =
+        e instanceof ApiError &&
+        (e.status === 401 || ['AUTH_INVALID', 'DEVICE_REVOKED'].includes(e.code));
       if (
         !(e instanceof TypeError) &&
+        !sessionEnded &&
         !(e instanceof ApiError && e.code === 'SYNC_CURSOR_EXPIRED') &&
         !this.state.issues.some(
-          (issue) => issue.rootId === this.currentRootId && issue.code !== 'CONFLICT',
+          (issue) => issue.rootId === this.currentRootId && !stickyIssue(issue),
         )
       )
         this.issue(this.currentRootId, e);
@@ -700,9 +850,17 @@ export class SyncEngine {
     name: string,
     parentId: string | null,
     operationId: string = crypto.randomUUID(),
+    backup?: { rootId: string; runId: string },
   ) {
     try {
-      return (await this.api.createFolder(name, parentId, operationId)).item;
+      return backup
+        ? (
+            await this.api.request(`/v1/backups/${backup.rootId}/runs/${backup.runId}/folders`, {
+              method: 'POST',
+              body: { name, parentId, operationId },
+            })
+          ).item
+        : (await this.api.createFolder(name, parentId, operationId)).item;
     } catch (e) {
       if (e instanceof ApiError && e.code === 'NAME_CONFLICT') {
         const existing = await this.child(parentId, name);
@@ -711,13 +869,17 @@ export class SyncEngine {
       throw e;
     }
   }
-  private async remoteParent(root: Root, relative: string): Promise<string | null> {
+  private async remoteParent(
+    root: Root,
+    relative: string,
+    backup?: { rootId: string; runId: string },
+  ): Promise<string | null> {
     const dirname = path.posix.dirname(relative);
     if (dirname === '.') return root.remoteId;
     const cached = this.journal.file(root.id, dirname);
     if (cached) return cached.itemId;
-    const parentId = await this.remoteParent(root, dirname);
-    const item = await this.ensureFolder(path.posix.basename(dirname), parentId);
+    const parentId = await this.remoteParent(root, dirname, backup);
+    const item = await this.ensureFolder(path.posix.basename(dirname), parentId, undefined, backup);
     this.journal.putFile({
       rootId: root.id,
       relativePath: dirname,
@@ -774,10 +936,14 @@ export class SyncEngine {
       total: info.isFile() ? info.size : 0,
     };
     this.emit();
-    const parentId = await this.remoteParent(root, job.relativePath);
+    const backup =
+      root.mode === 'backup'
+        ? { rootId: root.backupId!, runId: job.payload.backupRunId as string }
+        : undefined;
+    const parentId = await this.remoteParent(root, job.relativePath, backup);
     if (info.isDirectory()) {
       if (!known) {
-        const item = await this.ensureFolder(path.basename(absolute), parentId, job.id);
+        const item = await this.ensureFolder(path.basename(absolute), parentId, job.id, backup);
         this.journal.putFile({
           rootId: root.id,
           relativePath: job.relativePath,
@@ -885,6 +1051,7 @@ export class SyncEngine {
           this.emit(n < total);
         },
         verifyBackupQuiet,
+        backup,
       );
     } catch (e) {
       if (root.mode === 'backup') throw e;
@@ -894,7 +1061,7 @@ export class SyncEngine {
         if (job.payload.relayVersion) return;
         const conflict = path.posix.join(
           path.posix.dirname(job.relativePath),
-          conflictName(path.basename(absolute), 'this device', job.id),
+          conflictName(path.basename(absolute), this.deviceName(), job.id),
         );
         await rename(absolute, contained(root.localPath, conflict));
         this.conflict(root, job.relativePath, conflict);
@@ -948,7 +1115,7 @@ export class SyncEngine {
       if (info.isFile() && (await hashFile(full)) !== knownHash) {
         const conflict = path.posix.join(
           path.posix.dirname(relative),
-          conflictName(path.basename(full), 'this device', crypto.randomUUID()),
+          conflictName(path.basename(full), this.deviceName(), crypto.randomUUID()),
         );
         await rename(full, contained(root.localPath, conflict));
         this.conflict(root, relative, conflict);
@@ -970,6 +1137,7 @@ export class SyncEngine {
     if (known && this.ignored(root, known.relativePath)) return;
     if (eventItem.deletedAt && known && known.revision >= eventItem.revision) return;
     if (eventItem.deletedAt) {
+      this.waiting.delete(eventItem.id);
       if (!known) return;
       const full = contained(root.localPath, known.relativePath);
       if (known.type === 'FILE') {
@@ -977,11 +1145,17 @@ export class SyncEngine {
         await rm(full, { force: true });
       } else {
         // Preserve the entire local directory on remote deletion. It may contain unsynced work.
+        // The copy stays visible beside its old location and is excluded from further syncing.
         try {
-          await rename(
-            full,
-            contained(root.localPath, `.harbor-recovered-${Date.now()}-${path.basename(full)}`),
-          );
+          if ((await readdir(full)).every(metadataSegment)) await rm(full, { recursive: true });
+          else {
+            const kept = path.posix.join(
+              path.posix.dirname(known.relativePath),
+              recoveredName(path.basename(full), new Date()),
+            );
+            await rename(full, contained(root.localPath, kept));
+            this.recovered(root, known.relativePath, kept);
+          }
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
         }
@@ -1056,6 +1230,7 @@ export class SyncEngine {
           type: 'FILE',
         });
         this.receipts.queue(root, relative, item, hash);
+        this.waiting.delete(item.id);
         if (item.cloudState === 'REQUESTED') {
           this.journal.enqueue(root.id, relative, 'upsert');
           const relay = this.journal
@@ -1078,6 +1253,8 @@ export class SyncEngine {
     if (item.cloudState === 'RELEASED' || item.cloudState === 'REQUESTED') {
       await this.api.request(`/v1/sync/items/${item.id}/request-content`, { method: 'POST' });
       this.state.message = 'Waiting for a linked device to provide this file';
+      this.waiting.set(item.id, { rootId: root.id, relativePath: relative });
+      this.emit();
       return;
     }
     this.state.active = {
@@ -1115,6 +1292,7 @@ export class SyncEngine {
       type: 'FILE',
     });
     this.receipts.queue(root, relative, item, hash);
+    this.waiting.delete(item.id);
     this.activity(root, relative, 'download', item);
   }
 }

@@ -63,6 +63,7 @@ export async function uploadFile(
   existing?: { itemId: string; revision: number },
   progress?: (loaded: number, total: number) => void,
   beforeComplete?: () => Promise<void>,
+  backup?: { rootId: string; runId: string },
 ) {
   const info = await stat(filename);
   if (state.mtime !== undefined && (state.mtime !== info.mtimeMs || state.size !== info.size)) {
@@ -80,7 +81,7 @@ export async function uploadFile(
   if (!state.hash) state.hash = await hashFile(filename);
   persist();
   if (!state.uploadId) {
-    const result = await api.createUpload({
+    const input = {
       operationId: state.operationId,
       parentId,
       name,
@@ -88,7 +89,13 @@ export async function uploadFile(
       mimeType: 'application/octet-stream',
       contentHash: state.hash,
       ...(existing ? { driveItemId: existing.itemId, baseRevision: existing.revision } : {}),
-    });
+    };
+    const result = backup
+      ? await api.request(`/v1/backups/${backup.rootId}/runs/${backup.runId}/uploads`, {
+          method: 'POST',
+          body: input,
+        })
+      : await api.createUpload(input);
     state.uploadId = result.upload.id;
     state.partSize = result.upload.partSizeBytes;
     persist();
@@ -109,6 +116,7 @@ export async function uploadFile(
       existing,
       progress,
       beforeComplete,
+      backup,
     );
   }
   const parts: CompletedPart[] =

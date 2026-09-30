@@ -1,8 +1,8 @@
 # Shared interface
 
-Web and Electron use the same shadcn/ui components in `apps/web/components/ui` and theme in `apps/web/app/globals.css`. The buttons, inputs, cards, and dialog primitives are adapted from the [official shadcn/ui registry](https://ui.shadcn.com/docs/components). `apps/web/components.json` configures future additions.
+Web and Electron share one component kit in `apps/web/components/ui`, built on [Base UI](https://base-ui.com) primitives (menus, dialogs and drawers, tabs, toggle groups) plus kit-styled native controls (buttons, inputs, selects, checkboxes, progress). Use these components rather than raw elements so every screen keeps the same heights, radii, borders and focus rings.
 
-The supplied warm neutral light and dark palettes are preserved as semantic CSS variables. Tailwind v4 generates the component utilities; Next.js uses PostCSS, and Electron processes the same CSS through its build plugin. Inter and Roboto are bundled locally, including in the desktop build. The font mappings use the installed variable font names instead of self-referencing theme variables.
+Styles are plain CSS in `apps/web/app/styles`, imported by `apps/web/app/globals.css`: `tokens.css` (theme colors and the per-surface tokens derived from them), `base.css` (reset), `components.css` (the kit), `layout.css` (sidebar, top bar, sign-in) and `pages.css` (per-screen layout). Desktop-only screens add `apps/desktop/src/desktop.css`. There is no Tailwind or PostCSS step; Next.js and esbuild bundle the CSS directly. Geist and Geist Mono are bundled locally, including in the desktop build.
 
 The appearance control follows the system preference until the user picks light or dark, then remembers the choice locally. Web and desktop keep independent preferences.
 
@@ -36,7 +36,7 @@ The UI fixture check covers delayed list responses, absence of premature empty s
 
 ## Empty states
 
-`EmptyState`, `FileEmptyState`, and `LoadError` provide shared illustrations, accessible headings, descriptions, and shadcn actions across both clients. My Drive and folders offer upload/create actions; search offers clearing; favorites, recent, trash, shares, and transfers explain their own content and link back to My Drive. Devices, notifications, version history, folder picking, and desktop backup/sync setup also have explicit empty states. Compact variants sit inside panels without a second border.
+`EmptyState`, `FileEmptyState`, and `LoadError` provide shared illustrations, accessible headings, descriptions, and actions across both clients. My Drive and folders offer upload/create actions; search offers clearing; favorites, recent, trash, shares, and transfers explain their own content and link back to My Drive. Devices, notifications, version history, folder picking, and desktop backup/sync setup also have explicit empty states. Compact variants sit inside panels without a second border.
 
 Failed requests show a retry state instead of an empty collection. The visuals use the active card palette, including custom colors, and wrap actions on narrow screens. Mobile summary cards prioritize labels and values to leave room for file content.
 

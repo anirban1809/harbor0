@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, ChevronRight, RefreshCw } from 'lucide-react';
 import { FileCollection, FileCollectionSkeleton } from '../../web/components/file-collection';
 import { EmptyState, LoadError } from '../../web/components/empty-state';
-import { FilePreview } from '../../web/components/file-preview';
+import { FilePreview } from '../../web/components/lazy-file-preview';
+import { browserSession } from '../../web/lib/browser-cache';
 import { Button } from '../../web/components/ui/button';
+import { Alert } from '../../web/components/ui/alert';
+import { Badge } from '../../web/components/ui/badge';
 import { previewKind, type PreviewLoader } from '../../web/lib/file-preview';
 import { mergeSyncItems, type SyncDriveItem } from './sync-drive';
 import type { SyncFolder, SyncRuntime } from './sync-state';
@@ -28,11 +31,14 @@ export function SyncFileBrowser({
   root,
   state,
   back,
+  cacheScope,
 }: {
   root: SyncFolder;
   state: SyncBrowserState;
   back: () => void;
+  cacheScope: string;
 }) {
+  const session = useMemo(() => browserSession(bridge, cacheScope), [cacheScope]);
   const [trail, setTrail] = useState<{ id: string; name: string }[]>([]);
   const [cursor, setCursor] = useState<string>();
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -49,6 +55,12 @@ export function SyncFileBrowser({
   useEffect(() => {
     let cancelled = false;
     setError('');
+    const cached = session.views.get(view);
+    if (cached) {
+      setCloud(cached.items);
+      setNextCursor(cached.nextCursor);
+      setLoadedView(view);
+    }
     async function load() {
       try {
         const result = parentId?.startsWith('local-sync:')
@@ -57,13 +69,16 @@ export function SyncFileBrowser({
               path: `/v1/drive/folders/${encodeURIComponent(parentId ?? 'root')}/children${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
             });
         if (!cancelled) {
+          session.views.set(view, result);
           setCloud(result.items);
           setNextCursor(result.nextCursor);
         }
       } catch (e) {
         if (!cancelled) {
-          setCloud([]);
-          setNextCursor(null);
+          if (!cached) {
+            setCloud([]);
+            setNextCursor(null);
+          }
           setError((e as Error).message);
         }
       } finally {
@@ -74,7 +89,7 @@ export function SyncFileBrowser({
     return () => {
       cancelled = true;
     };
-  }, [parentId, cursor, view, revision, recentId, state.online, state.lastSync]);
+  }, [parentId, cursor, view, revision, recentId, state.online, state.lastSync, session]);
   const loading = loadedView !== view;
   const items = mergeSyncItems(loading ? [] : cloud, state.driveItems ?? [], parentId);
   function navigate(next: typeof trail) {
@@ -95,7 +110,7 @@ export function SyncFileBrowser({
   }
   return (
     <section className="sync-file-browser" aria-label={`Files in ${root.localPathDisplayName}`}>
-      <div className="sync-browser-toolbar">
+      <div className="file-toolbar sync-browser-toolbar">
         <nav className="breadcrumbs" aria-label="Synced folder location">
           <button onClick={back}>Synced folders</button>
           <ChevronRight size={14} />
@@ -117,21 +132,13 @@ export function SyncFileBrowser({
             </span>
           ))}
         </nav>
-        <Button variant="outline" size="sm" onClick={() => setRevision((value) => value + 1)}>
-          <RefreshCw size={14} />
+        <Button variant="outline" onClick={() => setRevision((value) => value + 1)}>
+          <RefreshCw />
           Refresh files
         </Button>
       </div>
-      {actionError && (
-        <p className="error" role="alert">
-          {actionError}
-        </p>
-      )}
-      {error && items.length > 0 && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {actionError && <Alert tone="error">{actionError}</Alert>}
+      {error && items.length > 0 && <Alert tone="error">{error}</Alert>}
       {loading ? (
         <div className="drive-collection">
           <FileCollectionSkeleton compact />
@@ -157,10 +164,10 @@ export function SyncFileBrowser({
           canOpen={(item) => item.type === 'FOLDER' || !item.localOnly}
           renderStatus={(item) =>
             item.syncStatus && (
-              <span className="drive-sync-status" title={item.syncDetail}>
+              <Badge className="drive-sync-status" title={item.syncDetail}>
                 {item.syncStatus}
                 {item.syncProgress !== undefined ? ` · ${item.syncProgress}%` : ''}
-              </span>
+              </Badge>
             )
           }
           renderActions={(item) =>
@@ -171,7 +178,7 @@ export function SyncFileBrowser({
                 aria-label={`Download ${item.name}`}
                 onClick={() => void download(item)}
               >
-                <ArrowDownToLine size={16} />
+                <ArrowDownToLine />
               </Button>
             )
           }
@@ -193,6 +200,7 @@ export function SyncFileBrowser({
       )}
       {preview && (
         <FilePreview
+          cacheScope={cacheScope}
           item={preview}
           load={loadPreview}
           onClose={() => setPreview(null)}

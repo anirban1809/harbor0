@@ -7,7 +7,6 @@ import {
   FolderPlus,
   RefreshCw,
   Search,
-  Star,
   Trash2,
   WifiOff,
 } from 'lucide-react';
@@ -28,9 +27,9 @@ export function EmptyState({
 }) {
   const id = useId();
   return (
-    <section className={`empty-state${compact ? ' empty-state-compact' : ''}`} aria-labelledby={id}>
-      <div className="empty-state-symbol" aria-hidden="true">
-        <div className="empty-icon">{icon}</div>
+    <section className="empty-state" data-compact={compact} aria-labelledby={id}>
+      <div className="empty-state-icon" aria-hidden="true">
+        {icon}
       </div>
       <div className="empty-state-copy">
         <h3 id={id}>{title}</h3>
@@ -58,7 +57,7 @@ export function LoadError({
       description="Your data hasn’t changed. Check your connection and try again."
       actions={
         <Button type="button" variant="outline" onClick={onRetry}>
-          <RefreshCw size={16} />
+          <RefreshCw />
           Try again
         </Button>
       }
@@ -70,7 +69,6 @@ export function FileEmptyState({
   section,
   search = false,
   inFolder = false,
-  desktop = false,
   busy = false,
   onUpload,
   onCreateFolder,
@@ -101,14 +99,6 @@ export function FileEmptyState({
       />
     );
   const views: Record<string, { icon: ReactNode; title: string; description: string }> = {
-    Favorites: {
-      icon: <Star />,
-      title: 'No favorite files',
-      description: desktop
-        ? 'Star a file or folder in your web workspace to find it here on any device.'
-        : 'Star a file or folder from its menu in My Drive. Your favorites will appear here.',
-    },
-
     Trash: {
       icon: <Trash2 />,
       title: 'Trash is empty',
@@ -140,11 +130,11 @@ export function FileEmptyState({
       actions={
         <>
           <Button disabled={busy} onClick={onUpload}>
-            <ArrowUpFromLine size={16} />
+            <ArrowUpFromLine />
             Upload files
           </Button>
           <Button variant="outline" disabled={busy} onClick={onCreateFolder}>
-            <FolderPlus size={16} />
+            <FolderPlus />
             Create a folder
           </Button>
         </>

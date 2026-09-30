@@ -34,9 +34,13 @@ export function ZipDownloadStatusPanel({
     finalizing: 'Finishing your ZIP…',
   }[progress.phase];
   return (
-    <section className="zip-download-status" role="status" aria-label="ZIP download status">
-      <div className="zip-download-heading">
-        <LoaderCircle className="zip-download-spinner" size={19} aria-hidden="true" />
+    <section
+      className="card status-card zip-download-status"
+      role="status"
+      aria-label="ZIP download status"
+    >
+      <div className="status-card-heading">
+        <LoaderCircle className="spin" size={18} aria-hidden="true" />
         <strong title={`${progress.name}.zip`}>
           {progress.phase === 'downloading' ? 'Downloading' : 'Preparing'} {progress.name}.zip
         </strong>
@@ -46,7 +50,7 @@ export function ZipDownloadStatusPanel({
           </Button>
         )}
       </div>
-      <div className="zip-download-details">
+      <div className="status-card-details">
         <span>{message}</span>
         <span>
           {progress.files} {progress.files === 1 ? 'file' : 'files'} completed ·{' '}
@@ -54,12 +58,13 @@ export function ZipDownloadStatusPanel({
         </span>
       </div>
       {progress.currentFile && (
-        <p className="zip-download-file" title={progress.currentFile}>
+        <p className="status-card-file" title={progress.currentFile}>
           {progress.currentFile}
         </p>
       )}
       <div
-        className={`zip-download-track${percent === null ? ' is-indeterminate' : ''}`}
+        className="progress-track"
+        data-indeterminate={percent === null}
         role="progressbar"
         aria-label={percent === null ? 'ZIP creation in progress' : 'ZIP progress'}
         aria-valuemin={0}

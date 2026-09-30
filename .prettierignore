@@ -8,3 +8,6 @@ docs/specs
 packages/api-client/src/generated.ts
 test-results
 .cloud
+
+apps/android/**/build
+apps/android/.gradle

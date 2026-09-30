@@ -2,7 +2,7 @@ import { it, expect } from 'vitest';
 import { mkdtemp, mkdir, symlink, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { contained, safeSegment, safeParents, conflictName } from '../src/paths';
+import { contained, internalPath, safeSegment, safeParents, conflictName } from '../src/paths';
 it('blocks path escapes and adapts unsafe Windows names deterministically', () => {
   expect(() => contained('/tmp/root', '../../outside')).toThrow();
   expect(() => contained('/tmp/root', '/outside')).toThrow();
@@ -25,4 +25,11 @@ it('refuses to follow symlinks in destination paths', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+it('treats OS metadata files as internal at any depth without hiding ordinary dotfiles', () => {
+  for (const name of ['.DS_Store', 'a/b/.DS_Store', 'a/._photo.jpg', 'Thumbs.db', 'a/desktop.ini'])
+    expect(internalPath(name)).toBe(true);
+  expect(internalPath('.Spotlight-V100/Store-V2/index')).toBe(true);
+  for (const name of ['.gitignore', '.env', 'a/DS_Store.txt', 'thumbs.db.bak', 'notes.txt'])
+    expect(internalPath(name)).toBe(false);
 });

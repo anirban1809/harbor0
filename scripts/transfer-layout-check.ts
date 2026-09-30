@@ -134,15 +134,34 @@ async function check(page: Page, platform: 'web' | 'desktop') {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
-  const navigate = (name: string) =>
-    (name === 'Notifications'
-      ? page.getByRole('link', { name, exact: true })
-      : nav.getByRole(platform === 'web' ? 'link' : 'button', { name, exact: true })
-    ).click();
+  const navigate = async (name: string) => {
+    if (name === 'Received' || name === 'Sent') {
+      await nav
+        .getByRole(platform === 'web' ? 'link' : 'button', { name: 'Shared', exact: true })
+        .click();
+      await page.getByRole('tab', { name, exact: true }).click();
+    } else if (name === 'Notifications') {
+      await page.getByRole('button', { name: 'Activity notifications', exact: true }).click();
+      await page.getByRole('button', { name: 'All notifications', exact: true }).click();
+    } else {
+      await nav.getByRole(platform === 'web' ? 'link' : 'button', { name, exact: true }).click();
+    }
+  };
   await expect(nav).toBeVisible();
+  await expect(nav.getByText('Favorites', { exact: true })).toHaveCount(0);
   await expect(nav.getByText(/^Recents?$/)).toHaveCount(0);
+  await expect(nav.getByText(/^(Received|Sent)$/)).toHaveCount(0);
   await navigate('Received');
   await expect(page.locator('.transfer-table tbody tr')).toHaveCount(4);
+  await expect(page.locator('.shared-heading')).toHaveCSS('border-bottom-width', '0px');
+  await expect(page.locator('.transfer-table-scroll')).toHaveCSS('border-top-width', '0px');
+  await expect(page.locator('.transfer-table th').first()).toHaveCSS(
+    'background-color',
+    'rgba(0, 0, 0, 0)',
+  );
+  await expect(page.locator('.transfer-file small')).toHaveCount(0);
+  await expect(page.locator('.transfer-file .file-entry-icon').first()).toHaveCSS('width', '28px');
+  if (platform === 'desktop') await expect(page.locator('.sync-shared-invitations')).toHaveCount(0);
   await expect(page.locator('.transfer-table th')).toHaveText([
     'Files',
     'From',
@@ -168,23 +187,29 @@ async function check(page: Page, platform: 'web' | 'desktop') {
   await expect(page.locator('.transfer-table')).toContainText('Older document.pdf');
   await page.getByRole('button', { name: 'First page', exact: true }).click();
   await expect(page.locator('.transfer-table tbody tr')).toHaveCount(4);
-  await navigate('Sent');
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect(page.locator('.transfer-table')).toContainText('Older document.pdf');
+  await page.getByRole('tab', { name: 'Sent', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Sent', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByRole('button', { name: 'First page', exact: true })).toHaveCount(0);
   await expect(page.locator('.transfer-table th').nth(1)).toHaveText('To');
   await expect(page.locator('.transfer-table')).toContainText('Preparation failed');
   const outgoing = page.locator('.transfer-table tbody tr').filter({ hasText: 'Welcome.pdf' });
   await outgoing.getByRole('button', { name: 'Cancel transfer' }).click();
-  await expect(outgoing).toContainText('cancelled');
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel transfer' }).click();
+  await expect(outgoing).toContainText('Cancelled');
   await expect(outgoing.getByRole('button', { name: 'Cancel transfer' })).toHaveCount(0);
   const pages = [
     'My Drive',
-    'Received',
-    'Sent',
-    'Favorites',
+    'Shared',
     'Trash',
     'Devices',
     'Storage',
     'Settings',
-    ...(platform === 'web' ? ['Shared', 'Notifications'] : ['Backups', 'Sync']),
+    ...(platform === 'web' ? ['Notifications'] : ['Backups', 'Sync']),
   ];
   for (const name of pages) {
     await navigate(name);
@@ -208,6 +233,18 @@ async function check(page: Page, platform: 'web' | 'desktop') {
   }
   await page.setViewportSize({ width: 1440, height: 900 });
   await navigate('Received');
+  await page.getByRole('tab', { name: 'Received', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Sent', exact: true })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Sent', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.keyboard.press('Home');
+  await expect(page.getByRole('tab', { name: 'Received', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
   await page.getByRole('button', { name: 'Switch to dark theme' }).click();
   await page.screenshot({
     path: `${output}/${platform}-received-dark.png`,

@@ -1,19 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Users, Folder, RefreshCw } from 'lucide-react';
-import type { ShareGrant } from '@harbor/contracts';
+import type { SyncInvitation as Invitation } from './incoming';
 import { Button } from '../../web/components/ui/button';
 import { Input } from '../../web/components/ui/input';
-import { Dialog } from '../../web/components/ui/dialog';
+import { Dialog, DialogActions } from '../../web/components/ui/dialog';
+import { Alert } from '../../web/components/ui/alert';
+import { Card } from '../../web/components/ui/card';
 import type { SyncFolder } from './sync-state';
 
 const bridge = window.harbor;
-type Invitation = ShareGrant & {
-  name: string;
-  direction: 'SENT' | 'RECEIVED';
-  owner: { username: string; displayName: string };
-  recipient: { username: string; displayName: string };
-};
-function useInvitations() {
+export function useInvitations() {
   const [items, setItems] = useState<Invitation[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -99,8 +95,10 @@ export function ShareSyncFolderDialog({ root, close }: { root: SyncFolder; close
       }}
     >
       <div className="sync-dialog sync-sharing-dialog">
-        <form onSubmit={(event) => void invite(event)}>
-          <label htmlFor="sync-share-recipient">Email or username</label>
+        <form className="field" onSubmit={(event) => void invite(event)}>
+          <label className="field-label" htmlFor="sync-share-recipient">
+            Email or username
+          </label>
           <div className="sync-share-invite">
             <Input
               id="sync-share-recipient"
@@ -116,26 +114,22 @@ export function ShareSyncFolderDialog({ root, close }: { root: SyncFolder; close
             </Button>
           </div>
         </form>
-        <p className="sync-setup-note">
+        <p className="muted">
           Invite an existing harbor0 account. Shared files use your storage allowance while waiting
           for delivery.
         </p>
-        {(error || loadError) && (
-          <p className="error" role="alert">
-            {error || loadError}
-          </p>
-        )}
-        {notice && <p role="status">{notice}</p>}
+        {(error || loadError) && <Alert tone="error">{error || loadError}</Alert>}
+        {notice && <Alert tone="success">{notice}</Alert>}
         <div className="sync-share-members">
           <h3>People with access</h3>
           {loading ? (
-            <p>Loading access…</p>
+            <p className="muted">Loading access…</p>
           ) : !members.length ? (
-            <p>No invitations yet.</p>
+            <p className="muted">No invitations yet.</p>
           ) : (
             members.map((member) => (
-              <div className="sync-share-person" key={member.id}>
-                <div>
+              <div className="list-row sync-share-person" key={member.id}>
+                <div className="list-row-text">
                   <strong>{member.recipient.displayName}</strong>
                   <span>
                     @{member.recipient.username} ·{' '}
@@ -163,26 +157,26 @@ export function ShareSyncFolderDialog({ root, close }: { root: SyncFolder; close
               Remove access for <strong>{removing.recipient.displayName}</strong>? Sync will stop on
               their devices when they reconnect. Files already downloaded will remain.
             </p>
-            <div className="dialog-actions">
+            <DialogActions>
               <Button variant="outline" disabled={busy} onClick={() => setRemoving(null)}>
                 Keep access
               </Button>
-              <Button variant="destructive" disabled={busy} onClick={() => void revoke()}>
+              <Button variant="danger" disabled={busy} onClick={() => void revoke()}>
                 Remove access
               </Button>
-            </div>
+            </DialogActions>
           </div>
         )}
-        <div className="dialog-actions">
+        <DialogActions>
           <Button variant="outline" disabled={busy} onClick={close}>
             Done
           </Button>
-        </div>
+        </DialogActions>
       </div>
     </Dialog>
   );
 }
-function AcceptSyncDialog({
+export function AcceptSyncDialog({
   invitation,
   close,
   refresh,
@@ -194,6 +188,23 @@ function AcceptSyncDialog({
   const [local, setLocal] = useState<Awaited<ReturnType<typeof bridge.selectSyncLocal>>>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  async function reject() {
+    setBusy(true);
+    setError('');
+    try {
+      await bridge.request({
+        path: `/v1/sync/shares/${invitation.id}/respond`,
+        method: 'POST',
+        body: { action: 'DECLINED' },
+      });
+      await refresh();
+      close();
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function choose() {
     setError('');
     setBusy(true);
@@ -248,23 +259,24 @@ function AcceptSyncDialog({
             Choose local folder
           </Button>
         </div>
-        <p className="sync-setup-note">
+        <p className="muted">
           Files already in the local folder will be shared too. Use an empty folder to start with
           the owner's files. Additions, edits, renames, and deletions sync both ways. Conflicting
           edits are preserved.
         </p>
-        <p className="sync-setup-note">
+        <p className="muted">
           The first download may wait for another linked device to come online.
         </p>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <div className="dialog-actions">
+        {error && <Alert tone="error">{error}</Alert>}
+        <DialogActions>
           <Button variant="outline" disabled={busy} onClick={close}>
             Cancel
           </Button>
+          {invitation.syncState === 'PENDING' && (
+            <Button variant="outline" disabled={busy} onClick={() => void reject()}>
+              Reject
+            </Button>
+          )}
           <Button disabled={busy || !local} onClick={() => void start()}>
             {busy
               ? 'Starting…'
@@ -272,7 +284,7 @@ function AcceptSyncDialog({
                 ? 'Accept and start syncing'
                 : 'Start syncing'}
           </Button>
-        </div>
+        </DialogActions>
       </div>
     </Dialog>
   );
@@ -280,9 +292,11 @@ function AcceptSyncDialog({
 export function SharedSyncInvitations({
   roots,
   refresh,
+  hideWhenEmpty = false,
 }: {
   roots: SyncFolder[];
   refresh: () => Promise<void>;
+  hideWhenEmpty?: boolean;
 }) {
   const { items, error: loadError, loading, load } = useInvitations();
   const [selected, setSelected] = useState<Invitation | null>(null);
@@ -308,46 +322,50 @@ export function SharedSyncInvitations({
       setBusy(false);
     }
   }
+  if (hideWhenEmpty && !invitations.length && !error && !loadError && !selected) return null;
   return (
-    <section className="sync-shared-invitations" aria-label="Shared sync folders">
-      <div className="sync-section-heading">
-        <h2>
-          <Users size={18} /> Shared with you
-        </h2>
+    <Card
+      className="sync-shared-invitations"
+      aria-label="Shared sync folders"
+      title={
+        <span className="sync-shared-title">
+          <Users size={16} aria-hidden="true" /> Shared with you
+        </span>
+      }
+      action={
         <Button
           variant="ghost"
-          size="sm"
+          size="icon-sm"
           disabled={busy}
           onClick={() => void load()}
           aria-label="Refresh shared folders"
         >
-          <RefreshCw size={14} />
+          <RefreshCw />
         </Button>
-      </div>
-      {(error || loadError) && (
-        <p className="error" role="alert">
-          {error || loadError}
-        </p>
-      )}
+      }
+    >
+      {(error || loadError) && <Alert tone="error">{error || loadError}</Alert>}
       {loading ? (
-        <p>Checking invitations…</p>
+        <p className="muted">Checking invitations…</p>
       ) : !invitations.length ? (
-        <p className="sync-share-empty">
+        <p className="muted sync-share-empty">
           {items.some((item) => item.direction === 'RECEIVED')
             ? 'Your shared folders are listed above.'
             : 'Folders shared with your account will appear here.'}
         </p>
       ) : (
         invitations.map((invitation) => (
-          <div className="sync-share-person" key={invitation.id}>
-            <Folder size={19} />
-            <div>
+          <div className="list-row sync-share-person" key={invitation.id}>
+            <span className="file-entry-icon" data-kind="folder">
+              <Folder aria-hidden="true" />
+            </span>
+            <div className="list-row-text">
               <strong>{invitation.name}</strong>
               <span>
                 From {invitation.owner.displayName} (@{invitation.owner.username}) · Two-way sync
               </span>
             </div>
-            <div className="sync-share-buttons">
+            <div className="list-row-actions sync-share-buttons">
               {invitation.syncState === 'PENDING' && (
                 <Button
                   variant="ghost"
@@ -355,7 +373,7 @@ export function SharedSyncInvitations({
                   disabled={busy}
                   onClick={() => void decline(invitation)}
                 >
-                  Decline
+                  Reject
                 </Button>
               )}
               <Button
@@ -380,6 +398,6 @@ export function SharedSyncInvitations({
           }}
         />
       )}
-    </section>
+    </Card>
   );
 }

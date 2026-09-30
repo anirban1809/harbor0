@@ -2,7 +2,9 @@
 
 [Open harbor0](https://d1bpha1d51nhxy.cloudfront.net)
 
-Latest backend and web deployment verified on 2026-09-28T07:24:15.714Z.
+Latest backend and web deployment verified on 2026-09-28T08:18:39.512Z.
+
+The file-browser UI update was published on 2026-09-28 at 18:12 UTC using the assets-only deployment. The shared flat table now covers My Drive, Favorites, Trash, search results, and backup archive browsing, with the Upload button retained and consistent Backup and Sync empty states. The production build, static-export and hosted browser checks (including themes, responsive layouts, dialogs, and route refreshes), and all nine hosting checks passed.
 
 | Resource                | Value                                    |
 | ----------------------- | ---------------------------------------- |
@@ -26,7 +28,7 @@ User files stay in private Cloudflare R2. Its CORS policy includes the CloudFron
 
 The backend and web app include Archives, Backups, and Restore/Export. The updated desktop client is required for folder watching, automatic and on-demand backup work, and local restore execution.
 
-Seven live checks verified the one-hour deferral, automatic uploads to private R2, on-demand versions, per-run file records, the three web tabs, export of historical bytes, and web-requested restore to the original local file. All nine hosting checks also passed. The synthetic test account was removed and its test folder was submitted for permanent deletion through the normal cleanup workflow.
+Nine live checks verified the one-hour deferral, automatic uploads to private R2, on-demand versions, per-run file records, the three web tabs, export of historical bytes, web-requested restore to the original local file, server-enforced backup immutability, and disconnecting a backup into an editable Cloud folder without losing versions. My Drive now has Cloud, Backup, and Sync browsers in both clients. Connected backups stay read-only while paused. Only the source installation can append versions through backup-run routes, so installed desktop clients need the updated build. All nine hosting checks also passed. The synthetic test account was removed and its test folder was submitted for permanent deletion through the normal cleanup workflow.
 
 Run `npx tsx --env-file=.env.cloud scripts/validate-live-backups.ts` to repeat this isolated live check. Evidence: [backup validation](../.cloud/live-backups-validation.json), [backup screenshot](../.cloud/live-backups.png), and [hosting validation](../.cloud/web-hosting-validation.json).
 
@@ -75,7 +77,7 @@ The deploy script reads the existing backend outputs and local credentials, buil
 
 Run `npm run cloud:deploy-web:assets` to publish to the existing bucket and distribution without updating infrastructure, backend configuration, Cognito, or R2 CORS. This builds and checks the isolated export, uploads hashed assets before HTML, retains older hashed chunks, and waits for CloudFront invalidation.
 
-The export copies `apps/web/postcss.config.mjs` into its staging directory so Tailwind generates the same shadcn utilities as local development. The build fails if Tailwind directives remain unprocessed or essential utilities are missing. Both deployment paths run `npm run test:web-styles` before uploading. That browser check serves the actual static export and verifies button colors, the compact Drive table, sidebar storage, file-grid borders/padding, the absence of dashboard cards, the visually hidden table caption, inline folder-entry and rename-dialog focus, dark mode, responsive layouts, and direct access and refresh on every workspace route using isolated API fixtures.
+The build fails if the exported CSS is missing the shared component stylesheet. Both deployment paths run `npm run test:web-styles` before uploading. That browser check serves the actual static export and verifies button colors, the compact Drive table, sidebar storage, file-grid borders/padding, the absence of dashboard cards, the visually hidden table caption, inline folder-entry and rename-dialog focus, dark mode, responsive layouts, and direct access and refresh on every workspace route using isolated API fixtures.
 
 To run the same read-only asset checks against a published release, use:
 

@@ -201,22 +201,15 @@ it('does not charge storage twice when a released file is permanently deleted', 
   expect(await new Transaction(repo).get(userPK('alice'), 'ITEM#' + item.id)).toBeUndefined();
 });
 
-it('preserves backup contents even when that folder is also mapped for sync', async () => {
+it('rejects mapping a connected backup folder for sync', async () => {
   const { root } = await service.backupRoot('alice', {
     operationId: randomUUID(),
     deviceId: 'mac',
     name: 'Backup',
   });
-  folder = (await new Transaction(repo).get<DriveItem>(
-    userPK('alice'),
-    'ITEM#' + root.remoteRootDriveItemId,
-  ))!;
-  await service.setSyncFolders('alice', 'mac', [folder.id]);
-  const item = await upload();
-  await ack('mac', item);
-  expect(await relay.release('alice', item.id)).toBe(true);
-  expect((await service.me('alice')).storage.usedBytes).toBe(5);
-  expect((await service.download('alice', { driveItemId: item.id })).contentHash).toBe(hash);
+  await expect(
+    service.setSyncFolders('alice', 'mac', [root.remoteRootDriveItemId]),
+  ).rejects.toMatchObject({ code: 'BACKUP_IMMUTABLE' });
 });
 
 it('reports confirmation for the authenticated installation separately from the overall folder summary', async () => {

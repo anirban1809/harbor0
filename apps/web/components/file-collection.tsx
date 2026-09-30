@@ -1,32 +1,18 @@
 'use client';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { File, FileImage, FileText, Folder, Star, Trash2 } from 'lucide-react';
 import { fileDate, fileKind, fileSize, fileSummary, type FileEntry } from '../lib/file-metadata';
+import { LoadMoreFiles } from './load-more-files';
 import { Skeleton } from './ui/skeleton';
 import { LoadError } from './empty-state';
-import { DataTable } from './ui/data-table';
+import { DataTable } from './ui/table';
+import { Checkbox } from './ui/checkbox';
 
-function FileTable({
-  compact,
-  children,
-  label = 'Drive files',
-}: {
-  compact?: boolean;
-  children: ReactNode;
-  label?: string;
-}) {
-  return compact ? (
-    <DataTable
-      className="files-table drive-data-table"
-      containerClassName="files-table-scroll"
-      label={label}
-    >
+function FileTable({ children, label = 'Drive files' }: { children: ReactNode; label?: string }) {
+  return (
+    <DataTable className="files-table" label={label}>
       {children}
     </DataTable>
-  ) : (
-    <div className="files-table-scroll">
-      <table className="files-table">{children}</table>
-    </div>
   );
 }
 
@@ -54,9 +40,8 @@ function SelectAll({
     if (ref.current) ref.current.indeterminate = count > 0 && count < items.length;
   }, [count, items.length]);
   return (
-    <input
+    <Checkbox
       ref={ref}
-      type="checkbox"
       aria-label="Select all files on this page"
       checked={items.length > 0 && count === items.length}
       onChange={(event) =>
@@ -98,8 +83,11 @@ function FileIdentity({
         disabled={disabled}
         onClick={() => onOpen(item)}
       >
-        <span className="file-entry-icon">
-          <Icon size={22} aria-hidden="true" />
+        <span
+          className="file-entry-icon"
+          data-kind={Icon === Folder ? 'folder' : Icon === FileImage ? 'image' : 'document'}
+        >
+          <Icon aria-hidden="true" />
         </span>
         <span className="file-entry-label">
           <strong>{item.name}</strong>
@@ -122,6 +110,7 @@ type Props<T extends FileEntry> = {
   renderActions: (item: T) => ReactNode;
   renderStatus?: (item: T) => ReactNode;
   statusColumn?: boolean;
+  renderDevice?: (item: T) => ReactNode;
   canOpen?: (item: T) => boolean;
   refreshing?: boolean;
   compact?: boolean;
@@ -138,11 +127,15 @@ export function FileCollection<T extends FileEntry>({
   renderActions,
   renderStatus,
   statusColumn = false,
+  renderDevice,
   canOpen,
   refreshing,
-  compact = false,
+  compact = true,
   label,
 }: Props<T>) {
+  const [visibleCount, setVisibleCount] = useState(80);
+  const visibleItems = items.slice(0, visibleCount);
+  const showMore = useCallback(() => setVisibleCount((count) => count + 80), []);
   const anchor = useRef<string | null>(null);
   function select(item: T, extend = false, toggle = false) {
     if (!onSelectionChange) return;
@@ -174,6 +167,10 @@ export function FileCollection<T extends FileEntry>({
             if ((event.target as HTMLElement).closest('button, input, [role="menuitem"]')) return;
             select(item, event.shiftKey, event.metaKey || event.ctrlKey);
           },
+          onDoubleClick: (event: React.MouseEvent) => {
+            if ((event.target as HTMLElement).closest('button, input, [role="menuitem"]')) return;
+            if (!canOpen || canOpen(item)) onOpen(item);
+          },
           onKeyDown: (event: React.KeyboardEvent) => {
             if (event.target !== event.currentTarget) return;
             if (event.key === ' ') {
@@ -195,7 +192,11 @@ export function FileCollection<T extends FileEntry>({
                   anchor.current ??= item.id;
                   select(next, true);
                 }
-                (event.currentTarget.parentElement?.children[index] as HTMLElement)?.focus();
+                const parent = event.currentTarget.parentElement;
+                if (index >= visibleCount) {
+                  setVisibleCount((count) => count + 80);
+                  requestAnimationFrame(() => (parent?.children[index] as HTMLElement)?.focus());
+                } else (parent?.children[index] as HTMLElement)?.focus();
               }
             }
           },
@@ -206,8 +207,7 @@ export function FileCollection<T extends FileEntry>({
     return (
       <div className="file-entry-identity">
         {onSelectionChange && (
-          <input
-            type="checkbox"
+          <Checkbox
             aria-label={`Select ${item.name}`}
             checked={selected.includes(item.id)}
             onChange={(event) => select(item, (event.nativeEvent as MouseEvent).shiftKey, true)}
@@ -215,7 +215,7 @@ export function FileCollection<T extends FileEntry>({
         )}
         <FileIdentity
           item={item}
-          compact={compact && grid}
+          compact={compact}
           onOpen={() => onOpen(item)}
           disabled={canOpen ? !canOpen(item) : false}
         />
@@ -229,13 +229,14 @@ export function FileCollection<T extends FileEntry>({
     <section className={`files-collection ${compact ? 'drive-collection' : ''}`} aria-label="Files">
       {grid ? (
         <div className="files-view-grid file-grid">
-          {items.map((item) => (
+          {visibleItems.map((item) => (
             <article
-              className={`file-entry-card ${selected.includes(item.id) ? 'is-selected' : ''}`}
+              className={`card file-entry-card ${selected.includes(item.id) ? 'is-selected' : ''}`}
               key={item.id}
               {...rowEvents(item)}
             >
               {identity(item)}
+              {renderDevice && <div className="file-card-device">{renderDevice(item)}</div>}
               <div className="file-card-actions">{renderActions(item)}</div>
               {!compact && (
                 <dl className="file-card-details">
@@ -253,7 +254,7 @@ export function FileCollection<T extends FileEntry>({
           ))}
         </div>
       ) : (
-        <FileTable compact={compact} label={label}>
+        <FileTable label={label}>
           <caption className="sr-only">
             Your files with size and modified date.{' '}
             {!compact && <> {trash ? 'deleted' : 'created'} date, and owner</>}
@@ -268,6 +269,11 @@ export function FileCollection<T extends FileEntry>({
                   <span>{compact ? 'Name' : 'Name & type'}</span>
                 </div>
               </th>
+              {renderDevice && (
+                <th scope="col" className="file-device-column">
+                  Device
+                </th>
+              )}
               {statusColumn && (
                 <th scope="col" className="file-sync-column">
                   Sync status
@@ -290,12 +296,12 @@ export function FileCollection<T extends FileEntry>({
                 </>
               )}
               <th scope="col" className="file-actions-column">
-                <span className={compact ? undefined : 'sr-only'}>Actions</span>
+                <span className="sr-only">Actions</span>
               </th>
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {visibleItems.map((item) => (
               <tr
                 key={item.id}
                 {...rowEvents(item)}
@@ -303,6 +309,7 @@ export function FileCollection<T extends FileEntry>({
                 className={`file-entry-row ${selected.includes(item.id) ? 'is-selected' : ''}`}
               >
                 <td>{identity(item)}</td>
+                {renderDevice && <td className="file-device-column">{renderDevice(item)}</td>}
                 {statusColumn && (
                   <td className="file-sync-column">
                     {renderStatus?.(item) || <span className="muted">—</span>}
@@ -336,6 +343,7 @@ export function FileCollection<T extends FileEntry>({
           </tbody>
         </FileTable>
       )}
+      {visibleCount < items.length && <LoadMoreFiles loading={false} onLoad={showMore} />}
       {!compact && (
         <div className="file-list-summary">
           <span>{fileSummary(items)}</span>
@@ -347,18 +355,23 @@ export function FileCollection<T extends FileEntry>({
 }
 export function FileCollectionSkeleton({
   grid = false,
-  compact = false,
+  compact = true,
 }: {
   grid?: boolean;
   compact?: boolean;
 }) {
   return (
-    <div className="files-collection" role="status" aria-label="Loading files" aria-busy="true">
+    <div
+      className={`files-collection ${compact ? 'drive-collection' : ''}`}
+      role="status"
+      aria-label="Loading files"
+      aria-busy="true"
+    >
       <span className="sr-only">Loading files…</span>
       {grid ? (
         <div className="files-view-grid">
           {Array.from({ length: 6 }, (_, index) => (
-            <div key={index} className="file-entry-card">
+            <div key={index} className="card file-entry-card">
               <Skeleton className="skeleton-file-icon" />
               <Skeleton className="skeleton-file-name" />
               <Skeleton className="skeleton-file-meta" />
@@ -367,7 +380,7 @@ export function FileCollectionSkeleton({
           ))}
         </div>
       ) : (
-        <FileTable compact={compact}>
+        <FileTable>
           <thead>
             <tr>
               <th className="file-name-column">{compact ? 'Name' : 'Name & type'}</th>
@@ -379,7 +392,9 @@ export function FileCollectionSkeleton({
                   <th className="file-owner-column">Owner</th>
                 </>
               )}
-              <th className="file-actions-column">{compact && 'Actions'}</th>
+              <th className="file-actions-column">
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>

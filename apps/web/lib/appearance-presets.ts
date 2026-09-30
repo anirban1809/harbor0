@@ -11,9 +11,9 @@ export const appearancePresets: {
   {
     id: 'default',
     name: 'Harbor',
-    description: 'Neutral grays',
+    description: 'Indigo on neutral',
     palettes: { light: {}, dark: {} },
-    swatches: ['#fafafa', '#ffffff', '#171717'],
+    swatches: ['#4353d9', '#f4f5f7', '#ffffff'],
   },
   {
     id: 'ocean',

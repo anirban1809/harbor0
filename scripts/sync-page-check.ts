@@ -25,6 +25,7 @@ try {
       localPath: '/Users/demo/Documents/Code/editor',
       localPathDisplay: '~/Documents/Code/editor',
       localPathDisplayName: 'editor',
+      diskSizeBytes: 24 * 1024 * 1024,
       fileCount: 5,
       folderCount: 0,
       paused: false,
@@ -68,6 +69,7 @@ try {
       data: {
         configured: true,
         signedIn: true,
+        accountId: 'sync-ui',
         deviceName: 'MacBook Pro',
         roots: [root],
         jobs: [],
@@ -203,62 +205,47 @@ try {
     ).toBe(true);
   }
   await syncPage();
-  const filesTab = page.getByRole('tab', { name: 'Files', exact: true });
-  const activityTab = page.getByRole('tab', { name: 'Activity', exact: true });
-  await expect(page.getByRole('tab')).toHaveText(['Files', 'Activity']);
-  await expect(filesTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tabpanel', { name: 'Activity', exact: true })).toBeHidden();
-  await filesTab.focus();
-  await page.keyboard.press('ArrowRight');
-  await expect(activityTab).toBeFocused();
-  await expect(activityTab).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('Home');
-  await expect(filesTab).toBeFocused();
-  // Browse synced folders without leaving Sync, retaining the location across tabs.
+  await expect(page.locator('.sync-page').getByRole('tablist')).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'editor', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Notes.md', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Notes.md', exact: true }).click();
-  await expect(page.getByRole('dialog')).toContainText('# Sync browser preview');
-  await page.getByRole('button', { name: 'Close preview' }).click();
-  await page.getByRole('button', { name: 'Download Notes.md', exact: true }).click();
   expect(await app.evaluate(() => (globalThis as any).__syncUI.calls.at(-1))).toMatchObject({
-    action: 'download',
-    driveItemId: 'notes',
+    action: 'reveal',
+    rootId: 'editor',
   });
-  await page.getByRole('button', { name: 'Docs', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Guide.md', exact: true })).toBeVisible();
-  await activityTab.click();
-  await expect(page.getByRole('heading', { name: 'Sync activity', exact: true })).toBeVisible();
-  await filesTab.click();
-  await expect(page.getByRole('button', { name: 'Guide.md', exact: true })).toBeVisible();
-  await screenshot('files-browser');
-  await page.getByRole('button', { name: 'Synced folders', exact: true }).click();
+  await expect(page.locator('.sync-help')).toHaveCount(0);
   await page.getByRole('button', { name: 'Manage editor', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'View sync activity', exact: true }).click();
-  await expect(activityTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('button', { name: 'Show all folders' })).toBeVisible();
-  await page.getByRole('button', { name: 'Show all folders' }).click();
-  await filesTab.click();
+  await expect(page.getByRole('menuitem', { name: 'View sync activity', exact: true })).toHaveCount(
+    0,
+  );
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
   await expect(
     page.getByRole('region', { name: 'Synced folders', exact: true }).locator('th'),
-  ).toHaveText([
-    'Folder',
-    'Local location',
-    'Contents',
-    'Status',
-    'Last synced',
-    'Changes',
-    'Exclusions',
-    'Actions',
-  ]);
+  ).toHaveText(['Folder', 'Local location', 'Folder size', 'Status', 'Last synced']);
   await expect(page.locator('.sync-folder-row')).toHaveCount(1);
-  await expect(page.locator('.sync-folder-row')).toContainText('5 files');
-  await expect(page.locator('.sync-folder-row')).toContainText('0 subfolders');
+  await expect(page.locator('.sync-folders-table')).toHaveCSS('min-width', '760px');
+  await expect(page.locator('.sync-folder-size')).toContainText('25.17 MB');
+  await expect(page.locator('.sync-folder-state')).toHaveClass(/badge/);
+  for (const [bytes, label] of [
+    [undefined, 'Calculating…'],
+    [null, 'Unavailable'],
+    [0, '0 B'],
+  ] as const) {
+    await app.evaluate((_electron, bytes) => {
+      (globalThis as any).__syncUI.data.roots[0].diskSizeBytes = bytes;
+    }, bytes);
+    await syncPage();
+    await expect(page.locator('.sync-folder-size')).toHaveText(label);
+  }
+  await app.evaluate(() => {
+    (globalThis as any).__syncUI.data.roots[0].diskSizeBytes = 24 * 1024 * 1024;
+  });
+  await syncPage();
   await expect(page.locator('.sync-folder-state')).toHaveText('Up to date');
   await expect(page.getByText('~/Documents/Code/editor', { exact: true })).toBeVisible();
   await expect(page.locator('.sync-summary')).toHaveCount(0);
   await expect(page.locator('.folder-metrics')).toHaveCount(0);
-  await expect(page.getByText('Only the folders listed below', { exact: false })).toBeVisible();
+  await expect(page.getByText('Only the folders listed below', { exact: false })).toHaveCount(0);
   for (const [width, height] of [
     [1280, 860],
     [840, 620],
@@ -279,7 +266,7 @@ try {
   await page.getByRole('button', { name: 'Switch to light theme' }).click();
   await page.getByRole('button', { name: 'Pause sync', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Resume sync', exact: true })).toBeVisible();
-  await expect(page.getByRole('status')).toContainText('Changes are being queued');
+  await expect(page.locator('.sync-status')).toContainText('Changes are being queued');
   await page.getByRole('button', { name: 'Resume sync', exact: true }).click();
   // A local folder is the only selection needed to start syncing.
   await page.getByRole('button', { name: 'Add folder to sync', exact: true }).click();
@@ -316,7 +303,10 @@ try {
   await page.getByRole('menuitem', { name: 'Manage exclusions', exact: true }).click();
   await dialog.getByRole('textbox').fill('node_modules\n.git');
   await dialog.getByRole('button', { name: 'Save exclusions' }).click();
-  await expect(page.getByText('2 exclusions', { exact: false })).toBeVisible();
+  expect(await app.evaluate(() => (globalThis as any).__syncUI.data.roots[0].excluded)).toEqual([
+    'node_modules',
+    '.git',
+  ]);
   await app.evaluate(() => {
     (globalThis as any).__syncUI.data.sync.active = {
       rootId: 'editor',
@@ -327,23 +317,8 @@ try {
     };
   });
   await syncPage();
-  await activityTab.click();
-  await expect(
-    page.getByRole('region', { name: 'Current sync activity', exact: true }).locator('th'),
-  ).toHaveText(['File', 'Folder', 'Operation', 'Progress', 'Status']);
-  await expect(
-    page.getByRole('progressbar', { name: 'Downloading assets.zip' }).first(),
-  ).toHaveAttribute('value', '1800000000');
+  await expect(page.locator('.sync-folder-state')).toHaveText('Syncing');
   await screenshot('downloading');
-  for (const width of [840, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    await expect(page.locator('.sync-activity-table th')).toHaveCount(5);
-    await screenshot(`activity-${width}`);
-  }
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.getByRole('button', { name: 'Switch to dark theme' }).click();
-  await screenshot('activity-dark');
-  await page.getByRole('button', { name: 'Switch to light theme' }).click();
   // Queue changes reach both views through live IPC, without waiting for the poll.
   await app.evaluate(({ BrowserWindow }) => {
     const data = (globalThis as any).__syncUI.data;
@@ -397,87 +372,30 @@ try {
     ];
     BrowserWindow.getAllWindows()[0].webContents.send('harbor:status', data.sync);
   });
-  await expect(page.locator('.sync-queue')).toContainText('new/report.txt', { timeout: 2000 });
-  await expect(page.locator('.sync-queue')).toContainText('Pending');
-  await expect(page.getByRole('heading', { name: 'Sync activity', exact: true })).toBeInViewport();
-  await expect(page.locator('.sync-activity-table tbody tr')).toHaveCount(3);
-  await expect(
-    page.locator('.sync-activity-table tr').filter({ hasText: 'obsolete.txt' }),
-  ).toContainText('Delete');
-  await expect(
-    page.locator('.sync-activity-table tr').filter({ hasText: 'retry.txt' }),
-  ).toContainText('Retry pending');
+  await expect(page.locator('.sync-folder-state')).toHaveText('Action required');
+  await expect(page.getByRole('region', { name: 'Sync action required' })).toContainText(
+    'Temporary connection error',
+  );
   await screenshot('pending-live');
-  await filesTab.click();
-  await page.getByRole('button', { name: 'editor', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'new', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'new', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'report.txt', exact: true })).toBeVisible();
-  await expect(page.locator('.drive-sync-status')).toContainText('Pending');
-  await expect(page.getByRole('button', { name: 'Actions for report.txt' })).toHaveCount(0);
-  await screenshot('drive-pending');
   await app.evaluate(({ BrowserWindow }) => {
     const data = (globalThis as any).__syncUI.data;
-    data.sync.active = {
-      rootId: 'editor',
-      relativePath: 'new/report.txt',
-      direction: 'upload',
-      loaded: 500,
-      total: 1000,
-    };
-    data.sync.driveItems[1].syncStatus = 'Syncing';
-    data.sync.driveItems[1].syncProgress = 50;
-    BrowserWindow.getAllWindows()[0].webContents.send('harbor:status', data.sync);
-  });
-  await expect(page.locator('.drive-sync-status')).toContainText('Syncing · 50%', {
-    timeout: 2000,
-  });
-  await screenshot('drive-syncing');
-  // Creating the parent in the cloud keeps an already-open local folder browsable.
-  await app.evaluate(({ BrowserWindow }) => {
-    const data = (globalThis as any).__syncUI.data;
-    data.sync.folderIds = { 'local-sync:editor:new': 'new-cloud' };
-    data.sync.driveItems[0].id = 'new-cloud';
-    data.sync.driveItems[0].localOnly = false;
-    data.sync.driveItems[1].parentId = 'new-cloud';
-    BrowserWindow.getAllWindows()[0].webContents.send('harbor:status', data.sync);
-  });
-  await expect(page.getByRole('button', { name: 'report.txt', exact: true })).toBeVisible();
-  await app.evaluate(({ BrowserWindow }) => {
-    const fixture = (globalThis as any).__syncUI;
-    const item = {
-      id: 'report-cloud',
-      parentId: 'new-cloud',
-      name: 'report.txt',
-      type: 'FILE',
-      sizeBytes: 1000,
-      revision: 1,
-    };
-    fixture.items = [item];
-    fixture.data.sync.jobs = [];
-    fixture.data.sync.driveItems = [];
-    fixture.data.sync.active = null;
-    fixture.data.sync.recent = [
+    data.sync.jobs = [];
+    data.sync.active = null;
+    data.sync.recent = [
       {
         id: 'done',
         rootId: 'editor',
         relativePath: 'new/report.txt',
         direction: 'upload',
         at: new Date().toISOString(),
-        item,
       },
     ];
-    BrowserWindow.getAllWindows()[0].webContents.send('harbor:status', fixture.data.sync);
+    BrowserWindow.getAllWindows()[0].webContents.send('harbor:status', data.sync);
   });
-  await expect(page.getByRole('button', { name: 'report.txt', exact: true })).toHaveCount(1);
-  await expect(page.locator('.drive-sync-status')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Download report.txt' })).toBeVisible();
-  await screenshot('drive-completed');
-  await syncPage();
-  await activityTab.click();
-  await expect(page.locator('.sync-recent')).toContainText('new/report.txt');
-  await expect(page.locator('.sync-recent')).toHaveAttribute('open', '');
-  // Every actionable error has a visible recovery control.
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
+  await expect(page.locator('.activity-list')).toContainText('new/report.txt');
+  await page.getByRole('button', { name: 'Close activity' }).click();
+  // Every actionable error remains available in the global notifications drawer.
   await app.evaluate(() => {
     const sync = (globalThis as any).__syncUI.data.sync;
     sync.active = null;
@@ -499,42 +417,117 @@ try {
     }));
   });
   await syncPage();
+  await expect(page.locator('.sync-page .sync-problems')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Sync action required' })).toBeVisible();
+  await screenshot('action-banner');
+  await page.getByRole('button', { name: 'Dismiss sync banner' }).click();
+  await expect(page.getByRole('region', { name: 'Sync action required' })).not.toContainText(
+    'report.docx',
+  );
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'My Drive', exact: true })
+    .click();
+  await expect(page.getByRole('region', { name: 'Sync action required' })).toHaveCount(0);
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
+  await expect(page.getByRole('region', { name: 'Needs attention' })).toContainText('report.docx');
+  await page.getByRole('button', { name: 'Close activity' }).click();
+  await syncPage();
+  await page.getByRole('button', { name: 'View all notifications (6)' }).click();
   for (const name of [
     'Review conflict',
     'Locate folder',
     'Grant access',
     'Manage storage',
     'Manage synced folders',
-    'Sign in',
   ])
     await expect(
       page
         .getByRole('region', { name: 'Needs attention' })
         .getByRole('button', { name, exact: true }),
     ).toBeVisible();
+  // An ended session returns to the sign-in screen by itself; no button signs the user out.
+  await expect(page.getByRole('region', { name: 'Needs attention' })).toContainText(
+    'Your session ended',
+  );
+  await expect(
+    page.getByRole('region', { name: 'Needs attention' }).getByRole('button', { name: 'Sign in' }),
+  ).toHaveCount(0);
   await screenshot('needs-attention');
-  await activityTab.click();
   await page.getByRole('button', { name: 'Manage synced folders', exact: true }).click();
-  await expect(filesTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.sync-content')).toBeVisible();
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
   await page.getByRole('button', { name: 'Review conflict' }).click();
   await expect(dialog).toContainText('does not delete or overwrite');
   await dialog.getByRole('button', { name: 'Show preserved file' }).click();
   await dialog.getByRole('button', { name: 'Mark reviewed' }).click();
+  await page.getByRole('button', { name: /Activity notifications/ }).click();
   await expect(page.getByRole('button', { name: 'Review conflict' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Locate folder' }).click();
   await dialog.getByRole('button', { name: 'Choose local folder' }).click();
   await dialog.getByRole('button', { name: 'Use folder and resume' }).click();
   await expect(dialog).toHaveCount(0);
+  // The folder's own status explains itself: one blocked file offers no folder relocation.
+  await app.evaluate(() => {
+    const sync = (globalThis as any).__syncUI.data.sync;
+    sync.issues = [
+      {
+        id: 'job:locked',
+        jobId: 'locked',
+        scope: 'item',
+        rootId: 'editor',
+        code: 'PERMISSION_DENIED',
+        relativePath: 'locked.txt',
+        message: 'fixture',
+        at: new Date().toISOString(),
+      },
+      {
+        id: 'kept',
+        rootId: 'editor',
+        code: 'FOLDER_RECOVERED',
+        relativePath: 'plans',
+        conflictPath: 'plans (Recovered by harbor0 2026-09-30 12.00.00)',
+        message: 'fixture',
+        at: new Date().toISOString(),
+      },
+    ];
+  });
+  await syncPage();
+  await expect(page.locator('.sync-folder-state')).toHaveText('Action required');
+  await page.getByRole('button', { name: /Action required\. Show details for editor/ }).click();
+  await expect(dialog).toContainText('Needs attention');
+  await expect(dialog).toContainText('locked.txt');
+  await expect(dialog).toContainText('retries automatically');
+  await expect(dialog.getByRole('button', { name: 'Grant access' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Open local folder' })).toBeVisible();
+  await screenshot('folder-problems');
+  await dialog.getByRole('button', { name: 'Review kept folder' }).click();
+  await expect(dialog).toContainText('Folder kept on this computer');
+  await expect(dialog).toContainText('plans (Recovered by harbor0 2026-09-30 12.00.00)');
+  await dialog.getByRole('button', { name: 'Mark reviewed' }).click();
+  await expect(dialog).toHaveCount(0);
   await app.evaluate(() => {
     const sync = (globalThis as any).__syncUI.data.sync;
     sync.issues = [];
+    sync.waiting = [{ rootId: 'editor', relativePath: 'video.mov' }];
+  });
+  await syncPage();
+  await expect(page.locator('.sync-folder-state')).toHaveText('Waiting for another device');
+  await expect(page.locator('.sync-status')).toContainText(
+    '1 file is only on another linked device',
+  );
+  await screenshot('waiting-for-device');
+  await app.evaluate(() => {
+    const sync = (globalThis as any).__syncUI.data.sync;
+    sync.issues = [];
+    sync.waiting = [];
     sync.online = false;
   });
   await syncPage();
-  await expect(page.getByRole('status')).toContainText('You’re offline');
+  await expect(page.locator('.sync-status')).toContainText('You’re offline');
   await screenshot('offline');
   await page.getByRole('button', { name: 'Manage editor' }).click();
-  await page.getByRole('menuitem', { name: 'Remove from sync', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Stop syncing on all devices…', exact: true }).click();
   await expect(dialog).toContainText(
     'Local folders and their contents are preserved on every device',
   );
@@ -546,24 +539,18 @@ try {
     ),
   ).toBe(false);
   await page.getByRole('button', { name: 'Manage editor' }).click();
-  await page.getByRole('menuitem', { name: 'Remove from sync', exact: true }).click();
-  await dialog.getByRole('button', { name: 'Remove from sync', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Stop syncing on all devices…', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Stop syncing on all devices', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Choose what stays synced on this computer' }),
   ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Add your first sync folder' })).toBeVisible();
-  await expect(filesTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('heading', { name: 'Sync activity', exact: true })).toBeHidden();
-  await activityTab.click();
-  await expect(page.getByRole('heading', { name: 'Sync activity', exact: true })).toBeVisible();
-  await expect(
-    page.getByRole('region', { name: 'Current sync activity', exact: true }),
-  ).toHaveCount(0);
-  await filesTab.click();
+  await expect(page.locator('.sync-content')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Activity', exact: true })).toHaveCount(0);
   await screenshot('empty');
   expect(failures).toEqual([]);
   console.log(
-    'PASS: default Files tab, keyboard tab navigation, nested browsing, previews/downloads, shared activity tables, temporary cloud copy, local-only setup, pause/resume, accessible menus, recovery actions, conflicts, stop confirmation, empty state, live progress, dark mode, and three desktop sizes',
+    'PASS: Sync page without tab headers, global notifications, dismissible action banner, local folder opening and disk usage, temporary cloud copy, local-only setup, pause/resume, accessible menus, recovery actions, conflicts, stop confirmation, empty state, live progress, dark mode, and three desktop sizes',
   );
 } finally {
   await app.close();

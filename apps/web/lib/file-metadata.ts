@@ -3,7 +3,14 @@ export type FileEntry = Pick<DriveItem, 'id' | 'name' | 'type' | 'sizeBytes'> &
   Partial<
     Pick<
       DriveItem,
-      'mimeType' | 'ownerUserId' | 'createdAt' | 'updatedAt' | 'deletedAt' | 'favorite'
+      | 'mimeType'
+      | 'ownerUserId'
+      | 'createdAt'
+      | 'updatedAt'
+      | 'deletedAt'
+      | 'favorite'
+      | 'revision'
+      | 'currentVersionId'
     >
   >;
 export function fileSize(size: number | undefined): string {

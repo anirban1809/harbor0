@@ -1,10 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 const channels = [
   'status',
+  'testNotification',
+  'notificationSettings',
   'login',
   'request',
   'chooseRoot',
   'backupNow',
+  'disconnectBackup',
   'selectSyncLocal',
   'syncCloudFolders',
   'addSyncRoot',
@@ -35,6 +38,11 @@ const bridge = Object.fromEntries(
 );
 contextBridge.exposeInMainWorld('harbor', {
   ...bridge,
+  onIncoming: (callback: (content: unknown) => void) => {
+    const listener = (_: unknown, content: unknown) => callback(content);
+    ipcRenderer.on('harbor:incoming', listener);
+    return () => ipcRenderer.removeListener('harbor:incoming', listener);
+  },
   uploadDropped: async ({ files, parentId }: { files: File[]; parentId: string | null }) => {
     const paths = files.map((file) => webUtils.getPathForFile(file)).filter(Boolean);
     if (!paths.length) throw new Error('Drop files from your computer to upload them.');

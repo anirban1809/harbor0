@@ -47,6 +47,8 @@ One DynamoDB table uses `pk`/`sk`, optimistic `v` versions, and a `data` payload
 
 Quota includes all retained logical versions, backups and trash. Historical versions intentionally consume capacity. Bytes in unfinished uploads and staged saves are reserved. Old versions are not silently expired.
 
+Connected backup roots (`ACTIVE`, `PAUSED`, or `ERROR`) protect their entire cloud subtree from ordinary writes, moves, sharing, sync mappings, version replacement, and deletion. Legacy nested backup roots also protect ancestor mutations. The source installation can create subfolders and append file versions only through scoped backup-run routes; every upload commit rechecks the connection, source device, open run, and destination ancestry. Disconnect marks the root `REMOVED` and emits `BACKUP_DISCONNECTED`, preserving files and versions while removing write protection. Desktop workers detach their local mapping without deleting local files. My Drive classifies backup and sync descendants by ancestry so deep links and search results remain in the appropriate tab.
+
 Operation receipts last at least seven days. Upload completion also stores its own immutable completion fingerprint and result. Reusing an operation ID with a different payload is rejected.
 
 ## Upload lifecycle
@@ -85,7 +87,7 @@ Electron’s main process owns authentication, networking and filesystem I/O. Th
 
 SQLite WAL stores local mappings, roots, pending operations, upload IDs/receipts and the last committed change cursor. A cursor advances only after applying its complete page. Uploads check source size/mtime and restart safely if local contents change. Downloads retain a partial file for range resumption, validate final size/SHA-256, and rename only after verification.
 
-Divergent local content is moved to a deterministic conflict filename before applying cloud content. Remote folder deletion conservatively moves the local directory into `.harbor-recovered-*`. Backup roots upload one way and never apply remote changes to their original source folders.
+Divergent local content is moved to a deterministic conflict filename before applying cloud content. Remote folder deletion conservatively renames the local directory in place to `<name> (Recovered by harbor0 <timestamp>)`, which is excluded from further sync and reported once in notifications. Backup roots upload one way and never apply remote changes to their original source folders.
 
 Native watchers are not a complete filesystem transaction log. Local renames currently become create/delete pairs, and full platform crash/sleep/wake testing remains required before distributing signed releases.
 

@@ -37,7 +37,8 @@ test('Alice uploads, downloads, sends; Bob accepts and saves', async ({ browser 
   await recipient.getByLabel('Password', { exact: true }).fill('Development-only-123!');
   await recipient.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(recipient.getByRole('heading', { name: 'My Drive', exact: true })).toBeVisible();
-  await recipient.getByRole('link', { name: 'Received', exact: true }).click();
+  await recipient.getByRole('link', { name: 'Shared', exact: true }).click();
+  await recipient.getByRole('tab', { name: 'Received', exact: true }).click();
   const card = recipient.locator('article').filter({ hasText: name });
   await expect(card).toBeVisible();
   await card.getByRole('button', { name: 'Accept', exact: true }).click();
@@ -83,7 +84,8 @@ test('signup and verified email claim an invitation', async ({ browser }) => {
   await recipient.getByLabel('Password', { exact: true }).fill('Development-only-123!');
   await recipient.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(recipient.getByRole('heading', { name: 'My Drive', exact: true })).toBeVisible();
-  await recipient.getByRole('link', { name: 'Received', exact: true }).click();
+  await recipient.getByRole('link', { name: 'Shared', exact: true }).click();
+  await recipient.getByRole('tab', { name: 'Received', exact: true }).click();
   const card = recipient.locator('article').filter({ hasText: name });
   await card.getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Save to My Drive' })).toBeVisible();
