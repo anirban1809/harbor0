@@ -1,25 +1,28 @@
-import { useId } from 'react';
 import { brandName } from '../lib/brand';
-import { brandIconSrc } from '../lib/brand-icon';
 
+// Keep the geometry in sync with assets/branding/logo.svg.
 export function BrandLogo() {
-  const maskId = useId();
   return (
     <>
       <svg
         className="brand-mark"
         width="32"
         height="32"
-        viewBox="0 0 128 128"
+        viewBox="0 0 48 48"
         fill="none"
         aria-hidden="true"
       >
-        <defs>
-          <mask id={maskId} style={{ maskType: 'alpha' }}>
-            <image href={brandIconSrc} width="128" height="128" />
-          </mask>
-        </defs>
-        <rect width="128" height="128" fill="currentColor" mask={`url(#${maskId})`} />
+        <circle
+          cx="24"
+          cy="24"
+          r="15"
+          stroke="currentColor"
+          strokeWidth="7"
+          strokeLinecap="round"
+          strokeDasharray="72.25 22"
+          transform="rotate(-10 24 24)"
+        />
+        <circle cx="24" cy="24" r="5" fill="currentColor" />
       </svg>
       <span className="brand-wordmark">{brandName}</span>
     </>

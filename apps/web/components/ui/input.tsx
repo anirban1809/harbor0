@@ -1,4 +1,6 @@
-import type { ComponentProps, ReactNode } from 'react';
+'use client';
+import { useState, type ComponentProps, type ReactNode } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 type Size = { size?: 'md' | 'lg' };
@@ -36,6 +38,30 @@ export function InputGroup({
         </span>
       )}
       {children}
+    </div>
+  );
+}
+
+/** A password input with a show/hide toggle. */
+export function PasswordInput({
+  className,
+  size = 'md',
+  ...props
+}: Omit<ComponentProps<'input'>, 'size' | 'type'> & Size) {
+  const [visible, setVisible] = useState(false);
+  const Icon = visible ? EyeOff : Eye;
+  return (
+    <div className={cn('input-group password-input', className)}>
+      <input data-size={size} className="input" type={visible ? 'text' : 'password'} {...props} />
+      <button
+        type="button"
+        className="password-toggle"
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+        onClick={() => setVisible((v) => !v)}
+      >
+        <Icon aria-hidden="true" />
+      </button>
     </div>
   );
 }

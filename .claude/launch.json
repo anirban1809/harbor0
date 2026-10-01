@@ -2,6 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     { "name": "api", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 8787 },
-    { "name": "web", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:web"], "port": 3000 }
+    { "name": "web", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:web"], "port": 3000 },
+    {
+      "name": "landing",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:landing"],
+      "port": 3100
+    },
+    {
+      "name": "ops-dashboard",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "cloud:dashboard", "--", "--serve"],
+      "port": 4319
+    }
   ]
 }

@@ -6,7 +6,7 @@ export const backupRootSchema = z.object({
   deviceName: z.string().optional(),
   localPathDisplayName: z.string(),
   remoteRootDriveItemId: z.string(),
-  state: z.enum(['ACTIVE', 'PAUSED', 'ERROR', 'REMOVED']),
+  state: z.enum(['ACTIVE', 'PAUSED', 'ERROR', 'ARCHIVED', 'REMOVED']),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

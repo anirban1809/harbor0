@@ -2,7 +2,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
+  ArrowLeft,
   Archive,
+  ArchiveRestore,
   CheckCircle2,
   ChevronRight,
   Download,
@@ -12,6 +14,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Search,
   Trash2,
   Settings2,
   X,
@@ -30,6 +33,7 @@ import { Dialog, DialogActions, Drawer } from './ui/dialog';
 import { Alert } from './ui/alert';
 import { Badge, type BadgeTone } from './ui/badge';
 import { Card } from './ui/card';
+import { Input, InputGroup } from './ui/input';
 import { Tab, TabList, TabPanel, Tabs } from './ui/tabs';
 import { EmptyState } from './empty-state';
 import { FileCollection, FileCollectionSkeleton } from './file-collection';
@@ -60,12 +64,16 @@ const restoreStates: Record<BackupRestore['state'], string> = {
 };
 type Tab = 'Files' | 'History';
 const tabs: Tab[] = ['Files', 'History'];
-type Tone = 'ok' | 'busy' | 'paused' | 'error' | 'stopped';
+// Past this many folders the list gets a filter box.
+const filterFrom = 7;
+type Tone = 'ok' | 'busy' | 'paused' | 'error' | 'stopped' | 'archived';
 type LocalRoot = {
   id: string;
   remoteId: string | null;
   paused: boolean;
   excluded?: string[];
+  archive?: 'pending' | 'removing' | 'archived' | 'restoring';
+  archiveError?: string;
   localPathDisplay?: string;
   localPathDisplayName?: string;
 };
@@ -76,6 +84,7 @@ type Props = {
     add: () => Promise<unknown>;
     backup: (id: string) => Promise<unknown>;
     disconnect: (id: string) => Promise<unknown>;
+    archive: (id: string, archived: boolean) => Promise<unknown>;
     setPaused: (root: LocalRoot, paused: boolean) => Promise<unknown>;
     download: (input: { itemId: string; versionId: string; name: string }) => Promise<unknown>;
     options: (root: LocalRoot) => void;
@@ -104,13 +113,16 @@ function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
           ? Pause
           : tone === 'error'
             ? AlertCircle
-            : X;
+            : tone === 'archived'
+              ? Archive
+              : X;
   const tones: Record<Tone, BadgeTone> = {
     ok: 'success',
     busy: 'accent',
     paused: 'neutral',
     error: 'danger',
     stopped: 'neutral',
+    archived: 'neutral',
   };
   return (
     <Badge className="backup-badge" tone={tones[tone]} data-state={tone}>
@@ -123,8 +135,10 @@ export function BackupsPage({ api, desktop }: Props) {
   const [tab, setTab] = useState<Tab>('Files');
   const [roots, setRoots] = useState<BackupRoot[]>([]);
   const [rootId, setRootId] = useState('');
+  const [query, setQuery] = useState('');
   const [stopping, setStopping] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const root = roots.find((r) => r.id === rootId);
   const [trail, setTrail] = useState<{ id: string; name: string }[]>([]);
   const [items, setItems] = useState<DriveItem[]>([]);
@@ -152,6 +166,8 @@ export function BackupsPage({ api, desktop }: Props) {
   const [refresh, setRefresh] = useState(0);
   const local = desktop?.roots.find((r) => r.remoteId === root?.remoteRootDriveItemId);
   const removed = root?.state === 'REMOVED';
+  // The source computer knows about an archive in progress before the cloud copy is sealed.
+  const archived = root?.state === 'ARCHIVED' || (!!local?.archive && local.archive !== 'pending');
   const device = (value: BackupRoot | undefined) =>
     desktop?.roots.some((r) => r.remoteId === value?.remoteRootDriveItemId)
       ? 'This computer'
@@ -170,9 +186,8 @@ export function BackupsPage({ api, desktop }: Props) {
             a.localPathDisplayName.localeCompare(b.localPathDisplayName),
         );
         setRoots(list);
-        setRootId((current) =>
-          list.some((r) => r.id === current) ? current : (list[0]?.id ?? ''),
-        );
+        // No folder open shows the list of all folders.
+        setRootId((current) => (list.some((r) => r.id === current) ? current : ''));
         setRootsLoaded(true);
       })
       .catch((e) => {
@@ -328,7 +343,7 @@ export function BackupsPage({ api, desktop }: Props) {
   function versionActions(itemId: string, versionId: string, name: string, createdAt: string) {
     return (
       <div className="backup-actions">
-        {!removed && (
+        {!removed && !archived && (
           <Button
             size="sm"
             variant="outline"
@@ -364,47 +379,82 @@ export function BackupsPage({ api, desktop }: Props) {
           label: 'Stopped',
           detail: `No new versions are saved. The backed-up files are now regular files in My Drive → Cloud.`,
         }
-      : local?.paused || root.state === 'PAUSED'
+      : local?.archive === 'restoring'
         ? {
-            tone: 'paused',
-            label: 'Paused',
-            detail: 'No new versions are saved until you resume. Saved versions are still here.',
+            tone: 'busy',
+            label: 'Restoring',
+            detail: 'Putting the folder back on this computer. Backups resume when it’s done.',
           }
-        : latestRun?.state === 'RUNNING'
+        : local?.archive === 'removing'
           ? {
               tone: 'busy',
-              label: 'Backing up',
-              detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
+              label: 'Archiving',
+              detail: 'Everything is saved. Removing the copy on this computer…',
             }
-          : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+          : archived
             ? {
-                tone: 'error',
-                label: 'Needs attention',
-                detail: latestRun?.error
-                  ? `The last backup didn’t finish: ${latestRun.error}`
-                  : `The last backup didn’t finish. It will try again automatically.`,
+                tone: 'archived',
+                label: 'Archived',
+                detail: `Backups are stopped and the folder was removed from ${deviceName}. Its files and versions are kept here.`,
               }
-            : lastGoodRun
+            : local?.archive === 'pending'
               ? {
-                  tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
-                  label: latestRun?.state === 'PARTIAL' ? 'Some files skipped' : 'Backed up',
-                  detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                  tone: 'busy',
+                  label: 'Archiving',
+                  detail:
+                    'Saving a final backup. The copy on this computer is removed once every file is saved.',
                 }
-              : {
-                  tone: 'ok',
-                  label: 'Waiting',
-                  detail: historyLoading
-                    ? 'Checking backup status…'
-                    : 'The first backup runs once files have been unchanged for an hour.',
-                };
+              : local?.paused || root.state === 'PAUSED'
+                ? {
+                    tone: 'paused',
+                    label: 'Paused',
+                    detail:
+                      'No new versions are saved until you resume. Saved versions are still here.',
+                  }
+                : latestRun?.state === 'RUNNING'
+                  ? {
+                      tone: 'busy',
+                      label: 'Backing up',
+                      detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
+                    }
+                  : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+                    ? {
+                        tone: 'error',
+                        label: 'Needs attention',
+                        detail: latestRun?.error
+                          ? `The last backup didn’t finish: ${latestRun.error}`
+                          : `The last backup didn’t finish. It will try again automatically.`,
+                      }
+                    : lastGoodRun
+                      ? {
+                          tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
+                          label:
+                            latestRun?.state === 'PARTIAL' ? 'Some files skipped' : 'Backed up',
+                          detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                        }
+                      : {
+                          tone: 'ok',
+                          label: 'Waiting',
+                          detail: historyLoading
+                            ? 'Checking backup status…'
+                            : 'The first backup runs once files have been unchanged for an hour.',
+                        };
   const rootTone = (value: BackupRoot): [Tone, string] => {
     const localRoot = desktop?.roots.find((r) => r.remoteId === value.remoteRootDriveItemId);
     if (value.id === root?.id) return [status.tone, status.label];
     if (value.state === 'REMOVED') return ['stopped', 'Stopped'];
+    if (localRoot?.archive === 'pending' || localRoot?.archive === 'removing')
+      return ['busy', 'Archiving'];
+    if (localRoot?.archive === 'restoring') return ['busy', 'Restoring'];
+    if (value.state === 'ARCHIVED') return ['archived', 'Archived'];
     if (value.state === 'PAUSED' || localRoot?.paused) return ['paused', 'Paused'];
     if (value.state === 'ERROR') return ['error', 'Needs attention'];
     return ['ok', 'On'];
   };
+  const needle = roots.length >= filterFrom ? query.trim().toLowerCase() : '';
+  const shownRoots = needle
+    ? roots.filter((r) => `${r.localPathDisplayName} ${device(r)}`.toLowerCase().includes(needle))
+    : roots;
   const addFolder = () =>
     void act(async () => {
       await desktop!.add();
@@ -412,18 +462,25 @@ export function BackupsPage({ api, desktop }: Props) {
     }, 'Folder added. Its first backup starts once files have been unchanged for an hour.');
   return (
     <div className="backup-page">
-      <div className="backup-heading">
-        <p>
-          harbor0 keeps earlier versions of every file in these folders. A new version is saved
-          about an hour after you stop editing a file, so you can always go back.
-        </p>
-        {desktop && roots.length > 0 && (
-          <Button variant="outline" disabled={busy} onClick={addFolder}>
-            <Plus />
-            Add folder
-          </Button>
-        )}
-      </div>
+      {root ? (
+        <Button className="backup-back" size="sm" variant="ghost" onClick={() => changeRoot('')}>
+          <ArrowLeft />
+          All backup folders
+        </Button>
+      ) : (
+        <div className="backup-heading">
+          <p>
+            harbor0 keeps earlier versions of every file in these folders. A new version is saved
+            about an hour after you stop editing a file, so you can always go back.
+          </p>
+          {desktop && roots.length > 0 && (
+            <Button variant="outline" disabled={busy} onClick={addFolder}>
+              <Plus />
+              Add folder
+            </Button>
+          )}
+        </div>
+      )}
       {error && (
         <Alert
           tone="error"
@@ -472,30 +529,39 @@ export function BackupsPage({ api, desktop }: Props) {
             }
           />
         )
-      ) : (
-        <>
-          {roots.length > 1 && (
-            <div className="backup-folder-list" role="group" aria-label="Backup folders">
-              {roots.map((r) => {
-                const [tone, text] = rootTone(r);
-                return (
-                  <button
-                    key={r.id}
-                    className="backup-folder-card"
-                    aria-pressed={r.id === rootId}
-                    onClick={() => changeRoot(r.id)}
-                  >
-                    <Folder size={16} aria-hidden="true" />
-                    <span>
-                      <strong>{r.localPathDisplayName}</strong>
-                      <small>{device(r)}</small>
-                    </span>
-                    <StatusBadge tone={tone}>{text}</StatusBadge>
-                  </button>
-                );
-              })}
-            </div>
+      ) : !root ? (
+        <div className="backup-folders">
+          {roots.length >= filterFrom && (
+            <InputGroup icon={<Search aria-hidden="true" />}>
+              <Input
+                type="search"
+                aria-label="Filter backup folders"
+                placeholder={`Filter ${roots.length} folders`}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </InputGroup>
           )}
+          <div className="backup-folder-list" role="group" aria-label="Backup folders">
+            {shownRoots.map((r) => {
+              const [tone, text] = rootTone(r);
+              return (
+                <button key={r.id} className="backup-folder-row" onClick={() => changeRoot(r.id)}>
+                  <Folder size={16} aria-hidden="true" />
+                  <span>
+                    <strong>{r.localPathDisplayName}</strong>
+                    <small>{device(r)}</small>
+                  </span>
+                  <StatusBadge tone={tone}>{text}</StatusBadge>
+                  <ChevronRight size={16} aria-hidden="true" />
+                </button>
+              );
+            })}
+            {!shownRoots.length && <p className="backup-empty">No folders match.</p>}
+          </div>
+        </div>
+      ) : (
+        <div className="backup-detail">
           {root && (
             <Card className="backup-summary" aria-label={`${root.localPathDisplayName} backup`}>
               <div className="backup-summary-main">
@@ -514,7 +580,36 @@ export function BackupsPage({ api, desktop }: Props) {
                   </p>
                 </div>
               </div>
-              {local && desktop && !removed ? (
+              {local && desktop && !removed && (archived || local.archive) ? (
+                <div className="backup-actions backup-summary-actions">
+                  {local.archive === 'archived' && (
+                    <Button
+                      size="sm"
+                      disabled={busy || local.paused}
+                      onClick={() =>
+                        void act(async () => {
+                          await desktop.archive(local.id, false);
+                          await desktop.refresh();
+                        }, `Restoring ${root.localPathDisplayName} to this computer. Backups resume when it’s done.`)
+                      }
+                    >
+                      <ArchiveRestore />
+                      Restore folder
+                    </Button>
+                  )}
+                  {archived && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="backup-stop"
+                      disabled={busy || local.archive !== 'archived'}
+                      onClick={() => setStopping(true)}
+                    >
+                      Stop backing up
+                    </Button>
+                  )}
+                </div>
+              ) : local && desktop && !removed ? (
                 <div className="backup-actions backup-summary-actions">
                   <Button
                     size="sm"
@@ -559,6 +654,15 @@ export function BackupsPage({ api, desktop }: Props) {
                   <Button
                     size="sm"
                     variant="ghost"
+                    disabled={busy || local.paused}
+                    onClick={() => setArchiving(true)}
+                  >
+                    <Archive />
+                    Archive
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
                     className="backup-stop"
                     disabled={busy}
                     onClick={() => setStopping(true)}
@@ -581,7 +685,9 @@ export function BackupsPage({ api, desktop }: Props) {
                   ) : (
                     <>
                       <small className="backup-hint">
-                        To back up now or pause, open the desktop app on {deviceName}.
+                        {archived
+                          ? `To restore this folder, open the desktop app on ${deviceName}.`
+                          : `To back up now, pause or archive, open the desktop app on ${deviceName}.`}
                       </small>
                       <Button
                         size="sm"
@@ -597,6 +703,15 @@ export function BackupsPage({ api, desktop }: Props) {
                 </div>
               )}
             </Card>
+          )}
+          {local?.archiveError && (!local.archive || local.archive === 'archived') && (
+            <Alert tone="error" className="backup-error">
+              {root?.localPathDisplayName}{' '}
+              {local.archive
+                ? 'was not restored and is still archived.'
+                : 'was not archived and is still backed up.'}{' '}
+              {local.archiveError}
+            </Alert>
           )}
           <Tabs value={tab} onValueChange={setTab}>
             <TabList className="backup-tabs" aria-label="Backup views">
@@ -764,7 +879,7 @@ export function BackupsPage({ api, desktop }: Props) {
               )}
             </TabPanel>
           </Tabs>
-        </>
+        </div>
       )}
       <Drawer
         open={!!selected && tab === 'Files'}
@@ -804,7 +919,7 @@ export function BackupsPage({ api, desktop }: Props) {
                 {versionsFor === selected.id
                   ? `${count(versions.length, 'saved version')}, newest first. `
                   : ''}
-                {!removed && `Restore puts a version back on ${deviceName}. `}
+                {!removed && !archived && `Restore puts a version back on ${deviceName}. `}
                 Download saves a separate copy.
               </p>
               {versionsFor !== selected.id ? (
@@ -857,6 +972,40 @@ export function BackupsPage({ api, desktop }: Props) {
             }
           >
             Stop backing up
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog
+        open={archiving}
+        onOpenChange={(open) => {
+          if (!busy) setArchiving(open);
+        }}
+        title={`Archive ${root?.localPathDisplayName ?? 'this folder'}?`}
+        description="harbor0 saves one last backup, then stops backing up and removes the folder’s backed-up files from this computer. The cloud copy and every saved version stay here to download."
+      >
+        <p className="muted">
+          Excluded files and anything that can’t be verified against its saved copy are left in
+          place. Restore the folder at any time to bring it back and resume backups.
+        </p>
+        {error && <Alert tone="error">{error}</Alert>}
+        <DialogActions>
+          <Button variant="outline" disabled={busy} onClick={() => setArchiving(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            disabled={busy}
+            onClick={() =>
+              void act(async () => {
+                if (!local || !desktop) return;
+                await desktop.archive(local.id, true);
+                await desktop.refresh();
+                setArchiving(false);
+              }, `Archiving ${root?.localPathDisplayName}. Its local copy is removed once the final backup is saved.`)
+            }
+          >
+            <Archive />
+            Archive and remove local copy
           </Button>
         </DialogActions>
       </Dialog>

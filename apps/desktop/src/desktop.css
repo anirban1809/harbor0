@@ -6,6 +6,28 @@
 .desktop-shell .workspace :is(input, textarea, p, dd, td, pre, h1, h2, h3) {
   user-select: text;
 }
+/* macOS: the native title bar is hidden, so the traffic lights sit over the
+   sidebar and the chrome around them drags the window. */
+.platform-darwin .sidebar {
+  padding-top: 48px;
+}
+.platform-darwin :is(.sidebar, .topbar, .auth-story) {
+  -webkit-app-region: drag;
+}
+.platform-darwin :is(.sidebar, .topbar, .auth-story)
+  :is(a, button, input, select, textarea, label, [role='button'], [tabindex], .nav-item, .search-box) {
+  -webkit-app-region: no-drag;
+}
+.platform-darwin .desktop-auth::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 40px;
+  -webkit-app-region: drag;
+}
+.platform-darwin .auth-theme {
+  -webkit-app-region: no-drag;
+}
 .auth-intro {
   color: var(--text-2);
 }
@@ -274,4 +296,16 @@
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+/* Sign-in links that open the web app in the default browser. */
+.auth-forgot {
+  align-self: flex-end;
+  margin-top: -6px;
+  font-size: var(--text-sm);
+}
+.auth-forgot svg,
+.auth-switch .btn svg {
+  width: 12px;
+  height: 12px;
 }

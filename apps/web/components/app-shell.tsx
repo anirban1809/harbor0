@@ -18,6 +18,7 @@ import { useDebouncedValue } from '../lib/use-debounced-value';
 import { downloadFolderZip } from '../lib/folder-download';
 import { ZipDownloadStatusPanel, type ZipDownloadStatus } from './zip-download-status';
 import { BrandLogo } from '../components/brand-logo';
+import { AuthPage } from './auth-page';
 import { FilePreview } from '../components/lazy-file-preview';
 import { previewKind, type PreviewLoader } from '../lib/file-preview';
 import { fetchTextPreview } from '../../../packages/api-client/src/preview';
@@ -43,13 +44,10 @@ import {
   Search,
   Send,
   Settings,
-  ShieldCheck,
   Trash2,
   Users,
   Laptop,
   Clock,
-  Pause,
-  Play,
   RotateCcw,
   X,
 } from 'lucide-react';
@@ -57,6 +55,7 @@ import { ApiClient, ApiError, createTransport, operation } from '@harbor/api-cli
 import type { DriveItem, Device, Transfer } from '@harbor/contracts';
 import { EmptyState, FileEmptyState, LoadError } from '../components/empty-state';
 import { AppearanceSettings } from '../components/appearance-settings';
+import { DeleteAccount } from '../components/delete-account';
 import { useAccountAppearance } from '../lib/appearance';
 import {
   FileCollection,
@@ -80,7 +79,11 @@ import { ActionsMenu, MenuItem, MenuSeparator } from '../components/ui/menu';
 import { Progress } from '../components/ui/progress';
 import { Segmented } from '../components/ui/segmented';
 import { Select } from '../components/ui/select';
-import { BrowserUpload, type UploadProgress } from '../lib/upload';
+import { BrowserUpload } from '../lib/upload';
+import { finishedKeys, type FileUpload } from '../lib/upload-activity';
+import { UploadTray } from './upload-tray';
+import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
+import { onLive, useLiveUpdates } from '../lib/live-updates';
 const api = new ApiClient(createTransport('/api'));
 const loadPreview: PreviewLoader = async (item, signal) => {
   const result = await api.download({ driveItemId: item.id });
@@ -107,6 +110,17 @@ const bytes = (n: number) =>
       : n < 1e9
         ? `${(n / 1e6).toFixed(1)} MB`
         : `${(n / 1e9).toFixed(1)} GB`;
+type UploadJob = {
+  file: File;
+  /** Folders to create under `base`, from a dropped or chosen folder. */
+  folders: string[];
+  batch: string;
+  base: string | null;
+  parent?: string | null;
+  upload?: BrowserUpload;
+  running?: boolean;
+  stopped?: boolean;
+};
 const date = (s: string) =>
   new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 const platforms: Record<string, string> = {
@@ -174,198 +188,6 @@ function FileGlyph({ item }: { item: Pick<DriveItem, 'type' | 'mimeType'> }) {
     </span>
   );
 }
-function Auth({ mode, onDone }: { mode: AuthMode; onDone: () => void }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const next = loginDestination(searchParams.get('next'));
-  const authHref = (mode: AuthMode) => `${authRoutes[mode]}?next=${encodeURIComponent(next)}`;
-  const setMode = (mode: AuthMode) => router.push(authHref(mode));
-  const [email, setEmail] = useState('');
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => setError(''), [mode]);
-  const titles = {
-    login: 'Sign in',
-    signup: 'Create an account',
-    confirm: 'Verify your email',
-    forgot: 'Reset your password',
-    reset: 'Set a new password',
-  };
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    setNotice('');
-    const values = Object.fromEntries(new FormData(e.currentTarget));
-    try {
-      if (mode === 'login') {
-        await api.request('/v1/auth/login', {
-          method: 'POST',
-          body: { ...values, deviceName: 'Web browser', platform: 'WEB' },
-        });
-        onDone();
-      } else {
-        await api.request(`/v1/auth/${mode}`, { method: 'POST', body: values });
-        setNotice(
-          mode === 'signup'
-            ? `We sent a verification code to ${email}.`
-            : mode === 'forgot'
-              ? `If ${email} has an account, a reset code is on its way.`
-              : mode === 'confirm'
-                ? 'Email verified. Sign in to continue.'
-                : 'Password updated. Sign in with your new password.',
-        );
-        setMode(mode === 'signup' ? 'confirm' : mode === 'forgot' ? 'reset' : 'login');
-      }
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <main className="auth-page">
-      <div className="auth-theme">
-        <ThemeToggle />
-      </div>
-      <section className="auth-story">
-        <div className="brand">
-          <BrandLogo />
-        </div>
-        <div>
-          <h1>File storage and sync</h1>
-          <p>Store, sync, and share files. 100 GB free.</p>
-        </div>
-        <div className="auth-foot">
-          <ShieldCheck size={18} />
-          Files are private unless you share them.
-        </div>
-      </section>
-      <section className="auth-form">
-        <div>
-          <h2>{titles[mode]}</h2>
-          <p className="muted">
-            {mode === 'login'
-              ? 'Enter your email and password.'
-              : mode === 'signup'
-                ? 'Create an account with 100 GB of storage.'
-                : mode === 'confirm'
-                  ? 'Enter the verification code sent to your email.'
-                  : mode === 'forgot'
-                    ? 'Enter your account email and we’ll send you a reset code.'
-                    : 'Enter the reset code from your email and choose a new password.'}
-          </p>
-          {notice && <Alert tone="success">{notice}</Alert>}
-          <form className="form" onSubmit={submit}>
-            <Field label="Email">
-              <Input
-                size="lg"
-                name="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </Field>
-            {mode === 'signup' && (
-              <>
-                <Field label="Display name">
-                  <Input
-                    size="lg"
-                    name="displayName"
-                    autoComplete="name"
-                    required
-                    maxLength={100}
-                  />
-                </Field>
-                <Field label="Username" hint="People can send files directly to your @username.">
-                  <InputGroup prefix="@">
-                    <Input
-                      size="lg"
-                      name="username"
-                      aria-label="Username"
-                      autoComplete="username"
-                      required
-                      pattern="[a-z0-9_.]{3,32}"
-                    />
-                  </InputGroup>
-                </Field>
-              </>
-            )}
-            {['login', 'signup', 'reset'].includes(mode) && (
-              <Field
-                label="Password"
-                hint={
-                  mode !== 'login' &&
-                  'At least 12 characters, including upper/lowercase, a number, and a symbol.'
-                }
-              >
-                <Input
-                  size="lg"
-                  name="password"
-                  aria-label="Password"
-                  type="password"
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  required
-                  minLength={mode === 'login' ? 1 : 12}
-                />
-              </Field>
-            )}
-            {['confirm', 'reset'].includes(mode) && (
-              <Field label="Verification code">
-                <Input size="lg" name="code" autoComplete="one-time-code" required />
-              </Field>
-            )}
-            {error && <Alert tone="error">{error}</Alert>}
-            <Button disabled={busy} type="submit" size="lg" block>
-              {busy
-                ? 'Please wait…'
-                : {
-                    login: 'Sign in',
-                    signup: 'Create your account',
-                    confirm: 'Verify email',
-                    forgot: 'Send reset code',
-                    reset: 'Reset password',
-                  }[mode]}
-            </Button>
-          </form>
-          <div className="auth-links">
-            {mode === 'login' ? (
-              <>
-                <Link href={authHref('signup')}>New here? Create an account</Link>
-                <Link href={authHref('forgot')}>Forgot password?</Link>
-              </>
-            ) : (
-              <Link href={authHref('login')}>
-                {mode === 'signup' ? 'Already have an account? Sign in' : 'Back to sign in'}
-              </Link>
-            )}
-            {mode === 'confirm' && (
-              <Button
-                variant="link"
-                disabled={busy}
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  if (!email) return setError('Enter your email to get a new code.');
-                  void api
-                    .request('/v1/auth/resend', { method: 'POST', body: { email } })
-                    .then(() => setNotice(`A new code is on its way to ${email}.`))
-                    .catch((e) => setError(e.message));
-                }}
-              >
-                Resend code
-              </Button>
-            )}
-            {mode === 'reset' && <Link href={authHref('forgot')}>Send a new code</Link>}
-          </div>
-        </div>
-      </section>
-    </main>
-  );
-}
 function Workspace() {
   const cache = useQueryClient();
   const router = useRouter();
@@ -410,16 +232,24 @@ function Workspace() {
   const zipJob = useRef<AbortController | null>(null);
   useEffect(() => () => zipJob.current?.abort(), []);
   const [cursor, setCursor] = useState<string>();
-  const [progress, setProgress] = useState<(UploadProgress & { key: string })[]>([]);
+  const [progress, setProgress] = useState<FileUpload[]>([]);
   const [online, setOnline] = useState(true);
-  const jobs = useRef(
-    new Map<string, { upload: BrowserUpload; file: File; parent: string | null }>(),
-  );
+  const jobs = useRef(new Map<string, UploadJob>());
+  // Folders created for each batch of uploads, by path, so files in a folder share it.
+  const batchFolders = useRef(new Map<string, Map<string, Promise<string>>>());
   const input = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const me = useQuery({ queryKey: ['me'], queryFn: () => api.me() });
+  // While signed out, a focus refetch would flip the query back to pending and unmount the
+  // sign-in form mid-entry (e.g. on returning from the email app with a code).
+  const me = useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.me(),
+    refetchOnWindowFocus: (query) => query.state.data !== undefined,
+    refetchOnReconnect: (query) => query.state.data !== undefined,
+  });
   const user = me.data?.user;
+  const live = useLiveUpdates(api, user?.id);
   const activity = useActivityFeed(user?.id);
   useEffect(() => {
     if (!user) clearBrowserCaches();
@@ -478,7 +308,8 @@ function Workspace() {
       api.request(
         `/v1/transfers/${sharedTab.toLowerCase()}${transferCursor ? '?cursor=' + encodeURIComponent(transferCursor) : ''}`,
       ),
-    refetchInterval: 15000,
+    // Pushed notifications refresh transfers at once; polling is only the fallback.
+    refetchInterval: live ? false : 15000,
   });
   const shares = useQuery<{ items: any[] }>({
     queryKey: ['shares', sharedTab],
@@ -564,6 +395,18 @@ function Workspace() {
       ),
     );
   };
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(
+    () =>
+      onLive((message) => {
+        if (message.type === 'changes') void refreshRef.current();
+        else
+          for (const key of ['notifications', 'transfers', 'shares'])
+            void cache.invalidateQueries({ queryKey: [key] });
+      }),
+    [cache],
+  );
   async function act(fn: () => Promise<unknown>, message?: string) {
     setError('');
     setBusy(true);
@@ -641,58 +484,111 @@ function Workspace() {
       setZipProgress(null);
     }
   }
-  async function startUpload(file: File, target = parentId) {
-    if (!user) return;
-    const upload = new BrowserUpload(api, user.id);
-    // Files with the same name can upload to different folders at once.
-    const key = `${target ?? 'root'}/${file.name}`;
-    const record = { upload, file, parent: target };
-    jobs.current.set(key, record);
-    const update = (p: UploadProgress) =>
-      setProgress((old) => {
-        const entry = { ...p, key };
-        return old.some((v) => v.key === key)
-          ? old.map((v) => (v.key === key ? entry : v))
-          : [...old, entry];
-      });
+  function setUpload(key: string, change: Partial<FileUpload>) {
+    setProgress((old) => old.map((u) => (u.key === key ? { ...u, ...change } : u)));
+  }
+  async function uploadParent(job: UploadJob) {
+    const created = batchFolders.current.get(job.batch) ?? new Map<string, Promise<string>>();
+    batchFolders.current.set(job.batch, created);
+    let parent = job.base;
+    let path = '';
+    for (const name of job.folders) {
+      path += '/' + name;
+      if (!created.has(path)) {
+        const pending = api.createFolder(name, parent).then(({ item }) => item.id);
+        created.set(path, pending);
+        pending.catch(() => created.delete(path));
+      }
+      parent = await created.get(path)!;
+    }
+    return parent;
+  }
+  async function startUpload(key: string) {
+    const job = jobs.current.get(key);
+    if (!user || !job || job.stopped || job.running) return;
+    job.running = true;
     try {
-      await upload.run(file, target, update);
+      job.parent ??= await uploadParent(job);
+      const upload = new BrowserUpload(api, user.id);
+      job.upload = upload;
+      await upload.run(job.file, job.parent, ({ loaded, phase, error }) =>
+        setUpload(key, { loaded, phase, error }),
+      );
       jobs.current.delete(key);
       await refresh();
     } catch (e) {
-      update({
-        name: file.name,
-        size: file.size,
-        loaded: 0,
+      setUpload(key, {
         phase: (e as Error).name === 'AbortError' ? 'paused' : 'failed',
         error: (e as Error).message,
       });
+    } finally {
+      job.running = false;
     }
+  }
+  // Uploads one file at a time; paused, cancelled or already running files are skipped.
+  async function drain(keys: string[]) {
+    for (const key of keys) await startUpload(key);
   }
   async function uploadFiles(files: FileList | File[] | null, folder = false) {
     if (!files) return;
-    const folders = new Map<string, string>();
-    for (const file of Array.from(files)) {
-      let target = parentId;
-      if (folder && file.webkitRelativePath) {
-        const segments = file.webkitRelativePath.split('/').slice(0, -1);
-        let path = '';
-        for (const name of segments) {
-          path += '/' + name;
-          if (!folders.has(path)) {
-            try {
-              const { item } = await api.createFolder(name, target);
-              folders.set(path, item.id);
-            } catch (e) {
-              setError((e as Error).message);
-              return;
-            }
-          }
-          target = folders.get(path)!;
-        }
-      }
-      await startUpload(file, target);
+    await uploadEntries(
+      Array.from(files, (file) => ({
+        file,
+        folders:
+          folder && file.webkitRelativePath ? file.webkitRelativePath.split('/').slice(0, -1) : [],
+      })),
+    );
+  }
+  async function uploadEntries(entries: UploadEntry[]) {
+    const batch = crypto.randomUUID();
+    const queued = entries.map(({ file, folders }, i): FileUpload => {
+      const key = `${batch}/${i}`;
+      jobs.current.set(key, { file, folders, batch, base: parentId });
+      return {
+        key,
+        name: file.name,
+        size: file.size,
+        loaded: 0,
+        phase: 'queued',
+        ...(folders.length ? { group: { key: `${batch}/${folders[0]}`, name: folders[0] } } : {}),
+      };
+    });
+    setProgress((old) => [...old, ...queued]);
+    await drain(queued.map((u) => u.key));
+  }
+  function pauseUploads(keys: string[]) {
+    for (const key of keys) {
+      const job = jobs.current.get(key);
+      if (!job) continue;
+      job.stopped = true;
+      if (job.running) job.upload?.pause();
+      else setUpload(key, { phase: 'paused' });
     }
+  }
+  function resumeUploads(keys: string[]) {
+    const waiting = keys.filter((key) => jobs.current.has(key));
+    for (const key of waiting) {
+      jobs.current.get(key)!.stopped = false;
+      setUpload(key, { phase: 'queued', error: undefined });
+    }
+    void drain(waiting);
+  }
+  function cancelUploads(keys: string[]) {
+    const cancelled = new Set(keys);
+    const pending = keys.map((key) => {
+      const job = jobs.current.get(key);
+      jobs.current.delete(key);
+      if (!job) return;
+      job.stopped = true;
+      return job.upload?.cancel();
+    });
+    setProgress((old) => old.filter((u) => !cancelled.has(u.key)));
+    void Promise.all(pending).catch((e: Error) => setError(e.message));
+  }
+  function dismissUploads() {
+    const finished = finishedKeys(progress);
+    for (const key of finished) jobs.current.delete(key);
+    setProgress((old) => old.filter((u) => !finished.has(u.key)));
   }
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -862,7 +758,8 @@ function Workspace() {
       );
     if (!authMode) return <WorkspaceSkeleton />;
     return (
-      <Auth
+      <AuthPage
+        api={api}
         mode={authMode}
         onDone={() => {
           cache.clear();
@@ -964,7 +861,8 @@ function Workspace() {
           onDrop={(e) => {
             // Files dropped outside a writable folder are ignored instead of landing in the root.
             e.preventDefault();
-            if (section === 'My Drive' && !driveReadOnly) void uploadFiles(e.dataTransfer.files);
+            if (section === 'My Drive' && !driveReadOnly)
+              void readDroppedFiles(e.dataTransfer).then(uploadEntries);
           }}
         >
           <div className="page-alerts">
@@ -1058,7 +956,7 @@ function Workspace() {
               onReadOnlyChange={setDriveReadOnly}
               onUpload={() => input.current?.click()}
               onUploadFolder={() => folderInput.current?.click()}
-              onDropFiles={(files) => uploadFiles(files)}
+              onDropFiles={uploadEntries}
               onDownload={async (item, versionId) => {
                 if (item.type === 'FOLDER') await downloadFolder(item);
                 else await download({ driveItemId: item.id, ...(versionId ? { versionId } : {}) });
@@ -1537,6 +1435,18 @@ function Workspace() {
                   Manage devices
                 </Button>
               </Card>
+              <DeleteAccount
+                email={user.email}
+                onDelete={async (email) => {
+                  await api.request('/v1/users/me/delete', {
+                    method: 'POST',
+                    body: { ...operation(), email },
+                  });
+                  cache.clear();
+                  clearBrowserCaches();
+                  window.location.reload();
+                }}
+              />
             </div>
           )}
         </main>
@@ -1562,83 +1472,13 @@ function Workspace() {
           e.target.value = '';
         }}
       />
-      {progress.length > 0 && (
-        <aside className="floating-card upload-tray" aria-live="polite">
-          <div className="upload-title">
-            <strong>Uploads</strong>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Dismiss completed uploads"
-              title="Dismiss completed uploads"
-              disabled={!progress.some((p) => p.phase === 'done')}
-              onClick={() => setProgress((v) => v.filter((p) => p.phase !== 'done'))}
-            >
-              <X />
-            </Button>
-          </div>
-          {progress.map((p) => (
-            <div className="upload-entry" key={p.key}>
-              <div>
-                <strong title={p.name}>{p.name}</strong>
-                <span>
-                  {p.phase === 'done' ? (
-                    <Check size={16} className="upload-done" />
-                  ) : ['uploading', 'hashing'].includes(p.phase) ? (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Pause ${p.name}`}
-                      onClick={() => jobs.current.get(p.key)?.upload.pause()}
-                    >
-                      <Pause />
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`${p.phase === 'failed' ? 'Retry' : 'Resume'} ${p.name}`}
-                      title={p.phase === 'failed' ? 'Retry' : 'Resume'}
-                      onClick={() => {
-                        const job = jobs.current.get(p.key);
-                        if (job) void startUpload(job.file, job.parent);
-                      }}
-                    >
-                      <Play />
-                    </Button>
-                  )}
-                  {p.phase !== 'done' && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Cancel ${p.name}`}
-                      onClick={() =>
-                        void act(async () => {
-                          await jobs.current.get(p.key)?.upload.cancel();
-                          jobs.current.delete(p.key);
-                          setProgress((old) => old.filter((v) => v.key !== p.key));
-                        })
-                      }
-                    >
-                      <X />
-                    </Button>
-                  )}
-                </span>
-              </div>
-              <Progress value={p.loaded} max={p.size || 1} />
-              <small>
-                {p.phase === 'done'
-                  ? 'Uploaded'
-                  : p.phase === 'hashing'
-                    ? 'Preparing file…'
-                    : p.phase === 'paused'
-                      ? `Paused · ${bytes(p.loaded)} of ${bytes(p.size)}`
-                      : (p.error ?? `${bytes(p.loaded)} of ${bytes(p.size)}`)}
-              </small>
-            </div>
-          ))}
-        </aside>
-      )}
+      <UploadTray
+        uploads={progress}
+        onDismiss={dismissUploads}
+        onPause={pauseUploads}
+        onResume={resumeUploads}
+        onCancel={cancelUploads}
+      />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
           cacheScope={user?.id ?? 'anonymous'}

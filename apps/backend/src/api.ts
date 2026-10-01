@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import { routePath } from 'hono/route';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
 import { transact } from './repository';
 import type { AuthProvider } from './auth';
+import type { Realtime } from './realtime';
 import { responseSchema, queryParameters } from './responses';
 type Env = { Variables: { identity: c.Identity; requestId: string } };
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
@@ -45,6 +47,8 @@ const anyObject = z.record(z.string(), z.unknown());
 const folderBody = z
   .object({ operationId: c.operationId, parentId: c.id.nullable().default(null), name: c.filename })
   .strict();
+const deleteAccountPath = '/v1/users/me/delete';
+const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
 export function createApp(
@@ -52,6 +56,7 @@ export function createApp(
   auth: AuthProvider,
   origins: string[] = [],
   wakeArchives?: () => Promise<void>,
+  realtime?: Pick<Realtime, 'ticket'>,
 ) {
   const app = new Hono<Env>();
   const definitions: Definition[] = [];
@@ -60,7 +65,21 @@ export function createApp(
     ctx.set('requestId', requestId);
     ctx.header('X-Request-ID', requestId);
     ctx.header('Cache-Control', 'no-store');
+    const started = performance.now();
     await next();
+    // One line per request for the operations dashboard. The route is the matched
+    // pattern, never the concrete path, so no resource ids reach the logs.
+    const matched = routePath(ctx, -1);
+    console.log(
+      JSON.stringify({
+        event: 'request',
+        requestId,
+        method: ctx.req.method,
+        route: matched === '/*' ? '(no route)' : matched,
+        status: ctx.res.status,
+        ms: Math.round(performance.now() - started),
+      }),
+    );
   });
   app.use('*', secureHeaders());
   app.use(
@@ -155,12 +174,13 @@ export function createApp(
     definitions.push(d);
     app.on(d.method.toUpperCase(), d.path, async (ctx) => {
       if (!d.public) {
-        const token = ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
+        const token = bearer(ctx);
         assert(token, 'AUTH_REQUIRED', 'Sign in to continue.', 401);
         const identity = await auth.identity(token);
         assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
         ctx.set('identity', identity);
-        await service.ensureUser(identity);
+        // A retried deletion must get past its own tombstone to finish removing the sign-in.
+        await service.ensureUser(identity, d.path === deleteAccountPath);
         if (d.path !== '/v1/auth/session') {
           assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
           await service.checkDevice(identity.id, identity.deviceId);
@@ -373,6 +393,18 @@ export function createApp(
       .strict(),
     z.object({ user: c.userSchema }),
     async (ctx, i) => service.updateProfile(userId(ctx), i),
+  );
+  add(
+    'post',
+    deleteAccountPath,
+    'Delete the account; its data is purged 30 days later',
+    z.object({ operationId: c.operationId, email }).strict(),
+    z.object({ deletedAt: z.string(), purgeAt: z.string() }),
+    async (ctx, i) => {
+      const result = await service.deleteAccount(userId(ctx), i);
+      await auth.deleteUser(bearer(ctx)!);
+      return result;
+    },
   );
   add('get', '/v1/users/lookup', 'Look up an exact username', undefined, anyObject, async (ctx) => {
     await rateLimit(`lookup:${userId(ctx)}`, 30);
@@ -766,6 +798,19 @@ export function createApp(
     async (ctx) => syncSharing.status(userId(ctx), p(ctx, 'id')),
   );
   add(
+    'post',
+    '/v1/realtime/tickets',
+    'Issue a one-time ticket for the live updates connection',
+    undefined,
+    z.object({ url: z.string(), ticket: z.string(), expiresAt: z.string() }),
+    async (ctx) => {
+      assert(realtime, 'REALTIME_UNAVAILABLE', 'Live updates are not available.', 503);
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      return realtime.ticket(userId(ctx), deviceId);
+    },
+  );
+  add(
     'get',
     '/v1/sync/folders',
     'List synced folders across devices',
@@ -1005,6 +1050,19 @@ export function createApp(
     z.object({ removed: z.boolean() }),
     async (ctx) => backupWorkflows.forget(userId(ctx), p(ctx, 'id')),
   );
+  for (const [action, summary, archived] of [
+    ['archive', 'Stop a backup and keep only its cloud copy', true],
+    ['unarchive', 'Resume an archived backup on its computer', false],
+  ] as const)
+    add(
+      'post',
+      `/v1/backups/:id/${action}`,
+      summary,
+      undefined,
+      z.object({ root: backupRootSchema }),
+      async (ctx) =>
+        backupWorkflows.archive(userId(ctx), p(ctx, 'id'), backupDevice(ctx), archived),
+    );
   add(
     'post',
     '/v1/backups/:id/runs/:runId/folders',

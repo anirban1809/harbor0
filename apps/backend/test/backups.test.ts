@@ -376,3 +376,35 @@ it('forgets a stopped backup with its history but keeps the cloud files', async 
   expect((await service.metadata('alice', file.id)).item.name).toBe('notes.txt');
   expect(await backups.forget('alice', root.id)).toEqual({ removed: true });
 });
+it('archives from the source computer only, keeps the cloud copy read-only and resumes on restore', async () => {
+  const file = await upload('kept');
+  await expect(backups.archive('alice', root.id, 'pc', true)).rejects.toMatchObject({
+    code: 'FORBIDDEN',
+  });
+  const archived = await backups.archive('alice', root.id, 'mac', true);
+  expect(archived.root.state).toBe('ARCHIVED');
+  expect(await backups.archive('alice', root.id, 'mac', true)).toEqual(archived);
+  await expect(
+    backups.start('alice', root.id, 'mac', { id: 'later', trigger: 'MANUAL' }),
+  ).rejects.toMatchObject({ code: 'BACKUP_ARCHIVED' });
+  await expect(upload('stale run', root.remoteRootDriveItemId, file)).rejects.toMatchObject({
+    code: 'BACKUP_ARCHIVED',
+  });
+  await expect(
+    backups.restore('alice', root.id, {
+      id: 'file',
+      itemId: file.id,
+      versionId: file.currentVersionId!,
+    }),
+  ).rejects.toMatchObject({ code: 'BACKUP_ARCHIVED' });
+  await expect(
+    service.mutate('alice', file.id, {
+      operationId: randomUUID(),
+      baseRevision: file.revision,
+      name: 'renamed.txt',
+    }),
+  ).rejects.toMatchObject({ code: 'BACKUP_IMMUTABLE' });
+  expect((await service.download('alice', { driveItemId: file.id })).sizeBytes).toBe(4);
+  expect((await backups.archive('alice', root.id, 'mac', false)).root.state).toBe('ACTIVE');
+  await backups.start('alice', root.id, 'mac', { id: 'later', trigger: 'MANUAL' });
+});

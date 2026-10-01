@@ -52,6 +52,26 @@ export class Backups {
       return { root };
     });
   }
+  /** Archived folders keep their read-only cloud copy; the source computer removes its local files. */
+  async archive(userId: string, rootId: string, deviceId: string, archived: boolean) {
+    return transact(this.service.repo, async (tx) => {
+      const root = await this.connected(tx, userId, rootId, deviceId);
+      if ((root.state === 'ARCHIVED') !== archived) {
+        root.state = archived ? 'ARCHIVED' : 'ACTIVE';
+        root.updatedAt = new Date().toISOString();
+        await tx.put(userPK(userId), `BACKUP#${root.id}`, root);
+      }
+      return { root };
+    });
+  }
+  private active(root: BackupRoot) {
+    assert(
+      root.state !== 'ARCHIVED',
+      'BACKUP_ARCHIVED',
+      'This backup folder is archived. Restore the folder to its computer first.',
+      409,
+    );
+  }
   /** Remove a stopped backup and its run/restore history. Its cloud folder is untouched. */
   async forget(userId: string, rootId: string) {
     const repo = this.service.repo;
@@ -89,10 +109,11 @@ export class Backups {
     input: { id: string; trigger: BackupRun['trigger'] },
   ) {
     return transact(this.service.repo, async (tx) => {
-      await this.connected(tx, userId, rootId, deviceId);
+      const root = await this.connected(tx, userId, rootId, deviceId);
       const pk = partition(userId, rootId);
       const existing = await tx.get<BackupRun>(pk, `RUN#${input.id}`);
       if (existing) return { run: existing };
+      this.active(root);
       const run: BackupRun = {
         ...input,
         rootId,
@@ -196,6 +217,7 @@ export class Backups {
         );
         return { restore: existing };
       }
+      this.active(root);
       const { relativePath } = await this.version(tx, userId, root, input.itemId, input.versionId);
       const restore: BackupRestore = {
         ...input,

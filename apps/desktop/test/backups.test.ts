@@ -3,12 +3,13 @@ import { mkdtemp, writeFile, readFile, mkdir, utimes, symlink, rm } from 'node:f
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import { ApiClient } from '@harbor/api-client';
+import { ApiClient, ApiError } from '@harbor/api-client';
 import { Journal, type Root, type LocalJob } from '../src/journal';
 import { FolderBackups, BACKUP_QUIET_MS, backupReady } from '../src/backups';
 let directory: string, journal: Journal, root: Root, backups: FolderBackups, api: ApiClient;
 let calls: { url: string; body: any }[];
 let pending: any[];
+let children: Record<string, any[]>;
 let failEntry: boolean;
 let failRestoreAck: boolean;
 const content = 'historical content';
@@ -28,6 +29,7 @@ beforeEach(async () => {
   journal = new Journal(':memory:');
   calls = [];
   pending = [];
+  children = {};
   failEntry = false;
   failRestoreAck = false;
   perform.mockClear();
@@ -45,6 +47,8 @@ beforeEach(async () => {
     calls.push({ url, body: init?.body });
     if (url === '/v1/backups/backup') return { root: { state: 'ACTIVE' } };
     if (url.endsWith('/pending-restores')) return { items: pending };
+    if (url.endsWith('/children'))
+      return { items: children[url.split('/')[4]] ?? [], nextCursor: null };
     if (url.endsWith('/files') && failEntry) {
       failEntry = false;
       throw new TypeError('Offline');
@@ -177,4 +181,91 @@ it('keeps changes made during a backup queued for the next eligible version', as
   ]);
   await process();
   expect(perform).toHaveBeenCalledTimes(1);
+});
+const helloHash = createHash('sha256').update('hello').digest('hex');
+const save = async (r: Root, job: LocalJob) =>
+  journal.putFile({
+    rootId: r.id,
+    relativePath: job.relativePath,
+    itemId: job.relativePath,
+    revision: 1,
+    hash: helloHash,
+    type: 'FILE',
+  });
+const exists = (name: string) =>
+  readFile(path.join(directory, name)).then(
+    () => true,
+    () => false,
+  );
+async function requestArchive() {
+  root = { ...root, archive: 'pending' };
+  journal.root(root);
+  journal.set(`backup-now:${root.id}`, true);
+}
+it('archives after a full backup, removing only verified files and keeping excluded ones', async () => {
+  await file('a.txt');
+  await file('sub/b.txt');
+  await file('ignored/keep.txt');
+  await writeFile(path.join(directory, 'sub', '.DS_Store'), 'finder');
+  await requestArchive();
+  const detach = vi.fn(async () => {});
+  await backups.process(root, save, () => false);
+  await backups.archive(root, detach, () => false);
+  expect(calls.some((c) => c.url === '/v1/backups/backup/archive')).toBe(true);
+  expect(detach).toHaveBeenCalledOnce();
+  expect(await exists('a.txt')).toBe(false);
+  expect(await exists('sub/b.txt')).toBe(false);
+  expect(await exists('sub/.DS_Store')).toBe(false);
+  expect(await exists('ignored/keep.txt')).toBe(true);
+  expect(journal.roots()[0].archive).toBe('archived');
+});
+it('never removes a file that changed after its backup and gives up while it keeps changing', async () => {
+  await file('a.txt');
+  await requestArchive();
+  const detach = vi.fn(async () => {});
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await backups.process(root, save, () => false);
+    await writeFile(path.join(directory, 'a.txt'), `edit ${attempt}`);
+    await backups.archive(journal.roots()[0], detach, () => false);
+  }
+  expect(calls.some((c) => c.url === '/v1/backups/backup/archive')).toBe(false);
+  expect(detach).not.toHaveBeenCalled();
+  expect(await readFile(path.join(directory, 'a.txt'), 'utf8')).toBe('edit 2');
+  expect(journal.roots()[0].archive).toBeUndefined();
+  expect(journal.roots()[0].archiveError).toContain('keep changing');
+});
+it('restores an archived folder from the cloud copy without replacing local files', async () => {
+  await writeFile(path.join(directory, 'local.txt'), 'newer local work');
+  root = { ...root, archive: 'restoring' };
+  journal.root(root);
+  children = {
+    remote: [
+      { id: 'folder', name: 'sub', type: 'FOLDER' },
+      { id: 'one', name: 'notes.txt', type: 'FILE' },
+      { id: 'two', name: 'local.txt', type: 'FILE' },
+    ],
+    folder: [{ id: 'three', name: 'b.txt', type: 'FILE' }],
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(content));
+  await backups.unarchive(root, () => false);
+  expect(calls[0].url).toBe('/v1/backups/backup/unarchive');
+  expect(await readFile(path.join(directory, 'notes.txt'), 'utf8')).toBe(content);
+  expect(await readFile(path.join(directory, 'sub', 'b.txt'), 'utf8')).toBe(content);
+  expect(await readFile(path.join(directory, 'local.txt'), 'utf8')).toBe('newer local work');
+  expect(journal.roots()[0].archive).toBeUndefined();
+});
+it('cancels instead of retrying forever when the server has no archive endpoint', async () => {
+  await file('a.txt');
+  await requestArchive();
+  await backups.process(root, save, () => false);
+  vi.spyOn(api, 'request').mockImplementation(async (url: string) => {
+    if (url.endsWith('/archive')) throw new ApiError('NOT_FOUND', 'Endpoint not found.', 404);
+    return {};
+  });
+  const detach = vi.fn(async () => {});
+  await backups.archive(journal.roots()[0], detach, () => false);
+  expect(detach).not.toHaveBeenCalled();
+  expect(await exists('a.txt')).toBe(true);
+  expect(journal.roots()[0].archive).toBeUndefined();
+  expect(journal.roots()[0].archiveError).toContain('does not support archiving');
 });

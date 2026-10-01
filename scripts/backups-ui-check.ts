@@ -140,6 +140,7 @@ async function check(page: Page, desktop: boolean) {
       .getByRole('navigation', { name: 'Main navigation' })
       .getByRole('button', { name: 'Backups', exact: true })
       .click();
+  await page.locator('.backup-folder-row').filter({ hasText: 'Documents' }).click();
   await expect(page.getByRole('tab')).toHaveText(['Files & versions', 'History']);
   await expect(page.locator('.backup-summary')).toContainText('Documents');
   await expect(page.locator('.backup-summary')).toContainText('Last backed up');

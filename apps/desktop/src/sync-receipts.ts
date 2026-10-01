@@ -13,10 +13,15 @@ type Receipt = {
   hash: string | null;
 };
 type Candidate = { rootId: string; itemId: string; isRoot: boolean };
+// A pass that finds every copy confirmed waits an hour, or until nudge() reports new activity.
+const AUDIT_RETRY = 15_000;
+const AUDIT_IDLE = 3_600_000;
+const AUDIT_BATCH = 25;
 // The outbox survives restarts. Audits also recover copies completed before receipts existed.
 export class SyncReceipts {
   private candidates: Candidate[] = [];
   private nextAuditAt = 0;
+  private passFound = false;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -52,9 +57,17 @@ export class SyncReceipts {
     const current = this.journal.roots().find((r) => r.id === root.id);
     if (current) this.journal.root({ ...current, needsReconcile: true });
   }
+  /** Sync activity may have left copies unconfirmed; audit again soon. */
+  nudge() {
+    this.nextAuditAt = Math.min(this.nextAuditAt, Date.now() + AUDIT_RETRY);
+  }
+  private passEnded() {
+    this.nextAuditAt = Date.now() + (this.passFound ? AUDIT_RETRY : AUDIT_IDLE);
+  }
   async audit(signal?: AbortSignal) {
     if (!this.candidates.length) {
       if (Date.now() < this.nextAuditAt) return;
+      this.passFound = false;
       this.candidates = this.journal
         .roots()
         .filter((root) => root.mode === 'sync' && root.remoteId && !root.paused)
@@ -65,9 +78,9 @@ export class SyncReceipts {
             .map((file) => ({ rootId: root.id, itemId: file.itemId, isRoot: false })),
         ]);
     }
-    const batch = this.candidates.slice(0, 10);
+    const batch = this.candidates.slice(0, AUDIT_BATCH);
     if (!batch.length) {
-      this.nextAuditAt = Date.now() + 15000;
+      this.passEnded();
       return;
     }
     const requestSignal = () =>
@@ -85,6 +98,7 @@ export class SyncReceipts {
         error instanceof ApiError &&
         ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND', 'ITEM_DELETING', 'SYNC_REMOVED'].includes(error.code)
       ) {
+        this.passFound = true;
         for (const candidate of batch) {
           const root = this.journal.roots().find((r) => r.id === candidate.rootId);
           if (root) this.reconcile(root);
@@ -110,6 +124,7 @@ export class SyncReceipts {
         (candidate.isRoot || status.revision === known?.revision)
       )
         continue;
+      this.passFound = true;
       try {
         const { item }: { item: DriveItem } = await this.api.request(
           '/v1/drive/items/' + candidate.itemId,
@@ -129,7 +144,7 @@ export class SyncReceipts {
       }
     }
     this.candidates.splice(0, batch.length);
-    if (!this.candidates.length) this.nextAuditAt = Date.now() + 15000;
+    if (!this.candidates.length) this.passEnded();
   }
   async flush(signal?: AbortSignal) {
     const deadline = Date.now() + 5000;

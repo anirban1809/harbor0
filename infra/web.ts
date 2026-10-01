@@ -38,8 +38,7 @@ const headers = new cloudfront.ResponseHeadersPolicy(stack, 'WebHeaders', {
       override: true,
     },
     contentSecurityPolicy: {
-      contentSecurityPolicy:
-        "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; media-src 'self' https://*.r2.cloudflarestorage.com; connect-src 'self' https://*.r2.cloudflarestorage.com; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+      contentSecurityPolicy: `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; media-src 'self' https://*.r2.cloudflarestorage.com; connect-src 'self' https://*.r2.cloudflarestorage.com wss://*.execute-api.${stack.region}.amazonaws.com; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'`,
       override: true,
     },
   },

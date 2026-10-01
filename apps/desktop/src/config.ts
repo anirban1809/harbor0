@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseEnv } from 'node:util';
 
-const desktopKeys = ['HARBOR_DEV_AUTH', 'HARBOR_API_URL'] as const;
+const desktopKeys = ['HARBOR_DEV_AUTH', 'HARBOR_API_URL', 'HARBOR_WEB_URL'] as const;
 
 /** Only desktop settings are loaded; shell values win over .env.local and .env. */
 export function loadDesktopEnvironment(directory: string, env: NodeJS.ProcessEnv) {
@@ -50,12 +50,17 @@ export function desktopConfiguration(env: NodeJS.ProcessEnv, packaged: boolean) 
       return false;
     }
   }
+  // Optional: the web app that hosts account creation and password reset.
+  const webUrl = (env.HARBOR_WEB_URL ?? (development ? 'http://127.0.0.1:3000' : ''))
+    .trim()
+    .replace(/\/$/, '');
   const errors: string[] = [];
   if (!validUrl(apiUrl, development))
     errors.push('Set HARBOR_API_URL to your HTTPS harbor0 server.');
   return {
     development,
     apiUrl,
+    webUrl: validUrl(webUrl, development) ? webUrl : '',
     configured: errors.length === 0,
     configurationError: errors.join(' '),
   };

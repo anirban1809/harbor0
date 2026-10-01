@@ -12,6 +12,8 @@ export default ts.config(
       '.cloud/**',
       'packages/api-client/src/generated.ts',
       'apps/web/next-env.d.ts',
+      'apps/landing/next-env.d.ts',
+      'apps/landing/out/**',
     ],
   },
   js.configs.recommended,

@@ -31,7 +31,7 @@ On the development Mac used for this implementation, the SDK is in `~/Library/An
 - Synced folder/device status and requests for files held on the source computer. Backup files are read-only, with paginated run history.
 - Trash restore, permanent deletion and empty-trash confirmations, with revision checks.
 - Account storage usage, Harbor/Ocean/Forest/Violet/Sunset presets, System/Light/Dark appearance, and custom light/dark accent, background, card, navigation and border colors. Drafts preview locally, explicitly save to the account, and remain available for retry if saving fails.
-- Responsive centered content, Android font scaling, labeled actions and native accessible controls. See [DESIGN.md](DESIGN.md).
+- The web and desktop visual style: shared color tokens and theme presets, Geist type, lucide icons and a matching component kit (`Kit.kt`), with breadcrumbs, skeleton loading, status badges and retry states. Responsive centered content, Android font scaling and labeled actions. See [DESIGN.md](DESIGN.md).
 
 Transfers run while the app remains open. They do not resume across process death; unfinished server reservations use the backend's expiry cleanup. Downloads remain private temporary files until saved/shared and are removed on the next app launch. Sync and scheduled backup automation continue to run on computers, not on the phone.
 
@@ -64,6 +64,12 @@ apps/android/gradlew -p apps/android :app:assembleDebug \
 ```
 
 HTTPS is required outside emulator/loopback addresses (`10.0.2.2`, `127.0.0.1`, `localhost`). Release builds always use the production endpoint and reject all cleartext network traffic. Fixture code is outside the Android application sources and never packaged.
+
+Geist and Geist Mono (SIL Open Font License, see [GEIST-LICENSE.txt](GEIST-LICENSE.txt)) are bundled in `app/src/main/res/font` as Latin-subset variable fonts converted from the repository's `@fontsource-variable` packages; other scripts fall back to the system font. After adding an icon name to `generate-icons.mjs`, run `node apps/android/generate-icons.mjs` to regenerate `Icons.kt`.
+
+## Verified on 30 September 2026
+
+After the redesign to the web and desktop style: debug and unsigned release APKs built, lint reported no errors, and all 18 tests passed (13 API/transfer, three appearance, one real backend integration test and one end-to-end emulator UI test on Android 16 / API 36). Ten emulator screenshots were reviewed, covering sign-in, drive, backups and history, the download dialog, trash, settings, Ocean light and Violet dark.
 
 ## Verified on 28 September 2026
 

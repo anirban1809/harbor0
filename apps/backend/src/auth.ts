@@ -5,6 +5,7 @@ import {
   ResendConfirmationCodeCommand,
   InitiateAuthCommand,
   GetUserCommand,
+  DeleteUserCommand,
   GetTokensFromRefreshTokenCommand,
   RevokeTokenCommand,
   ForgotPasswordCommand,
@@ -27,6 +28,7 @@ export interface AuthProvider {
   login(email: string, password: string): Promise<Tokens>;
   refresh(refreshToken: string): Promise<Tokens>;
   logout(refreshToken: string): Promise<void>;
+  deleteUser(accessToken: string): Promise<void>;
   forgot(email: string): Promise<unknown>;
   reset(email: string, code: string, password: string): Promise<unknown>;
 }
@@ -142,6 +144,9 @@ export class CognitoAuth implements AuthProvider {
       new RevokeTokenCommand({ ClientId: this.clientId, Token: refreshToken }),
     );
   }
+  async deleteUser(accessToken: string) {
+    await this.client.send(new DeleteUserCommand({ AccessToken: accessToken }));
+  }
   async forgot(email: string) {
     await this.client.send(
       new ForgotPasswordCommand({ ClientId: this.clientId, Username: email.toLowerCase() }),
@@ -222,6 +227,11 @@ export class DevelopmentAuth implements AuthProvider {
     return { accessToken: token, refreshToken: token, expiresIn: 3600 };
   }
   async logout() {}
+  async deleteUser(token: string) {
+    const user = await this.identity(token);
+    for (const [email, u] of this.users) if (u.id === user.id) this.users.delete(email);
+    for (const [key, u] of this.sessions) if (u.id === user.id) this.sessions.delete(key);
+  }
   async forgot() {
     return { sent: true };
   }

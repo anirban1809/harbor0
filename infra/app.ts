@@ -17,6 +17,7 @@ import {
   aws_sqs as sqs,
   aws_cloudwatch as cloudwatch,
 } from 'aws-cdk-lib';
+import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 const app = new App();
 const stack = new Stack(app, 'HarborStorage');
 const param = (name: string, description: string) =>
@@ -41,6 +42,8 @@ const table = new dynamodb.Table(stack, 'Metadata', {
   encryption: dynamodb.TableEncryption.AWS_MANAGED,
   pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
   timeToLiveAttribute: 'expiresAt',
+  // Keys only: live updates need to know which rows changed, never their contents.
+  stream: dynamodb.StreamViewType.KEYS_ONLY,
   removalPolicy: RemovalPolicy.RETAIN,
 });
 table.addGlobalSecondaryIndex({
@@ -155,6 +158,63 @@ jobsFunction.addToRolePolicy(
     conditions: { StringEquals: { 'ses:FromAddress': emailFrom } },
   }),
 );
+// Live updates: clients hold a WebSocket; the table stream says which users to wake.
+const realtimeSocket = new lambda.Function(stack, 'RealtimeSocket', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.realtimeSocket',
+  code: lambda.Code.fromAsset('dist/backend'),
+  memorySize: 256,
+  timeout: Duration.seconds(10),
+  environment: { TABLE_NAME: table.tableName, NODE_ENV: 'production' },
+});
+table.grantReadWriteData(realtimeSocket);
+const socketIntegration = new integrations.WebSocketLambdaIntegration(
+  'RealtimeIntegration',
+  realtimeSocket,
+);
+const sockets = new apigw.WebSocketApi(stack, 'Realtime', {
+  connectRouteOptions: { integration: socketIntegration },
+  disconnectRouteOptions: { integration: socketIntegration },
+  defaultRouteOptions: { integration: socketIntegration },
+});
+const socketStage = new apigw.WebSocketStage(stack, 'RealtimeStage', {
+  webSocketApi: sockets,
+  stageName: 'live',
+  autoDeploy: true,
+  throttle: { burstLimit: 100, rateLimit: 50 },
+});
+realtimeSocket.addEnvironment('REALTIME_URL', socketStage.url);
+apiFunction.addEnvironment('REALTIME_URL', socketStage.url);
+const realtimeStream = new lambda.Function(stack, 'RealtimeStream', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.realtimeStream',
+  code: lambda.Code.fromAsset('dist/backend'),
+  memorySize: 256,
+  timeout: Duration.seconds(30),
+  environment: {
+    TABLE_NAME: table.tableName,
+    REALTIME_URL: socketStage.url,
+    REALTIME_ENDPOINT: socketStage.callbackUrl,
+    NODE_ENV: 'production',
+  },
+});
+table.grantReadWriteData(realtimeStream);
+socketStage.grantManagementApiAccess(realtimeStream);
+// Only rows that can wake a client invoke the function.
+realtimeStream.addEventSource(
+  new DynamoEventSource(table, {
+    startingPosition: lambda.StartingPosition.LATEST,
+    batchSize: 100,
+    retryAttempts: 2,
+    maxRecordAge: Duration.minutes(5),
+    filters: ['CHANGE#', 'ACCESS#', 'NOTIFICATION#', 'SYNCFOLDERREV#'].map((prefix) =>
+      lambda.FilterCriteria.filter({
+        eventName: lambda.FilterRule.or('INSERT', 'MODIFY'),
+        dynamodb: { Keys: { sk: { S: lambda.FilterRule.beginsWith(prefix) } } },
+      }),
+    ),
+  }),
+);
 const api = new apigw.HttpApi(stack, 'HttpApi', {
   corsPreflight: {
     allowOrigins: [webOrigin],
@@ -183,6 +243,11 @@ new cloudwatch.Alarm(stack, 'ApiErrors', {
   threshold: 5,
   evaluationPeriods: 1,
 });
+new cloudwatch.Alarm(stack, 'RealtimeErrors', {
+  metric: realtimeStream.metricErrors(),
+  threshold: 5,
+  evaluationPeriods: 1,
+});
 new cloudwatch.Alarm(stack, 'JobErrors', {
   metric: jobsFunction.metricErrors(),
   threshold: 1,
@@ -190,6 +255,7 @@ new cloudwatch.Alarm(stack, 'JobErrors', {
 });
 for (const [key, value] of Object.entries({
   ApiUrl: api.apiEndpoint,
+  RealtimeUrl: socketStage.url,
   UserPoolId: pool.userPoolId,
   ClientId: client.ref,
   HostedLogin: domain.baseUrl(),

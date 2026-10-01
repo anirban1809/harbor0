@@ -6,10 +6,12 @@ declare global {
       status: () => Promise<any>;
       testNotification: () => Promise<{ shown: boolean }>;
       notificationSettings: () => Promise<void>;
+      openAccountPage: (input: { page: 'signup' | 'forgot' }) => Promise<void>;
       login: (input: { email: string; password: string }) => Promise<any>;
       request: (input: { path: string; method?: string; body?: unknown }) => Promise<any>;
       disconnectBackup: (input: { id: string }) => Promise<{ disconnected: boolean }>;
       backupNow: (input: { id: string }) => Promise<{ queued: boolean }>;
+      archiveBackup: (input: { id: string; archived: boolean }) => Promise<{ queued: boolean }>;
       chooseRoot: (input: { mode: 'sync' | 'backup' }) => Promise<any>;
       rootSettings: (input: { id: string; paused: boolean; excluded: string[] }) => Promise<any>;
       selectSyncLocal: () => Promise<{ selectionId: string; path: string; name: string } | null>;
@@ -31,7 +33,10 @@ declare global {
       reviewSyncConflict: (input: { id: string }) => Promise<any>;
       dismissSyncConflict: (input: { id: string }) => Promise<any>;
       pause: (input: { paused: boolean }) => Promise<any>;
-      uploadDropped: (input: { files: File[]; parentId: string | null }) => Promise<any>;
+      uploadDropped: (input: {
+        entries: { file: File; folders: string[] }[];
+        parentId: string | null;
+      }) => Promise<any>;
       upload: (input: { parentId: string | null; recipient?: string }) => Promise<any>;
       previewText: (input: {
         driveItemId: string;
@@ -48,7 +53,14 @@ declare global {
       diagnostics: () => Promise<any>;
       logout: () => Promise<any>;
       onStatus: (callback: (state: any) => void) => () => void;
+      /** Live updates connection changes and pushed hints to refresh. */
+      onLive: (
+        callback: (event: { connected: boolean; type?: 'changes' | 'notification' }) => void,
+      ) => () => void;
       onIncoming: (callback: (content: import('./incoming').IncomingContent) => void) => () => void;
+      onUploadProgress: (
+        callback: (uploads: import('../../web/lib/upload-activity').FileUpload[]) => void,
+      ) => () => void;
       onZipProgress: (
         callback: (
           progress:

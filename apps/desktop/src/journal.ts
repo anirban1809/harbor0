@@ -5,6 +5,9 @@ export type Root = {
   remoteId: string | null;
   mode: 'sync' | 'backup';
   backupId?: string;
+  // Backup folders only: set while the local copy is being removed, is gone, or is coming back.
+  archive?: 'pending' | 'removing' | 'archived' | 'restoring';
+  archiveError?: string;
   paused: boolean;
   excluded: string[];
   cloudPath?: string;

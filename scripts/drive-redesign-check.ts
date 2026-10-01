@@ -684,11 +684,16 @@ try {
   await page.locator('#test-drop').setInputFiles(path.resolve('tests/fixtures/preview.webm'));
   const dropped = await page.evaluate(async () => {
     const file = (document.getElementById('test-drop') as HTMLInputElement).files![0];
-    return window.harbor.uploadDropped({ files: [file], parentId: null });
+    return window.harbor.uploadDropped({
+      entries: [{ file, folders: ['Clips', '2026'] }],
+      parentId: null,
+    });
   });
-  if (dropped.paths?.[0] !== path.resolve('tests/fixtures/preview.webm'))
+  if (dropped.dropped?.[0]?.path !== path.resolve('tests/fixtures/preview.webm'))
     throw new Error('Native drop did not preserve file path');
-  console.log('PASS desktop: native dropped files use the existing upload bridge');
+  if (dropped.dropped[0].folders.join('/') !== 'Clips/2026')
+    throw new Error('Native folder drop did not preserve folder layout');
+  console.log('PASS desktop: native dropped files and folders use the existing upload bridge');
 } finally {
   await app.close();
   await rm(profile, { recursive: true, force: true });

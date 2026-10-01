@@ -27,6 +27,12 @@ import {
 import { uploadFile, downloadFile, hashFile, type UploadState } from './transfers';
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
 const retryDelay = (attempts: number) => Math.min(300_000, 2000 * 2 ** Math.min(attempts, 10));
+// Remote checks start every 2s and back off to 30s while nothing changes;
+// local edits, remote changes and wake() return to the fast rate.
+export const REMOTE_POLL_MIN = 2000;
+export const REMOTE_POLL_MAX = 30_000;
+// With live updates connected, polling is only a safety net for missed messages.
+export const REMOTE_POLL_LIVE = 5 * 60_000;
 export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
@@ -52,6 +58,11 @@ export class SyncEngine {
   private nextConfirmationAt = 0;
   private rootRetry = new Map<string, { attempts: number; at: number }>();
   private waiting = new Map<string, { rootId: string; relativePath: string }>();
+  private remoteDelay = REMOTE_POLL_MIN;
+  private maxDelay = REMOTE_POLL_MAX;
+  private nextRemoteAt = 0;
+  private checkpointed?: number;
+  private hurried = false;
   state: SyncRuntime = {
     running: false,
     paused: false,
@@ -82,6 +93,8 @@ export class SyncEngine {
     this.stopped = false;
     this.confirmationController = new AbortController();
     this.nextConfirmationAt = 0;
+    this.remoteDelay = REMOTE_POLL_MIN;
+    this.nextRemoteAt = 0;
     for (let root of this.journal.roots()) {
       if (root.mode === 'sync' && !root.remoteId) {
         root = { ...root, paused: true };
@@ -99,9 +112,11 @@ export class SyncEngine {
         this.persistIssues();
       }
       if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
+      // An archived folder has no local copy to watch until it is restored.
+      if (root.archive === 'archived' || root.archive === 'restoring') continue;
       if (await this.checkRoot(root)) await this.watch(root);
     }
-    this.timer = setInterval(() => void this.tick(), 2000);
+    this.timer = setInterval(() => void this.run(), REMOTE_POLL_MIN);
     void this.tick();
   }
   async stop() {
@@ -167,6 +182,7 @@ export class SyncEngine {
               this.queueEmitTimer = undefined;
               this.emit();
             }, 50);
+          this.hurry();
           this.scheduleTick();
         }
       };
@@ -179,6 +195,26 @@ export class SyncEngine {
       .on('error', (error) => this.issue(root.id, error));
     this.watchers.set(root.id, watcher);
   }
+  // The next tick checks the server instead of waiting out the idle backoff.
+  private hurry() {
+    this.hurried = true;
+    this.remoteDelay = REMOTE_POLL_MIN;
+    this.nextRemoteAt = 0;
+    this.receipts.nudge();
+  }
+  /** Live updates push changes, so idle checks can wait longer while connected. */
+  setLive(connected: boolean) {
+    this.maxDelay = connected ? REMOTE_POLL_LIVE : REMOTE_POLL_MAX;
+    if (!connected) {
+      this.remoteDelay = Math.min(this.remoteDelay, REMOTE_POLL_MAX);
+      this.nextRemoteAt = Math.min(this.nextRemoteAt, Date.now() + REMOTE_POLL_MAX);
+    }
+  }
+  /** Check the server now, e.g. when the window gains focus or the computer wakes. */
+  wake() {
+    this.hurry();
+    this.scheduleTick();
+  }
   private scheduleTick() {
     if (this.stopped || this.state.paused) return;
     if (this.running) {
@@ -188,7 +224,7 @@ export class SyncEngine {
     if (this.wakeTimer) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
-      void this.tick();
+      void this.run();
     }, 150);
   }
   pause(paused: boolean) {
@@ -199,6 +235,7 @@ export class SyncEngine {
         if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
       // Resuming is also the user's way to retry failed work now.
       this.rootRetry.clear();
+      this.hurry();
       for (const job of this.journal.jobs())
         if (job.payload.retryAt) {
           delete job.payload.retryAt;
@@ -256,12 +293,32 @@ export class SyncEngine {
     await this.api.request(`/v1/backups/${backup.id}`, { method: 'DELETE' });
     await this.removeRoot(root.id);
   }
+  /** Archive: one last full backup, then the local copy is removed and only the cloud copy stays. */
+  async archiveBackup(id: string, archived: boolean) {
+    const root = this.journal.roots().find((r) => r.id === id && r.mode === 'backup');
+    if (!root) throw new Error('Backup folder was not found on this computer.');
+    if (this.state.paused || root.paused)
+      throw new Error(`Resume backups before ${archived ? 'archiving' : 'restoring'} this folder.`);
+    if (archived) {
+      if (root.archive) throw new Error('This folder is already archived.');
+      this.journal.root({ ...root, archive: 'pending', archiveError: undefined });
+      this.journal.set(`backup-now:${root.id}`, true);
+    } else {
+      if (root.archive !== 'archived') throw new Error('This folder is not archived.');
+      this.validateRoot(root);
+      this.journal.root({ ...root, archive: 'restoring' });
+    }
+    this.emit();
+    this.wake();
+    return { queued: true };
+  }
   async backupNow(id: string) {
     const root = this.journal.roots().find((r) => r.id === id && r.mode === 'backup');
     if (!root) throw new Error('Backup folder was not found on this computer.');
     if (this.state.paused) throw new Error('Resume backups before backing up now.');
+    if (root.archive) throw new Error('Restore this archived folder before backing up.');
     await this.backups.request(root);
-    this.scheduleTick();
+    this.wake();
     return { queued: true };
   }
   async addRoot(root: Root) {
@@ -584,7 +641,12 @@ export class SyncEngine {
       }
     })();
   }
+  /** Run a full sync pass now, including the server check. */
   async tick() {
+    this.hurry();
+    return this.run();
+  }
+  private async run() {
     if (!this.stopped && !this.publishingFolders) this.publishWork = this.publishSyncFolders();
     this.confirmStatus();
     if (this.running || this.stopped || (this.state.paused && !this.removedRemoteIds.size)) return;
@@ -594,6 +656,10 @@ export class SyncEngine {
   private async runTick() {
     this.running = true;
     this.state.running = true;
+    // Local work runs every tick; server checks only when due.
+    const remote = Date.now() >= this.nextRemoteAt;
+    let active = false;
+    this.hurried = false;
     try {
       for (const root of this.journal.roots())
         if (root.mode === 'sync' && root.remoteId && this.removedRemoteIds.has(root.remoteId))
@@ -602,7 +668,7 @@ export class SyncEngine {
       const available = new Set<string>();
       for (let root of this.journal.roots()) {
         if (this.stopped || this.state.paused) return;
-        if (root.shareId) {
+        if (root.shareId && remote) {
           try {
             const status = await this.api.request(`/v1/sync/shares/${root.shareId}/status`);
             if (root.sharedSequence !== status.sequence) {
@@ -626,6 +692,9 @@ export class SyncEngine {
             throw error;
           }
         }
+        if (root.archive === 'archived') continue;
+        if (root.archive === 'restoring' && !root.paused)
+          await mkdir(root.localPath, { recursive: true });
         if (root.paused || !(await this.checkRoot(root))) continue;
         if (
           root.mode === 'sync' &&
@@ -659,6 +728,7 @@ export class SyncEngine {
             continue;
           }
           if (this.stopped || this.state.paused) return;
+          active = true;
           this.rootRetry.delete(root.id);
           const current = this.journal.roots().find((item) => item.id === root.id);
           if (current) this.journal.root({ ...current, needsReconcile: false });
@@ -666,15 +736,32 @@ export class SyncEngine {
       }
       for (const root of this.journal
         .roots()
-        .filter((r) => r.mode === 'backup' && !r.paused && available.has(r.id))) {
+        // Backup runs wait for the server check; an archive in progress keeps the fast rate.
+        .filter(
+          (r) => r.mode === 'backup' && !r.paused && available.has(r.id) && (remote || r.archive),
+        )) {
         if (this.stopped || this.state.paused) return;
+        if (root.archive) active = true;
         this.currentRootId = root.id;
+        const stopped = () => this.stopped || this.state.paused;
         try {
-          await this.backups.process(
-            root,
-            (r, job) => this.localJob(r, job),
-            () => this.stopped || this.state.paused,
-          );
+          if (root.archive === 'restoring') {
+            this.state.message = 'Restoring archived folder';
+            await this.backups.unarchive(root, stopped);
+            continue;
+          }
+          if (root.archive !== 'removing')
+            await this.backups.process(root, (r, job) => this.localJob(r, job), stopped);
+          const current = this.journal.roots().find((r) => r.id === root.id);
+          if (current?.archive && !stopped())
+            await this.backups.archive(
+              current,
+              async () => {
+                await this.watchers.get(root.id)?.close();
+                this.watchers.delete(root.id);
+              },
+              stopped,
+            );
         } catch (error) {
           if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED')
             await this.detachRoot(root);
@@ -695,6 +782,7 @@ export class SyncEngine {
           (job.kind === 'upsert' && full.has(root.id))
         )
           continue;
+        active = true;
         this.currentRootId = root.id;
         try {
           await this.localJob(root, job);
@@ -721,12 +809,13 @@ export class SyncEngine {
           this.state.active = null;
         }
       }
-      if (this.stopped || this.state.paused) return;
+      if (this.stopped || this.state.paused || !remote) return;
       this.currentRootId = '';
       let cursor = this.journal.get<number>('cursor') ?? 0;
       let more = true;
       while (more && !this.stopped) {
         const page = await this.api.changes(cursor);
+        if (page.changes.length) active = true;
         for (const change of page.changes) {
           if (change.type === 'BACKUP_DISCONNECTED')
             for (const root of this.journal
@@ -775,10 +864,14 @@ export class SyncEngine {
         (issue) => issue.rootId !== '' || stickyIssue(issue),
       );
       this.persistIssues();
-      await this.api.request('/v1/sync/checkpoints', {
-        method: 'POST',
-        body: { deviceId: this.deviceId, cursor },
-      });
+      // Each checkpoint is a database write; only send one when the cursor moved.
+      if (cursor !== this.checkpointed) {
+        await this.api.request('/v1/sync/checkpoints', {
+          method: 'POST',
+          body: { deviceId: this.deviceId, cursor },
+        });
+        this.checkpointed = cursor;
+      }
       this.state.online = true;
       this.state.lastSync = new Date().toISOString();
       this.journal.set('lastSync', this.state.lastSync);
@@ -825,6 +918,17 @@ export class SyncEngine {
       if (e instanceof ApiError && ['DEVICE_REVOKED', 'AUTH_INVALID'].includes(e.code))
         this.state.paused = true;
     } finally {
+      // Activity keeps checks every 2s; each quiet or failed check doubles the wait.
+      if (active) {
+        this.remoteDelay = REMOTE_POLL_MIN;
+        this.nextRemoteAt = remote ? Date.now() + REMOTE_POLL_MIN : 0;
+        this.receipts.nudge();
+      } else if (remote) {
+        this.remoteDelay = Math.min(this.maxDelay, this.remoteDelay * 2);
+        this.nextRemoteAt = Date.now() + this.remoteDelay;
+      }
+      // A wake() during this tick still gets its immediate check.
+      if (this.hurried) this.hurry();
       this.confirmStatus();
       this.running = false;
       if (this.pendingWake) {

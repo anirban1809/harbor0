@@ -16,11 +16,17 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, chmod, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { rendererRequestSchema } from './request-schema';
-import { ApiClient, ApiError, createTransport, SESSION_DURATION_SECONDS } from '@harbor/api-client';
+import {
+  ApiClient,
+  ApiError,
+  createTransport,
+  LiveUpdates,
+  SESSION_DURATION_SECONDS,
+} from '@harbor/api-client';
 import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { SyncEngine } from './sync';
@@ -30,6 +36,7 @@ const folderDiskUsage = new FolderDiskUsageCache();
 import { stickyIssue, type SyncRuntime } from './sync-state';
 import { uploadFile, downloadFile, downloadFolderZip, type UploadState } from './transfers';
 import { contained, safeSegment, safeParents } from './paths';
+import type { FileUpload } from '../../web/lib/upload-activity';
 import {
   desktopConfiguration,
   loadDesktopEnvironment,
@@ -49,7 +56,7 @@ app.setPath('userData', userDataPath);
 // Packaged applications load public release settings, with shell overrides.
 if (!app.isPackaged) loadDesktopEnvironment(path.resolve(__dirname, '..'), process.env);
 else loadBundledDesktopConfiguration(__dirname, process.env);
-const { development, apiUrl, configured, configurationError } = desktopConfiguration(
+const { development, apiUrl, webUrl, configured, configurationError } = desktopConfiguration(
   process.env,
   app.isPackaged,
 );
@@ -64,7 +71,8 @@ const operations = new Set<Promise<unknown>>();
 let engine: SyncEngine | undefined;
 let quitting = false;
 let incomingMonitor: IncomingMonitor | undefined;
-let incomingTimer: ReturnType<typeof setInterval> | undefined;
+let live: LiveUpdates | undefined;
+let incomingTimer: ReturnType<typeof setTimeout> | undefined;
 const incomingNotifications = new Set<Notification>();
 let notificationError: string | null = null;
 const localSelections = new Map<string, string>();
@@ -86,6 +94,8 @@ const session = new DesktopSession({
   },
   clear: () => rm(securePath(), { force: true }),
   signedOut() {
+    live?.stop();
+    live = undefined;
     incomingMonitor?.stop();
     incomingMonitor = undefined;
     for (const notification of incomingNotifications) notification.close();
@@ -181,6 +191,28 @@ async function connected() {
   });
   incomingMonitor = monitor;
   setTimeout(() => void monitor.poll(), 0);
+  live?.stop();
+  const activeEngine = engine;
+  live = new LiveUpdates({
+    ticket: () => api.request('/v1/realtime/tickets', { method: 'POST' }),
+    onMessage(message) {
+      if (journal !== activeJournal) return;
+      if (message.type === 'changes') activeEngine.wake();
+      else void monitor.poll();
+      window?.webContents.send('harbor:live', { connected: true, type: message.type });
+    },
+    onConnected(connected) {
+      if (journal !== activeJournal) return;
+      activeEngine.setLive(connected);
+      // Anything that happened while disconnected was not pushed.
+      if (connected) {
+        activeEngine.wake();
+        void monitor.poll();
+      }
+      window?.webContents.send('harbor:live', { connected });
+    },
+  });
+  live.start();
   window?.webContents.send('harbor:authenticated');
   return { user };
 }
@@ -305,6 +337,10 @@ app
       title: 'harbor0',
       icon: path.join(__dirname, 'icon.png'),
       backgroundColor: '#f4f5f7',
+      ...(process.platform === 'darwin' && {
+        titleBarStyle: 'hiddenInset' as const,
+        trafficLightPosition: { x: 18, y: 18 },
+      }),
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -367,13 +403,16 @@ app
       return {
         configured,
         configurationError,
+        accountLinks: Boolean(webUrl),
         notificationError,
         development,
         signedIn: session.signedIn && accountReady,
+        live: live?.connected ?? false,
         roots: (accountReady ? journal.roots() : []).map((r) => ({
           ...r,
           ...journal.fileCounts(r.id),
-          diskSizeBytes: r.mode === 'sync' ? folderDiskUsage.read(r.localPath, r.excluded) : undefined,
+          diskSizeBytes:
+            r.mode === 'sync' ? folderDiskUsage.read(r.localPath, r.excluded) : undefined,
           localPathDisplayName: path.basename(r.localPath),
           localPathDisplay: r.localPath.startsWith(os.homedir() + path.sep)
             ? '~' + r.localPath.slice(os.homedir().length)
@@ -439,6 +478,14 @@ app
       if (!shown) throw new Error(notificationError ?? 'Could not show a desktop notification.');
       return { shown };
     });
+    ipc(
+      'openAccountPage',
+      z.object({ page: z.enum(['signup', 'forgot']) }).strict(),
+      async ({ page }) => {
+        if (!webUrl) throw new Error('Set HARBOR_WEB_URL to open account pages.');
+        await shell.openExternal(webUrl + (page === 'signup' ? '/signup' : '/forgot-password'));
+      },
+    );
     ipc('notificationSettings', z.undefined(), async () => {
       if (process.platform === 'darwin')
         await shell.openExternal(
@@ -506,6 +553,14 @@ app
       await engine.disconnectBackup(id);
       return { disconnected: true };
     });
+    ipc(
+      'archiveBackup',
+      z.object({ id: z.string(), archived: z.boolean() }).strict(),
+      async ({ id, archived }) => {
+        if (!engine) throw new Error('Sign in first.');
+        return engine.archiveBackup(id, archived);
+      },
+    );
     ipc('backupNow', z.object({ id: z.string() }).strict(), async ({ id }) => {
       if (!engine) throw new Error('Sign in first.');
       return engine.backupNow(id);
@@ -709,37 +764,102 @@ app
         .object({
           parentId: z.string().nullable(),
           recipient: z.string().optional(),
-          paths: z
-            .array(z.string().refine((value) => path.isAbsolute(value)))
+          // Files dropped from Finder; `folders` is the path inside a dropped folder.
+          dropped: z
+            .array(
+              z
+                .object({
+                  path: z.string().refine((value) => path.isAbsolute(value)),
+                  folders: z
+                    .array(
+                      z
+                        .string()
+                        .min(1)
+                        .max(255)
+                        .refine((name) => !/[\\/]/.test(name) && name !== '.' && name !== '..'),
+                    )
+                    .max(64),
+                })
+                .strict(),
+            )
             .min(1)
-            .max(1000)
+            .max(10_000)
             .optional(),
         })
         .strict(),
       async (input) => {
-        const selection = input.paths
-          ? { canceled: false, filePaths: input.paths }
-          : await dialog.showOpenDialog(window, {
-              properties: ['openFile', 'multiSelections'],
-            });
-        if (selection.canceled) return { items: [] };
-        const items = [];
-        for (const filename of selection.filePaths) {
-          if (!(await stat(filename)).isFile())
-            throw new Error('Drop individual files, or use Sync to upload a folder.');
-          const key = 'manual-upload:' + createHash('sha256').update(filename).digest('hex');
-          const state = journal.get<UploadState>(key) ?? { operationId: crypto.randomUUID() };
-          const item = await uploadFile(
-            api,
-            filename,
-            path.basename(filename),
-            input.parentId,
-            state,
-            () => journal.set(key, state),
-          );
-          journal.set(key, null);
-          items.push(item);
+        let files: { path: string; folders: string[] }[] | undefined = input.dropped;
+        if (!files) {
+          const selection = await dialog.showOpenDialog(window, {
+            properties: ['openFile', 'multiSelections'],
+          });
+          if (selection.canceled) return { items: [] };
+          files = selection.filePaths.map((filename) => ({ path: filename, folders: [] }));
         }
+        const sizes: number[] = [];
+        for (const { path: filename } of files) {
+          const info = await stat(filename);
+          if (!info.isFile()) throw new Error('Only files can be uploaded.');
+          sizes.push(info.size);
+        }
+        // Progress goes to the window's upload card; each update carries only what changed.
+        const batch = crypto.randomUUID();
+        const uploads: FileUpload[] = files.map(({ path: filename, folders }, i) => ({
+          key: `${batch}/${i}`,
+          name: path.basename(filename),
+          size: sizes[i],
+          loaded: 0,
+          phase: 'queued',
+          ...(folders.length ? { group: { key: `${batch}/${folders[0]}`, name: folders[0] } } : {}),
+        }));
+        const send = (changed: FileUpload[]) => {
+          if (!window.isDestroyed()) window.webContents.send('harbor:upload-progress', changed);
+        };
+        send(uploads);
+        const items = [];
+        // Folders created for this drop, keyed by their path under the drop target. A folder
+        // that can't be created fails every file in it without retrying.
+        const folderIds = new Map<string, Promise<string>>();
+        for (const [i, { path: filename, folders }] of files.entries()) {
+          const upload = uploads[i];
+          const report = (change: Partial<FileUpload>) => send([Object.assign(upload, change)]);
+          try {
+            let parentId = input.parentId;
+            let folderPath = '';
+            for (const name of folders) {
+              folderPath += '/' + name;
+              if (!folderIds.has(folderPath)) {
+                const pending = api.createFolder(name, parentId).then(({ item }) => item.id);
+                pending.catch(() => {});
+                folderIds.set(folderPath, pending);
+              }
+              parentId = await folderIds.get(folderPath)!;
+            }
+            report({ phase: 'hashing' });
+            const key = 'manual-upload:' + createHash('sha256').update(filename).digest('hex');
+            const state = journal.get<UploadState>(key) ?? { operationId: crypto.randomUUID() };
+            const item = await uploadFile(
+              api,
+              filename,
+              path.basename(filename),
+              parentId,
+              state,
+              () => journal.set(key, state),
+              undefined,
+              (loaded) => report({ phase: 'uploading', loaded }),
+            );
+            journal.set(key, null);
+            items.push(item);
+            report({ phase: 'done', loaded: upload.size });
+          } catch (error) {
+            report({ phase: 'failed', error: (error as Error).message });
+          }
+        }
+        const failed = files.length - items.length;
+        if (failed)
+          throw new Error(
+            `${failed} of ${files.length} ${files.length === 1 ? 'file' : 'files'} couldn’t be uploaded.`,
+          );
         if (input.recipient) {
           await api.request('/v1/transfers', {
             method: 'POST',
@@ -871,13 +991,30 @@ app
       }
       return { loggedOut: true };
     });
-    incomingTimer = setInterval(() => void incomingMonitor?.poll(), 10000);
-    powerMonitor.on('resume', () => {
-      void engine?.tick();
-      void incomingMonitor?.poll();
-    });
+    // Incoming transfers and invitations: every 10s while the window is focused,
+    // every 60s in the background, and immediately on focus or wake.
+    const pollIncoming = async () => {
+      clearTimeout(incomingTimer);
+      await incomingMonitor?.poll();
+      // A focus during the request also reschedules; keep a single timer.
+      clearTimeout(incomingTimer);
+      if (!quitting)
+        incomingTimer = setTimeout(() => void pollIncoming(), window.isFocused() ? 10_000 : 60_000);
+    };
+    void pollIncoming();
+    const wake = () => {
+      engine?.wake();
+      void pollIncoming();
+    };
+    powerMonitor.on('resume', wake);
+    window.on('focus', wake);
     app.on('activate', () => window.show());
     await window.loadFile(rendererPath);
+    // `npm run dev` touches this stamp after each renderer rebuild.
+    if (!app.isPackaged && process.env.HARBOR_DEV_RELOAD)
+      watch(__dirname, (_, file) => {
+        if (file === '.reload') window.webContents.reloadIgnoringCache();
+      });
     authTransition = true;
     try {
       if (safeStorage.isEncryptionAvailable()) {
@@ -905,7 +1042,8 @@ app
   });
 app.on('before-quit', () => {
   quitting = true;
-  clearInterval(incomingTimer);
+  clearTimeout(incomingTimer);
+  live?.stop();
   incomingMonitor?.stop();
   void engine?.stop();
 });

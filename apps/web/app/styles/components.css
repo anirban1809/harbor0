@@ -177,6 +177,37 @@ textarea.input {
   padding-left: 26px;
 }
 
+/* Password input with a show/hide toggle. */
+.input-group.password-input > .input {
+  padding-right: 40px;
+  padding-left: 12px;
+}
+.password-toggle {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.password-toggle:hover {
+  background: var(--fill-2);
+  color: var(--text);
+}
+.password-toggle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.password-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Select (native control, kit chrome) ------------------------------------- */
 .select {
   position: relative;

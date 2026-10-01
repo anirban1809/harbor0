@@ -66,6 +66,12 @@ export async function assertBackupWrite(
     'This folder is no longer connected for backup.',
     409,
   );
+  assert(
+    root.state !== 'ARCHIVED',
+    'BACKUP_ARCHIVED',
+    'This backup folder is archived. Restore the folder to its computer first.',
+    409,
+  );
   const device = await tx.get<Device>(pk(owner), `DEVICE#${context.deviceId}`);
   const original = await tx.get<Device>(pk(owner), `DEVICE#${root.deviceId}`);
   assert(

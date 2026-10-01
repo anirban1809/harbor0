@@ -43,7 +43,14 @@ const nameKey = (parent: string | null, name: string) =>
 const childKey = (item: DriveItem) =>
   `CHILD#${item.parentId ?? 'root'}#${item.normalizedName}#${item.id}`;
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
-export type Account = User & { sequence: number; minCursor: number };
+export type Account = User & {
+  sequence: number;
+  minCursor: number;
+  deletedAt?: string;
+  purgeAt?: string;
+};
+// A deleted account keeps its data this long before the purge job removes it.
+export const ACCOUNT_PURGE_DELAY_MS = 30 * 86400_000;
 // Device rows identify token sessions; devicePublicId identifies an installation.
 type DeviceSession = Device & { revocationVersion?: number };
 type DeviceRevocation = { version: number; revokedAt: string };
@@ -100,7 +107,8 @@ export type Job = {
     | 'TRANSFER_SAVE'
     | 'TRANSFER_RELEASE'
     | 'TRANSFER_EXPIRE'
-    | 'PERMANENT_DELETE';
+    | 'PERMANENT_DELETE'
+    | 'ACCOUNT_DELETE';
   userId?: string;
   entityId?: string;
   key?: string;
@@ -114,7 +122,7 @@ export class StorageService {
     public repo: Repository,
     public storage: ObjectStorage,
   ) {}
-  async ensureUser(identity: Identity) {
+  async ensureUser(identity: Identity, allowDeleted = false) {
     assert(
       identity.emailVerified,
       'EMAIL_NOT_VERIFIED',
@@ -124,6 +132,12 @@ export class StorageService {
     return transact(this.repo, async (tx) => {
       const existing = await tx.get<Account>(userPK(identity.id), 'PROFILE');
       if (existing) {
+        assert(
+          allowDeleted || !existing.deletedAt,
+          'ACCOUNT_DELETED',
+          'This account was deleted.',
+          403,
+        );
         assert(
           existing.email === normalizeEmail(identity.email),
           'ACCOUNT_EMAIL_CHANGED',
@@ -946,6 +960,12 @@ export class StorageService {
     const item = await this.owned(tx, owner, itemId);
     if (write) await assertBackupMutable(tx, owner, itemId);
     if (owner === userId) return { item, owner };
+    assert(
+      !(await this.account(tx, owner)).deletedAt,
+      'ITEM_NOT_FOUND',
+      'Item was not found.',
+      404,
+    );
     let current: DriveItem | undefined = item;
     let permission: ShareGrant | undefined;
     while (current) {
@@ -2002,6 +2022,68 @@ export class StorageService {
       },
     );
   }
+  async deleteAccount(userId: string, input: { operationId: string; email: string }) {
+    return this.operation(
+      userId,
+      input.operationId,
+      { action: 'delete-account', ...input },
+      async (tx) => {
+        const user = await this.account(tx, userId);
+        if (user.deletedAt && user.purgeAt)
+          return { deletedAt: user.deletedAt, purgeAt: user.purgeAt };
+        assert(
+          normalizeEmail(input.email) === user.email,
+          'VALIDATION_ERROR',
+          'Enter your account email to confirm.',
+        );
+        user.deletedAt = now();
+        user.purgeAt = new Date(Date.now() + ACCOUNT_PURGE_DELAY_MS).toISOString();
+        user.updatedAt = user.deletedAt;
+        await tx.put(userPK(userId), 'PROFILE', user);
+        // Releasing the claims lets the email and username register again as a new account.
+        await tx.delete('USERNAME', user.username);
+        await tx.delete('EMAIL', user.email);
+        await this.job(tx, {
+          id: `account-${userId}`,
+          type: 'ACCOUNT_DELETE',
+          userId,
+          dueAt: user.purgeAt,
+          attempts: 0,
+        });
+        await this.record(tx, userId, 'ACCOUNT_DELETED', userId);
+        return { deletedAt: user.deletedAt, purgeAt: user.purgeAt };
+      },
+    );
+  }
+  /** Runs when a deleted account's grace period ends: every top-level item enters the purge workflow. */
+  async purgeAccount(userId: string) {
+    await transact(this.repo, async (tx) => {
+      // Backups are read-only until disconnected, which would block the purge.
+      for (const root of await tx.list<BackupRoot>(userPK(userId), 'BACKUP#'))
+        if (root.state !== 'REMOVED')
+          await tx.put(userPK(userId), `BACKUP#${root.id}`, {
+            ...root,
+            state: 'REMOVED',
+            updatedAt: now(),
+          });
+    });
+    let cursor: string | undefined;
+    for (let n = 0; n < 100; n++) {
+      const page = await this.repo.query(userPK(userId), 'ALLCHILD#root#', 5, cursor);
+      await transact(this.repo, async (tx) => {
+        for (const row of page.rows) {
+          const item = await tx.get<DriveItem & { purging?: boolean }>(
+            userPK(userId),
+            `ITEM#${(row.data as { id: string }).id}`,
+          );
+          if (item && !item.purging) await new DeletionWorkflows(this).detach(tx, userId, item);
+        }
+      });
+      if (!page.cursor) return true;
+      cursor = page.cursor;
+    }
+    return false;
+  }
   async backupRoot(userId: string, input: { operationId: string; deviceId: string; name: string }) {
     await this.checkDevice(userId, input.deviceId);
     return this.operation(userId, input.operationId, { action: 'backup', ...input }, async (tx) => {
@@ -2068,6 +2150,7 @@ export class StorageService {
           );
         if (job.type === 'PERMANENT_DELETE')
           complete = await new DeletionWorkflows(this).step(job.userId!, job.entityId!);
+        if (job.type === 'ACCOUNT_DELETE') complete = await this.purgeAccount(job.userId!);
         if (job.type === 'TRANSFER_BUILD') complete = await workflows.build(job.entityId!);
         if (job.type === 'TRANSFER_SAVE') complete = await workflows.saveBatch(job.entityId!);
         if (job.type === 'TRANSFER_RELEASE') complete = await workflows.release(job.entityId!);

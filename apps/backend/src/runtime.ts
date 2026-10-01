@@ -1,12 +1,17 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  ApiGatewayManagementApiClient,
+  PostToConnectionCommand,
+} from '@aws-sdk/client-apigatewaymanagementapi';
 import { z } from 'zod';
 import { CognitoAuth } from './auth';
 import { DynamoRepository } from './repository';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
 import { createApp } from './api';
+import { Realtime, type RealtimeGateway } from './realtime';
 import { proxyBrowserRequest } from '@harbor/api-client';
 const configSchema = z.object({
   TABLE_NAME: z.string().min(1),
@@ -36,15 +41,21 @@ async function initialize() {
   );
   const service = new StorageService(repo, storage);
   const auth = new CognitoAuth(c.COGNITO_USER_POOL_ID, c.COGNITO_CLIENT_ID);
-  const { app } = createApp(service, auth, [c.WEB_ORIGIN], async () => {
-    if (process.env.MAINTENANCE_FUNCTION_NAME)
-      await new LambdaClient({}).send(
-        new InvokeCommand({
-          FunctionName: process.env.MAINTENANCE_FUNCTION_NAME,
-          InvocationType: 'Event',
-        }),
-      );
-  });
+  const { app } = createApp(
+    service,
+    auth,
+    [c.WEB_ORIGIN],
+    async () => {
+      if (process.env.MAINTENANCE_FUNCTION_NAME)
+        await new LambdaClient({}).send(
+          new InvokeCommand({
+            FunctionName: process.env.MAINTENANCE_FUNCTION_NAME,
+            InvocationType: 'Event',
+          }),
+        );
+    },
+    process.env.REALTIME_URL ? new Realtime(repo, process.env.REALTIME_URL) : undefined,
+  );
   app.all('/api/*', (ctx) =>
     proxyBrowserRequest(ctx.req.raw, {
       apiUrl: 'https://harbor.internal',
@@ -84,4 +95,42 @@ export function runtime() {
     throw error;
   });
   return instance;
+}
+
+class ApiGatewayRealtime implements RealtimeGateway {
+  private client: ApiGatewayManagementApiClient;
+  constructor(endpoint: string) {
+    this.client = new ApiGatewayManagementApiClient({ endpoint });
+  }
+  async send(connectionId: string, message: unknown) {
+    try {
+      await this.client.send(
+        new PostToConnectionCommand({
+          ConnectionId: connectionId,
+          Data: new TextEncoder().encode(JSON.stringify(message)),
+        }),
+      );
+      return true;
+    } catch (error) {
+      if ((error as { name: string }).name === 'GoneException') return false;
+      throw error;
+    }
+  }
+}
+let realtimeInstance: Realtime | undefined;
+// The socket and stream functions need only the table, not R2 or Cognito.
+export function realtimeRuntime() {
+  const c = z
+    .object({
+      TABLE_NAME: z.string().min(1),
+      REALTIME_URL: z.string().min(1),
+      REALTIME_ENDPOINT: z.url().optional(),
+    })
+    .parse(process.env);
+  realtimeInstance ??= new Realtime(
+    new DynamoRepository(c.TABLE_NAME),
+    c.REALTIME_URL,
+    c.REALTIME_ENDPOINT ? new ApiGatewayRealtime(c.REALTIME_ENDPOINT) : undefined,
+  );
+  return realtimeInstance;
 }

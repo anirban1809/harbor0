@@ -3,10 +3,12 @@ const channels = [
   'status',
   'testNotification',
   'notificationSettings',
+  'openAccountPage',
   'login',
   'request',
   'chooseRoot',
   'backupNow',
+  'archiveBackup',
   'disconnectBackup',
   'selectSyncLocal',
   'syncCloudFolders',
@@ -36,6 +38,9 @@ const bridge = Object.fromEntries(
     },
   ]),
 );
+window.addEventListener('DOMContentLoaded', () => {
+  document.documentElement.classList.add(`platform-${process.platform}`);
+});
 contextBridge.exposeInMainWorld('harbor', {
   ...bridge,
   onIncoming: (callback: (content: unknown) => void) => {
@@ -43,12 +48,25 @@ contextBridge.exposeInMainWorld('harbor', {
     ipcRenderer.on('harbor:incoming', listener);
     return () => ipcRenderer.removeListener('harbor:incoming', listener);
   },
-  uploadDropped: async ({ files, parentId }: { files: File[]; parentId: string | null }) => {
-    const paths = files.map((file) => webUtils.getPathForFile(file)).filter(Boolean);
-    if (!paths.length) throw new Error('Drop files from your computer to upload them.');
-    const result = await ipcRenderer.invoke('harbor:upload', { parentId, paths });
+  uploadDropped: async ({
+    entries,
+    parentId,
+  }: {
+    entries: { file: File; folders: string[] }[];
+    parentId: string | null;
+  }) => {
+    const dropped = entries
+      .map(({ file, folders }) => ({ path: webUtils.getPathForFile(file), folders }))
+      .filter((entry) => entry.path);
+    if (!dropped.length) throw new Error('Drop files from your computer to upload them.');
+    const result = await ipcRenderer.invoke('harbor:upload', { parentId, dropped });
     if (!result.ok) throw new Error(result.error);
     return result.data;
+  },
+  onUploadProgress: (callback: (uploads: unknown) => void) => {
+    const listener = (_: unknown, uploads: unknown) => callback(uploads);
+    ipcRenderer.on('harbor:upload-progress', listener);
+    return () => ipcRenderer.removeListener('harbor:upload-progress', listener);
   },
   onZipProgress: (callback: (progress: unknown) => void) => {
     const listener = (_: unknown, progress: unknown) => callback(progress);
@@ -59,6 +77,11 @@ contextBridge.exposeInMainWorld('harbor', {
     const listener = (_: unknown, state: unknown) => callback(state);
     ipcRenderer.on('harbor:status', listener);
     return () => ipcRenderer.removeListener('harbor:status', listener);
+  },
+  onLive: (callback: (event: unknown) => void) => {
+    const listener = (_: unknown, event: unknown) => callback(event);
+    ipcRenderer.on('harbor:live', listener);
+    return () => ipcRenderer.removeListener('harbor:live', listener);
   },
   onAuthenticated: (callback: () => void) => {
     const listener = () => callback();

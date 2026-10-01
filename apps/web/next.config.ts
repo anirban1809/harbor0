@@ -13,7 +13,7 @@ const config: NextConfig = {
           {
             key: 'Content-Security-Policy',
             value:
-              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; media-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; connect-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; media-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; connect-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100 ws://127.0.0.1:8788; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
           },
         ],
       },

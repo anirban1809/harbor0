@@ -121,15 +121,86 @@ it('schedules another pass for changes arriving during a running sync', async ()
   expect(checks).toBe(2);
 });
 
-it('polls cloud changes every two seconds and cancels future checks on stop', async () => {
+it('backs off idle cloud checks to 30 seconds, wakes immediately, and cancels checks on stop', async () => {
+  const start = Date.now();
   await engine.start();
   await vi.advanceTimersByTimeAsync(0);
   expect(checks).toBe(1);
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(checks).toBe(2);
+  // Each quiet check doubles the wait: 4s, 8s, 16s, then 30s.
+  for (const [at, expected] of [
+    [2000, 1],
+    [4000, 2],
+    [12000, 3],
+    [28000, 4],
+    [58000, 5],
+    [88000, 6],
+  ]) {
+    await vi.advanceTimersByTimeAsync(at - Date.now() + start);
+    expect(checks).toBe(expected);
+  }
+  engine.wake();
+  await vi.advanceTimersByTimeAsync(150);
+  expect(checks).toBe(7);
+  // After a wake the next quiet check is 4s away again (on the next 2s timer tick), not 30s.
+  await vi.advanceTimersByTimeAsync(6000);
+  expect(checks).toBe(8);
   await engine.stop();
-  await vi.advanceTimersByTimeAsync(4000);
-  expect(checks).toBe(2);
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(checks).toBe(8);
+});
+
+it('stretches idle checks beyond 30 seconds only while live updates are connected', async () => {
+  const start = Date.now();
+  await engine.start();
+  engine.setLive(true);
+  await vi.advanceTimersByTimeAsync(0);
+  // 4s, 8s, 16s, then 32s: past the 30s ceiling that applies without live updates.
+  await vi.advanceTimersByTimeAsync(58000 - (Date.now() - start));
+  expect(checks).toBe(4);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(checks).toBe(5);
+  // The next check was 64s away; losing the connection brings it back within 30s.
+  engine.setLive(false);
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(checks).toBe(6);
+});
+
+it('keeps two-second checks while remote changes arrive and checkpoints only a moved cursor', async () => {
+  let sequence = 0;
+  const checkpoints: number[] = [];
+  engine = new SyncEngine(
+    new ApiClient(async (endpoint, init) => {
+      if (endpoint.includes('/changes')) {
+        checks++;
+        // Two busy checks, then quiet.
+        if (sequence >= 2) return { changes: [], nextCursor: sequence, hasMore: false };
+        sequence++;
+        return {
+          changes: [{ sequence, type: 'NOOP', entityId: 'x' }],
+          nextCursor: sequence,
+          hasMore: false,
+        };
+      }
+      if (endpoint === '/v1/sync/checkpoints')
+        checkpoints.push((init?.body as { cursor: number }).cursor);
+      return {};
+    }),
+    journal,
+    'device',
+    () => {},
+  );
+  await engine.start();
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(2000);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(checks).toBe(3);
+  expect(checkpoints).toEqual([1, 2]);
+  // Quiet from here: the next check waits 4s and sends no checkpoint.
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(checks).toBe(3);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(checks).toBe(4);
+  expect(checkpoints).toEqual([1, 2]);
 });
 
 it('publishes paused sync mappings, retries offline, and removes stopped roots without publishing backups', async () => {

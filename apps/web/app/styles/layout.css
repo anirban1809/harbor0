@@ -386,20 +386,30 @@
 }
 .auth-features {
   display: grid;
-  gap: 12px;
-  margin-top: 28px;
+  gap: 14px;
+  margin-top: 32px;
 }
 .auth-features li {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-size: var(--text-sm);
   color: var(--text-2);
 }
-.auth-features svg {
-  width: 16px;
-  height: 16px;
+.auth-feature-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--fill-1);
   color: var(--accent-text);
+}
+.auth-feature-icon svg {
+  width: 15px;
+  height: 15px;
 }
 .auth-foot {
   display: flex;
@@ -438,21 +448,82 @@
 .auth-form form {
   margin-top: 24px;
 }
-.auth-links {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 20px;
-  font-size: var(--text-sm);
+.auth-form .btn[type='submit'] {
+  margin-top: 4px;
 }
-.auth-links a {
+.auth-form .btn[type='submit'] svg {
+  width: 16px;
+  height: 16px;
+}
+.auth-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.auth-inline-link {
+  font-weight: 400;
+}
+.auth-form a,
+.auth-form .btn[data-variant='link'] {
   border-radius: 4px;
   color: var(--accent-text);
+  font-size: inherit;
 }
-.auth-links a:hover {
+.auth-form a:hover {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+.auth-form .muted strong {
+  font-weight: 500;
+  color: var(--text);
+}
+.auth-code {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.3em;
+}
+.auth-code::placeholder {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+.auth-resend {
+  margin-top: 16px;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.auth-switch {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.password-rules {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.password-rules li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: color var(--ease);
+}
+.password-rules svg {
+  width: 13px;
+  height: 13px;
+  opacity: 0.35;
+  transition: opacity var(--ease);
+}
+.password-rules li[data-met='true'] {
+  color: var(--success-text);
+}
+.password-rules li[data-met='true'] svg {
+  opacity: 1;
 }
 .auth-session-note {
   display: flex;

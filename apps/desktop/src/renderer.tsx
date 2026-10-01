@@ -8,7 +8,9 @@ import {
   type ZipDownloadStatus,
 } from '../../web/components/zip-download-status';
 import { previewKind, type PreviewLoader } from '../../web/lib/file-preview';
-import { Input, InputGroup, Textarea } from '../../web/components/ui/input';
+import { UploadTray } from '../../web/components/upload-tray';
+import { finishedKeys, mergeUploads, type FileUpload } from '../../web/lib/upload-activity';
+import { Input, InputGroup, PasswordInput, Textarea } from '../../web/components/ui/input';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -27,6 +29,7 @@ import {
   ChevronRight,
   Search,
   Check,
+  ExternalLink,
 } from 'lucide-react';
 import {
   FileCollection,
@@ -45,6 +48,7 @@ import { BackupsPage } from '../../web/components/backups-page';
 import { SharedTabs, type SharedTab } from '../../web/components/shared-tabs';
 import { TransferTable } from '../../web/components/transfer-table';
 import { DriveWorkspace } from '../../web/components/lazy-drive-workspace';
+import { publishLive, setLiveConnected } from '../../web/lib/live-updates';
 import { AccountMenu, StorageIndicator } from '../../web/components/drive-account';
 import { SyncPage } from './sync-page';
 import { SyncNotifications } from './sync-notifications';
@@ -133,6 +137,16 @@ function App() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [zipProgress, setZipProgress] = useState<ZipDownloadStatus | null>(null);
   useEffect(() => bridge.onZipProgress(setZipProgress), []);
+  const [uploads, setUploads] = useState<FileUpload[]>([]);
+  useEffect(
+    () =>
+      bridge.onUploadProgress((updates) => {
+        setUploads((old) => mergeUploads(old, updates));
+        // Show each file in the drive as soon as it lands.
+        if (updates.some((u) => u.phase === 'done')) setDriveRevision((value) => value + 1);
+      }),
+    [],
+  );
   const [modal, setModal] = useState<{ mode: string; item: any } | null>(null);
   const [sync, setSync] = useState<any>();
   const [storage, setStorage] = useState<StorageUsage | null>(null);
@@ -282,6 +296,15 @@ function App() {
       if (current()) setLoadedView(view);
     }
   }
+  // Account creation and password reset live in the web app, opened in the default browser.
+  async function openAccountPage(page: 'signup' | 'forgot') {
+    setError('');
+    try {
+      await bridge.openAccountPage({ page });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   async function act(fn: () => Promise<unknown>, message?: string) {
     setBusy(true);
     setError('');
@@ -306,8 +329,28 @@ function App() {
   useEffect(() => {
     setError('');
     setLoadError('');
-    void load().catch(() => {});
-    const timer = setInterval(() => void load().catch(() => {}), 10000);
+    // Refresh every 10s, or every minute while live updates push changes as they happen.
+    let live = false;
+    let loadedAt = Date.now();
+    const refresh = () => {
+      loadedAt = Date.now();
+      void load().catch(() => {});
+    };
+    refresh();
+    void bridge
+      .status()
+      .then((status: { live?: boolean }) => setLiveConnected((live = !!status.live)))
+      .catch(() => {});
+    const timer = setInterval(() => {
+      if (!live || Date.now() - loadedAt >= 60_000) refresh();
+    }, 10000);
+    // The main process holds the socket; shared web views listen for the same hints.
+    const offLive = bridge.onLive((event) => {
+      live = event.connected;
+      setLiveConnected(live);
+      if (event.type) publishLive({ type: event.type });
+      if (event.type === 'changes') refresh();
+    });
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     const off = bridge.onStatus((next) => {
       statusVersion.current++;
@@ -366,6 +409,7 @@ function App() {
     return () => {
       requestId.current++;
       clearInterval(timer);
+      offLive();
       clearTimeout(refreshTimer);
       off();
       auth();
@@ -407,15 +451,21 @@ function App() {
             </p>
             <ul className="auth-features">
               <li>
-                <RefreshCw size={18} />
+                <span className="auth-feature-icon">
+                  <RefreshCw aria-hidden="true" />
+                </span>
                 <span>Keep your files in sync across devices</span>
               </li>
               <li>
-                <Cloud size={18} />
+                <span className="auth-feature-icon">
+                  <Cloud aria-hidden="true" />
+                </span>
                 <span>Back up local folders to the cloud</span>
               </li>
               <li>
-                <ShieldCheck size={18} />
+                <span className="auth-feature-icon">
+                  <ShieldCheck aria-hidden="true" />
+                </span>
                 <span>Files are private unless you share them</span>
               </li>
             </ul>
@@ -466,16 +516,26 @@ function App() {
                 />
               </Field>
               <Field label="Password">
-                <Input
+                <PasswordInput
                   size="lg"
                   name="password"
-                  type="password"
+                  aria-label="Password"
                   autoComplete="current-password"
                   maxLength={256}
                   disabled={busy}
                   required
                 />
               </Field>
+              {status.accountLinks && (
+                <Button
+                  variant="link"
+                  className="auth-forgot"
+                  onClick={() => void openAccountPage('forgot')}
+                >
+                  Forgot password?
+                  <ExternalLink aria-hidden="true" />
+                </Button>
+              )}
               <Button type="submit" size="lg" block disabled={busy || !status.configured}>
                 {busy
                   ? 'Signing in…'
@@ -484,10 +544,20 @@ function App() {
                     : 'Sign in'}
               </Button>
             </form>
-            <p className="auth-session-note">
-              New to harbor0 or forgot your password? Create an account or reset your password in
-              the harbor0 web app, then sign in here.
-            </p>
+            {status.accountLinks ? (
+              <div className="auth-switch">
+                New to harbor0?{' '}
+                <Button variant="link" onClick={() => void openAccountPage('signup')}>
+                  Create an account
+                  <ExternalLink aria-hidden="true" />
+                </Button>
+              </div>
+            ) : (
+              <p className="auth-session-note">
+                New to harbor0 or forgot your password? Create an account or reset your password in
+                the harbor0 web app, then sign in here.
+              </p>
+            )}
             <p className="auth-session-note">
               <ShieldCheck size={16} />
               <span>
@@ -609,6 +679,13 @@ function App() {
           className={`workspace ${section === 'My Drive' ? 'drive-page' : ''}`}
         >
           {zipProgress && <ZipDownloadStatusPanel progress={zipProgress} />}
+          <UploadTray
+            uploads={uploads}
+            onDismiss={() => {
+              const finished = finishedKeys(uploads);
+              setUploads((old) => old.filter((u) => !finished.has(u.key)));
+            }}
+          />
           {section !== 'Sync' && section !== 'My Drive' && (
             <div className={`page-heading ${section === 'Shared' ? 'shared-heading' : ''}`}>
               <div>
@@ -706,7 +783,7 @@ function App() {
                   setDriveRevision((value) => value + 1);
                 })
               }
-              onDropFiles={(files) => bridge.uploadDropped({ files, parentId })}
+              onDropFiles={(entries) => bridge.uploadDropped({ entries, parentId })}
               onDownload={async (item, versionId) => {
                 const result = await bridge.download({
                   driveItemId: item.id,
@@ -1035,6 +1112,7 @@ function App() {
                 add: () => bridge.chooseRoot({ mode: 'backup' }),
                 backup: (id) => bridge.backupNow({ id }),
                 disconnect: (id) => bridge.disconnectBackup({ id }),
+                archive: (id, archived) => bridge.archiveBackup({ id, archived }),
                 setPaused: (root, paused) =>
                   bridge.rootSettings({ id: root.id, paused, excluded: root.excluded ?? [] }),
                 download: ({ itemId, versionId, name }) =>

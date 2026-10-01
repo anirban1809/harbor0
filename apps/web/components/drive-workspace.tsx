@@ -23,10 +23,12 @@ import type { Transport } from '@harbor/api-client';
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { browserSession, applyOptimisticItems, type OptimisticChange } from '../lib/browser-cache';
 import { useDebouncedValue } from '../lib/use-debounced-value';
+import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { LoadMoreFiles } from './load-more-files';
 import { driveLocations, type DriveLocation } from '../lib/drive-locations';
 import { operation } from '@harbor/api-client';
 import { defaultDriveFilters, driveView } from '../lib/drive-view';
+import { isLive, onLive } from '../lib/live-updates';
 import { fileDate, fileKind, fileSize } from '../lib/file-metadata';
 import { FileCollection, FileCollectionSkeleton, FileLoadError } from './file-collection';
 import { EmptyState } from './empty-state';
@@ -79,7 +81,7 @@ type Props = {
   canOpenDeviceCopy?: boolean;
   onOpen: (item: DriveItem) => void;
   onUpload: () => void;
-  onDropFiles: (files: File[]) => Promise<unknown>;
+  onDropFiles: (entries: UploadEntry[]) => Promise<unknown>;
   onUploadFolder?: () => void;
   onDownload: (item: DriveItem, versionId?: string) => Promise<unknown>;
   onChanged: () => void;
@@ -505,21 +507,34 @@ export function DriveWorkspace({
         }
       }
     }
+    let updatedAt = Date.now();
     void update();
     // Keep changes from other devices current without flashing a loading state.
     const refreshOnFocus = () => {
       if (document.visibilityState !== 'hidden') {
         session.data.clear();
+        updatedAt = Date.now();
         void update();
       }
     };
+    // Pushed changes refresh at once, so polling drops to once a minute while live.
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') void update();
+      if (document.visibilityState === 'hidden') return;
+      if (isLive() && Date.now() - updatedAt < 60_000) return;
+      updatedAt = Date.now();
+      void update();
     }, 15000);
+    const offLive = onLive((message) => {
+      if (message.type !== 'changes') return;
+      session.data.clear();
+      updatedAt = Date.now();
+      void update();
+    });
     window.addEventListener('focus', refreshOnFocus);
     window.addEventListener('online', refreshOnFocus);
     return () => {
       controller.abort();
+      offLive();
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshOnFocus);
       window.removeEventListener('online', refreshOnFocus);
@@ -1207,8 +1222,11 @@ export function DriveWorkspace({
         event.stopPropagation();
         dragDepth.current = 0;
         setDragging(false);
-        if (canWriteHere && !pendingFolder && event.dataTransfer.files.length)
-          void run(() => onDropFiles(Array.from(event.dataTransfer.files)));
+        if (canWriteHere && !pendingFolder && event.dataTransfer.files.length) {
+          // Read the drop synchronously; the DataTransfer is emptied once this handler returns.
+          const dropped = readDroppedFiles(event.dataTransfer);
+          void run(async () => onDropFiles(await dropped));
+        }
       }}
     >
       <Tabs className="drive-tabs" value={activeTab} onValueChange={changeTab}>
@@ -1637,7 +1655,7 @@ export function DriveWorkspace({
                 ? 'Uploads are unavailable in this location'
                 : pendingFolder
                   ? 'This folder is still syncing'
-                  : `Drop files to upload to ${location}`}
+                  : `Drop files or folders to upload to ${location}`}
             </strong>
           </div>
         )}

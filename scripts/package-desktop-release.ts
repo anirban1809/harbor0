@@ -3,8 +3,14 @@ import { spawn } from 'node:child_process';
 import { desktopConfiguration } from '../apps/desktop/src/config';
 
 const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const web = await readFile('.cloud/web-outputs.json', 'utf8').then(
+  (text) => JSON.parse(text).HarborWeb as { WebUrl?: string },
+  () => undefined,
+);
 const settings = {
   HARBOR_API_URL: output.ApiUrl,
+  // Optional: enables the sign-in screen's account creation and password reset links.
+  ...(web?.WebUrl && { HARBOR_WEB_URL: web.WebUrl }),
 };
 if (!desktopConfiguration(settings, true).configured)
   throw new Error('Deploy the backend before packaging a release.');

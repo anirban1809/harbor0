@@ -1,0 +1,579 @@
+<title>harbor0 Backend Ops</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: summary strip, then traffic → compute/data → cost, each a titled band of panels on a quiet ground. */
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #16181d; --fg-2: #5b6170; --fg-3: #858b9a; --line: #e3e5ea; --grid: #eceef2;
+  --primary: #4353d9; --ok: #15803d; --warn: #b45309; --crit: #d33b3b;
+  --s1: #4353d9; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0e10; --card: #1b1d21; --fg: #eceef1; --fg-2: #a4a9b6; --fg-3: #7b8190; --line: #2b2e34; --grid: #25282d;
+    --primary: #8793ff; --ok: #52c987; --warn: #e5a949; --crit: #f26d6d;
+    --s1: #6c7af0; --s2: #d95926; --s3: #199e70; --s4: #c98500; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0e10; --card: #1b1d21; --fg: #eceef1; --fg-2: #a4a9b6; --fg-3: #7b8190; --line: #2b2e34; --grid: #25282d;
+  --primary: #8793ff; --ok: #52c987; --warn: #e5a949; --crit: #f26d6d;
+  --s1: #6c7af0; --s2: #d95926; --s3: #199e70; --s4: #c98500; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+.num, td.n, th.n, .tick { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; justify-content: space-between; }
+h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.sub { color: var(--fg-2); font-size: 13px; }
+.side { display: grid; gap: 8px; justify-items: end; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { display: inline-flex; align-items: center; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: 500 13px var(--sans); text-decoration: none; }
+.btn:hover { border-color: var(--fg-3); } .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--card); }
+@media (max-width: 820px) { .side { justify-items: start; } }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--fg-2); }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); }
+.pill.ok i { background: var(--ok); } .pill.bad i { background: var(--crit); } .pill.bad { color: var(--crit); }
+
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.kpi { padding: 16px 18px; border-left: 1px solid var(--line); min-width: 0; }
+.kpi:first-child { border-left: 0; }
+.kpi .label { font-size: 12px; color: var(--fg-2); }
+.kpi .value { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; margin-top: 2px; }
+.kpi .hint { font-size: 12px; color: var(--fg-3); }
+
+section { display: grid; gap: 12px; }
+h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); margin: 0; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; grid-column: span 6; display: flex; flex-direction: column; gap: 10px; }
+.panel.wide { grid-column: span 12; } .panel.c7 { grid-column: span 7; } .panel.c5 { grid-column: span 5; }
+.panel h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.panel .desc { font-size: 12px; color: var(--fg-2); margin-top: 1px; }
+.head { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; align-items: flex-start; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--fg-2); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; }
+
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.tick { font-size: 10.5px; fill: var(--fg-3); }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.3); min-width: 130px; }
+.tip b { display: block; font-weight: 600; margin-bottom: 4px; }
+.tip div { display: flex; justify-content: space-between; gap: 14px; color: var(--fg-2); }
+.tip div span:first-child { display: inline-flex; align-items: center; gap: 5px; }
+.tip i { width: 8px; height: 8px; border-radius: 2px; }
+.tip .num { color: var(--fg); }
+
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-size: 11.5px; font-weight: 500; color: var(--fg-2); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th.n, td.n { text-align: right; padding-right: 0; padding-left: 12px; white-space: nowrap; }
+td .muted, .muted { color: var(--fg-3); font-size: 12px; }
+tfoot td { border-top: 1px solid var(--line); border-bottom: 0; font-weight: 600; }
+.bad-n { color: var(--crit); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px 18px; }
+.stats .label { font-size: 12px; color: var(--fg-2); } .stats .value { font-size: 18px; font-weight: 600; }
+.feed { max-height: 236px; overflow-y: auto; } .routes { max-height: 420px; overflow-y: auto; }
+.feed thead th, .routes thead th { position: sticky; top: 0; background: var(--card); }
+.method { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); margin-right: 8px; }
+.route { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.share { display: inline-block; height: 6px; border-radius: 3px; background: var(--s1); vertical-align: middle; margin-right: 8px; min-width: 2px; }
+.st { font-family: var(--mono); } .st.e4 { color: var(--warn); } .st.e5 { color: var(--crit); }
+.empty { color: var(--fg-2); font-size: 13px; padding-block: 8px; max-width: 60ch; }
+.livedot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-left: 6px; }
+.livedot.stale { background: var(--warn); }
+.livenote { font-weight: 400; letter-spacing: 0; text-transform: none; margin-left: 6px; color: var(--fg-3); }
+@media (prefers-reduced-motion: no-preference) { .livedot:not(.stale) { animation: pulse 2s ease-in-out infinite; } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+.notes { color: var(--fg-2); font-size: 12.5px; max-width: 72ch; display: grid; gap: 6px; }
+.notes p { margin: 0; }
+@media (max-width: 820px) {
+  .panel, .panel.c7, .panel.c5 { grid-column: span 12; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi:nth-child(odd) { border-left: 0; } .kpi:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .kpi .value { font-size: 23px; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>harbor0 backend</h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="side">
+      <div class="actions" id="actions"></div>
+      <div class="pills" id="pills"></div>
+    </div>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <section id="live" hidden>
+    <h2>Live <span class="livedot" id="live-dot"></span><span class="livenote" id="live-note"></span></h2>
+    <div class="grid">
+      <div class="panel c7">
+        <div class="head"><div><h3>Requests per minute, last hour</h3><div class="desc" id="d-live"></div></div><div class="legend" id="lg-live"></div></div>
+        <div class="chart" id="c-live"></div>
+      </div>
+      <div class="panel c5">
+        <div class="head"><div><h3>Latest requests</h3><div class="desc">From the API access log, newest first</div></div></div>
+        <div class="scroll feed"><table id="t-feed"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>API traffic</h2>
+    <div class="grid">
+      <div class="panel c7">
+        <div class="head"><div><h3>Requests per day</h3><div class="desc">API Gateway, by response class</div></div><div class="legend" id="lg-req"></div></div>
+        <div class="chart" id="c-req"></div>
+      </div>
+      <div class="panel c5">
+        <div class="head"><div><h3>Latency</h3><div class="desc">End-to-end at API Gateway, milliseconds</div></div><div class="legend" id="lg-lat"></div></div>
+        <div class="chart" id="c-lat"></div>
+      </div>
+      <div class="panel wide">
+        <div class="head"><div><h3>Endpoints</h3><div class="desc" id="d-routes"></div></div></div>
+        <div class="scroll routes"><table id="t-routes"></table></div>
+      </div>
+      <div class="panel wide">
+        <div class="head"><div><h3>Requests per hour, last 7 days</h3><div class="desc">Shown in your local time</div></div></div>
+        <div class="chart" id="c-hour"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Compute and data</h2>
+    <div class="grid">
+      <div class="panel wide">
+        <div class="head"><div><h3>Lambda functions</h3><div class="desc">Invocations, failures and run time over the window</div></div></div>
+        <div class="scroll"><table id="t-fn"></table></div>
+      </div>
+      <div class="panel c7">
+        <div class="head"><div><h3>DynamoDB capacity consumed</h3><div class="desc">On-demand request units per day, table plus indexes</div></div><div class="legend" id="lg-ddb"></div></div>
+        <div class="chart" id="c-ddb"></div>
+      </div>
+      <div class="panel c5">
+        <div class="head"><div><h3>DynamoDB operations</h3><div class="desc" id="d-ddb"></div></div></div>
+        <div class="scroll"><table id="t-ops"></table></div>
+      </div>
+      <div class="panel wide">
+        <div class="head"><div><h3>Edge, sign-in and storage</h3><div class="desc">CloudFront, Cognito and the R2 file bucket</div></div></div>
+        <div class="stats" id="stats"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Cost</h2>
+    <div class="grid">
+      <div class="panel wide">
+        <div class="head"><div><h3>What harbor0 cost on AWS</h3><div class="desc" id="d-cost"></div></div></div>
+        <div class="scroll"><table id="t-cost"></table></div>
+      </div>
+      <div class="panel c7">
+        <div class="head"><div><h3>Estimated cost per day</h3><div class="desc">US dollars, usage-driven services</div></div><div class="legend" id="lg-cost"></div></div>
+        <div class="chart" id="c-cost"></div>
+      </div>
+      <div class="panel c5">
+        <div class="head"><div><h3>Whole AWS account bill</h3><div class="desc">All projects in the account, by month, US dollars</div></div></div>
+        <div class="chart" id="c-month"></div>
+        <div class="scroll"><table id="t-acct"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Cloudflare</h2>
+    <div class="grid">
+      <div class="panel wide">
+        <div class="head"><div><h3>R2 file storage cost</h3><div class="desc" id="d-cf"></div></div></div>
+        <div class="stats" id="cf-stats"></div>
+        <div class="scroll"><table id="t-cf"></table></div>
+        <div class="muted" id="cf-note"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="notes" id="notes"></div>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(() => {
+const $ = (id) => document.getElementById(id);
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const int = (n) => Math.round(n).toLocaleString('en-US');
+const compact = (n) => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'k' : int(n);
+const ms = (n) => n == null ? '–' : n >= 1000 ? (n / 1000).toFixed(2) + ' s' : Math.round(n) + ' ms';
+const usd = (n) => n === 0 ? '$0.00' : n < 0.005 ? '<$0.01' : '$' + n.toFixed(2);
+const usdAxis = (n) => '$' + (n < 0.1 ? n.toFixed(3) : n.toFixed(2));
+const bytes = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kB' : int(n) + ' B';
+const pct = (n) => (n < 0.1 && n > 0 ? n.toFixed(2) : n.toFixed(1)) + '%';
+const dayLabel = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const clock = (d, seconds) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) });
+
+// ---- chart -------------------------------------------------------------------
+const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; document.body.appendChild(tip);
+function niceStep(max, count) {
+  const raw = max / count, mag = Math.pow(10, Math.floor(Math.log10(raw))), r = raw / mag;
+  return (r <= 1 ? 1 : r <= 2 ? 2 : r <= 2.5 ? 2.5 : r <= 5 ? 5 : 10) * mag;
+}
+function legend(id, series) {
+  $(id).innerHTML = series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('');
+}
+// opts: { labels, tipLabels, series:[{name,color,values}], type:'bars'|'lines', fmt, axisFmt, xTicks:[{i,text}], height, total }
+// Calling chart() again with the same id redraws it with the new options.
+const charts = {};
+function draw(id) {
+  const el = $(id), opts = charts[id].opts;
+  const W = Math.max(280, el.clientWidth), H = opts.height || 210, padL = 44, padR = 8, padT = 8, padB = 22;
+  const n = opts.labels.length, plotW = W - padL - padR, plotH = H - padT - padB;
+  const stacked = opts.type === 'bars';
+  const peak = Math.max(1e-9, ...opts.labels.map((_, i) => stacked ? sum(opts.series.map((s) => s.values[i])) : Math.max(...opts.series.map((s) => s.values[i]))));
+  const floor = opts.minTop || 0;
+  const step = niceStep(Math.max(peak, floor), 4), top = Math.ceil(Math.max(peak, floor) / step) * step;
+  const y = (v) => padT + plotH - (v / top) * plotH;
+  const band = plotW / n, x = (i) => padL + band * i + band / 2;
+  let svg = '';
+  for (let v = 0; v <= top + step / 2; v += step)
+    svg += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)" stroke-width="1"/><text class="tick" x="${padL - 8}" y="${y(v) + 3.5}" text-anchor="end">${(opts.axisFmt || compact)(v)}</text>`;
+  for (const t of opts.xTicks)
+    svg += `<text class="tick" x="${x(t.i)}" y="${H - 5}" text-anchor="middle">${esc(t.text)}</text>`;
+  if (stacked) {
+    const bw = Math.max(1, Math.min(24, band - (band > 5 ? 2 : 0.5)));
+    for (let i = 0; i < n; i++) {
+      let acc = 0;
+      const live = opts.series.filter((s) => s.values[i] > 0);
+      live.forEach((s, k) => {
+        const y0 = y(acc), y1 = y(acc + s.values[i]); acc += s.values[i];
+        const gap = k > 0 && y0 - y1 > 3 ? 2 : 0, h = Math.max(0.5, y0 - y1 - gap), yy = y1, xx = x(i) - bw / 2;
+        const r = k === live.length - 1 ? Math.min(4, bw / 2, h) : 0;
+        svg += `<path fill="${s.color}" d="M${xx},${yy + h}V${yy + r}q0,${-r} ${r},${-r}h${bw - 2 * r}q${r},0 ${r},${r}V${yy + h}z"/>`;
+      });
+    }
+  } else {
+    for (const s of opts.series) {
+      const pts = s.values.map((v, i) => v == null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean);
+      svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts.join(' ')}"/>`;
+      if (s.values[n - 1] != null) svg += `<circle cx="${x(n - 1)}" cy="${y(s.values[n - 1])}" r="4" fill="${s.color}" stroke="var(--card)" stroke-width="2"/>`;
+    }
+  }
+  svg += `<line class="cross" x1="0" x2="0" y1="${padT}" y2="${padT + plotH}" stroke="var(--fg-3)" stroke-width="1" visibility="hidden"/>`;
+  svg += `<rect class="hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(opts.aria)}">${svg}</svg>`;
+  const hit = el.querySelector('.hit'), cross = el.querySelector('.cross');
+  const move = (ev) => {
+    const box = el.getBoundingClientRect();
+    const i = Math.max(0, Math.min(n - 1, Math.floor((ev.clientX - box.left - padL) / band)));
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    const rows = opts.series.map((s) => `<div><span><i style="background:${s.color}"></i>${esc(s.name)}</span><span class="num">${opts.fmt(s.values[i])}</span></div>`);
+    if (opts.total) rows.push(`<div><span>Total</span><span class="num">${opts.fmt(sum(opts.series.map((s) => s.values[i])))}</span></div>`);
+    tip.innerHTML = `<b>${esc((opts.tipLabels || opts.labels)[i])}</b>${rows.join('')}`;
+    tip.hidden = false;
+    const tw = tip.offsetWidth, left = ev.clientX + 14 + tw > innerWidth ? ev.clientX - tw - 14 : ev.clientX + 14;
+    tip.style.left = Math.max(4, left) + 'px'; tip.style.top = Math.max(4, ev.clientY - tip.offsetHeight - 10) + 'px';
+  };
+  hit.addEventListener('pointermove', move); hit.addEventListener('pointerdown', move);
+  hit.addEventListener('pointerleave', () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); });
+}
+function chart(id, opts) {
+  const fresh = !charts[id];
+  charts[id] = { opts, width: $(id).clientWidth };
+  draw(id);
+  if (fresh) new ResizeObserver(() => { const w = $(id).clientWidth; if (w !== charts[id].width) { charts[id].width = w; draw(id); } }).observe($(id));
+}
+const bad = (v) => v > 0 ? `<span class="bad-n">${int(v)}</span>` : '0';
+const statusClass = (s) => s >= 500 ? 'st e5' : s >= 400 ? 'st e4' : 'st';
+const NOT_LOGGED = 'No request log lines yet. They appear once the backend with the access log is deployed and has served traffic.';
+
+function routesTable(routes, scope, emptyText) {
+  const logged = sum(routes.map((r) => r.count)), top = Math.max(1, ...routes.map((r) => r.count));
+  $('d-routes').textContent = routes.length ? `${routes.length} endpoints, ${int(logged)} logged requests ${scope}` : 'Calls, errors and latency per route';
+  $('t-routes').innerHTML = routes.length
+    ? `<thead><tr><th>Endpoint</th><th class="n">Calls</th><th class="n">Share</th><th class="n">4xx</th><th class="n">5xx</th><th class="n">Avg</th><th class="n">p95</th></tr></thead><tbody>` +
+      routes.map((r) => `<tr><td><span class="method">${esc(r.method)}</span><span class="route">${esc(r.route)}</span></td><td class="n"><span class="share" style="width:${Math.round((r.count / top) * 64)}px"></span>${int(r.count)}</td><td class="n">${pct((r.count / logged) * 100)}</td><td class="n">${r.e4 ? int(r.e4) : '0'}</td><td class="n">${bad(r.e5)}</td><td class="n">${ms(r.avgMs)}</td><td class="n">${ms(r.p95Ms)}</td></tr>`).join('') + '</tbody>'
+    : `<tbody><tr><td class="empty">${emptyText}</td></tr></tbody>`;
+}
+function feedTable(requests, emptyText) {
+  $('t-feed').innerHTML = requests.length
+    ? `<thead><tr><th>Time</th><th>Endpoint</th><th class="n">Status</th><th class="n">Took</th></tr></thead><tbody>` +
+      requests.map((r) => `<tr><td class="num" style="white-space:nowrap">${clock(new Date(r.t), true)}</td><td><span class="method">${esc(r.method)}</span><span class="route">${esc(r.route)}</span></td><td class="n"><span class="${statusClass(r.status)}">${r.status}</span></td><td class="n">${ms(r.ms)}</td></tr>`).join('') + '</tbody>'
+    : `<tbody><tr><td class="empty">${emptyText}</td></tr></tbody>`;
+}
+const p95 = (values) => { if (!values.length) return null; const a = [...values].sort((x, y) => x - y); return a[Math.min(a.length - 1, Math.ceil(a.length * 0.95) - 1)]; };
+
+const CF_DENIED = 'Operation counts are not readable: the Cloudflare API token lacks Account Analytics: Read. Add that permission to the token in .env.cloud and these rows fill in.';
+const na = '<span class="muted">not readable</span>';
+function cloudflareTable(rows, columns, total) {
+  $('t-cf').innerHTML = `<thead><tr><th>Line item</th>${columns.map((c) => `<th class="n">${c}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map((r) => `<tr><td>${esc(r.item)}</td>${r.cells.map((c) => `<td class="n">${c}</td>`).join('')}</tr>`).join('') +
+    `</tbody><tfoot><tr><td colspan="${columns.length}">Total</td><td class="n">${total}</td></tr></tfoot>`;
+}
+
+// ---- snapshot ------------------------------------------------------------------
+function render(D) {
+  // Charts start the day before the first request so an idle lead-in does not flatten them.
+  const firstActive = D.api.count.findIndex((c) => c > 0);
+  const from = firstActive < 0 ? 0 : Math.max(0, Math.min(firstActive - 1, D.days.length - 7));
+  const cut = (a) => a.slice(from);
+  const api = {}; for (const k of ['count', 'e4', 'e5', 'p50', 'p95', 'p99']) api[k] = cut(D.api[k]);
+  const days = cut(D.days), n = days.length;
+  const dayNames = days.map(dayLabel);
+  const every = Math.max(1, Math.ceil(n / 6));
+  const dayTicks = days.map((_, i) => i).filter((i) => (n - 1 - i) % every === 0).map((i) => ({ i, text: dayNames[i] }));
+  const total = sum(api.count), e4 = sum(api.e4), e5 = sum(api.e5);
+  const CF = D.cloudflare, cfCost = CF ? sum(CF.items.map((i) => i.cost || 0)) : 0;
+  const cost = sum(D.cost.items.map((i) => i.cost)) + cfCost;
+  const generated = new Date(D.generatedAt);
+  $('sub').textContent = `${dayLabel(D.days[0])} – ${dayNames[n - 1]} (${D.windowDays} days, UTC${from ? `, first request ${dayLabel(D.days[firstActive])}` : ''}) · ${D.region} · snapshot ${generated.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}`;
+  const pills = D.health.alarms.map((a) => ({ ok: a.state === 'OK', text: `${a.name} alarm: ${a.state === 'OK' ? 'OK' : a.state === 'ALARM' ? 'firing' : 'no data'}`, neutral: a.state === 'INSUFFICIENT_DATA' }));
+  if (D.health.dlqDepth != null) pills.push({ ok: D.health.dlqDepth === 0, text: `Failed maintenance jobs queued: ${D.health.dlqDepth}` });
+  $('pills').innerHTML = pills.map((p) => `<span class="pill ${p.neutral ? '' : p.ok ? 'ok' : 'bad'}"><i></i>${esc(p.text)}</span>`).join('');
+  const kpi = (label, value, hint) => `<div class="kpi"><div class="label">${label}</div><div class="value num">${value}</div><div class="hint">${hint}</div></div>`;
+  $('kpis').innerHTML =
+    kpi('API requests', compact(total), `${compact(total / Math.max(1, api.count.filter((c) => c > 0).length))} a day on active days`) +
+    kpi('Failed requests', pct(total ? ((e4 + e5) / total) * 100 : 0), `${int(e5)} server errors, ${int(e4)} client errors`) +
+    kpi('p95 latency', ms(D.api.overall.p95), `median ${ms(D.api.overall.p50)}, p99 ${ms(D.api.overall.p99)}`) +
+    kpi('Estimated cost', usd(cost), `AWS plus Cloudflare. The whole AWS account was billed ${usd(D.cost.account.windowTotal)}`);
+
+  // traffic
+  const req = [
+    { name: 'Succeeded', color: 'var(--s1)', values: api.count.map((c, i) => Math.max(0, c - api.e4[i] - api.e5[i])) },
+    { name: 'Client error (4xx)', color: 'var(--s4)', values: api.e4 },
+    { name: 'Server error (5xx)', color: 'var(--crit)', values: api.e5 },
+  ];
+  legend('lg-req', req);
+  chart('c-req', { labels: dayNames, series: req, type: 'bars', fmt: int, xTicks: dayTicks, total: true, aria: 'Requests per day by response class' });
+  const measured = (a) => a.map((v, i) => (api.count[i] > 0 ? v : null));
+  const lat = [
+    { name: 'p50', color: 'var(--s1)', values: measured(api.p50) },
+    { name: 'p95', color: 'var(--s2)', values: measured(api.p95) },
+    { name: 'p99', color: 'var(--s3)', values: measured(api.p99) },
+  ];
+  legend('lg-lat', lat);
+  chart('c-lat', { labels: dayNames, series: lat, type: 'lines', fmt: ms, xTicks: dayTicks, aria: 'Daily latency percentiles' });
+
+  routesTable(D.routes || [], 'in the window', NOT_LOGGED);
+
+  const h0 = Date.parse(D.api.hourly.start);
+  const hours = D.api.hourly.count.map((_, i) => new Date(h0 + i * 3600e3));
+  const hourTicks = hours.map((d, i) => ({ d, i })).filter((h) => h.d.getHours() === 12).map((h) => ({ i: h.i, text: h.d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }) }));
+  chart('c-hour', {
+    labels: hours, tipLabels: hours.map((d) => d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })),
+    series: [{ name: 'Requests', color: 'var(--s1)', values: D.api.hourly.count }], type: 'bars', fmt: int, xTicks: hourTicks, height: 170, aria: 'Requests per hour over the last seven days',
+  });
+
+  // compute and data
+  $('t-fn').innerHTML = `<thead><tr><th>Function</th><th class="n">Invocations</th><th class="n">Errors</th><th class="n">Throttles</th><th class="n">Avg</th><th class="n">p95</th><th class="n">Cold starts</th><th class="n">Peak memory</th><th class="n">Peak concurrency</th><th class="n">GB-seconds</th></tr></thead><tbody>` +
+    D.lambda.map((f) => `<tr><td>${esc(f.key)}<div class="muted">${f.memoryMb} MB</div></td><td class="n">${int(f.invocations)}</td><td class="n">${bad(f.errors)}</td><td class="n">${bad(f.throttles)}</td><td class="n">${ms(f.avgMs)}</td><td class="n">${ms(f.p95Ms)}</td><td class="n">${f.coldStarts == null ? '–' : int(f.coldStarts)}${f.initMs ? `<div class="muted">${ms(f.initMs)} init</div>` : ''}</td><td class="n">${f.maxMemMb == null ? '–' : Math.round(f.maxMemMb) + ' MB'}</td><td class="n">${f.maxConcurrency == null ? '–' : int(f.maxConcurrency)}</td><td class="n">${int(f.gbSeconds)}</td></tr>`).join('') + '</tbody>';
+  const ddb = [
+    { name: 'Read units', color: 'var(--s1)', values: cut(D.ddb.rcu) },
+    { name: 'Write units', color: 'var(--s2)', values: cut(D.ddb.wcu) },
+  ];
+  legend('lg-ddb', ddb);
+  chart('c-ddb', { labels: dayNames, series: ddb, type: 'lines', fmt: int, xTicks: dayTicks, aria: 'DynamoDB read and write units per day' });
+  $('d-ddb').textContent = `${int(D.ddb.items)} items, ${bytes(D.ddb.bytes)} in the table`;
+  const ops = [...D.ddb.ops].sort((a, b) => b.count - a.count);
+  $('t-ops').innerHTML = `<thead><tr><th>Operation</th><th class="n">Calls</th><th class="n">Avg latency</th></tr></thead><tbody>` +
+    ops.map((o) => `<tr><td>${esc(o.op)}</td><td class="n">${int(o.count)}</td><td class="n">${o.avgMs == null ? '–' : o.avgMs.toFixed(1) + ' ms'}</td></tr>`).join('') + '</tbody>';
+  const stat = (label, value, hint) => `<div><div class="label">${label}</div><div class="value num">${value}</div>${hint ? `<div class="muted">${hint}</div>` : ''}</div>`;
+  let stats = '';
+  if (D.cdn) stats += stat('CloudFront requests', compact(sum(D.cdn.req)), `${bytes(D.cdn.bytes)} served`) + stat('CloudFront error rate', pct((D.cdn.e4Rate || 0) + (D.cdn.e5Rate || 0)), `${pct(D.cdn.e5Rate || 0)} server side`);
+  stats += stat('API payload', bytes(D.api.bytes), 'through API Gateway');
+  if (D.auth) stats += stat('Sign-ins', int(D.auth.signIn), `${int(D.auth.signUp)} sign-ups`) + stat('Token refreshes', int(D.auth.refresh), 'Cognito');
+  $('stats').innerHTML = stats;
+
+  // cost
+  const awsCost = cost - cfCost;
+  if (CF) {
+    const amount = (i) => i.usage == null ? na : i.unit.startsWith('GB') ? i.usage.toFixed(2) + ' GB' : int(i.usage);
+    $('d-cf').textContent = `Bucket ${CF.bucket}, ${D.windowDays} days at list price after the free allowance. Downloads (egress) are free on R2`;
+    $('cf-stats').innerHTML = stat('Stored', CF.bytes == null ? '–' : bytes(CF.bytes), 'right now') + stat('Objects', CF.objects == null ? '–' : int(CF.objects), 'in the bucket') +
+      (CF.operationsReadable ? stat('Operations', compact(sum(CF.byAction.map((a) => a.count))), CF.byAction.slice(0, 2).map((a) => `${a.action} ${compact(a.count)}`).join(', ')) : '');
+    cloudflareTable(CF.items.map((i) => ({ item: i.item, cells: [amount(i), i.unit.startsWith('GB') ? i.free.toFixed(0) + ' GB' : compact(i.free), i.cost == null ? na : usd(i.cost), i.listCost == null ? na : `<span class="muted">${usd(i.listCost)}</span>`] })),
+      ['Usage', 'Free allowance', 'Billed', 'Without allowance'], usd(cfCost));
+    $('cf-note').textContent = CF.operationsReadable ? '' : CF_DENIED;
+  }
+  const usage = (i) => i.unit === 'GB' || i.unit.startsWith('GB stored') || i.unit === 'secret-months' ? i.usage.toFixed(2) : int(i.usage);
+  $('d-cost').textContent = `AWS only. harbor0's own metered usage over ${D.windowDays} days, priced at the rate the account was actually billed`;
+  $('t-cost').innerHTML = `<thead><tr><th>Service</th><th>Line item</th><th class="n">Usage</th><th class="n">Billed</th><th class="n">At list price</th></tr></thead><tbody>` +
+    D.cost.items.map((i) => `<tr><td>${esc(i.service)}</td><td>${esc(i.item)}${i.note ? `<div class="muted">${esc(i.note)}</div>` : ''}</td><td class="n">${usage(i)}<div class="muted" style="font-family:var(--sans)">${esc(i.unit)}</div></td><td class="n">${usd(i.cost)}</td><td class="n muted">${usd(i.listCost)}</td></tr>`).join('') +
+    `</tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${usd(awsCost)}</td><td class="n">${usd(sum(D.cost.items.map((i) => i.listCost)))}</td></tr></tfoot>`;
+  const colors = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)'];
+  const costSeries = D.cost.daily.map((s, k) => ({ name: s.name, values: cut(s.values), color: colors[k] }));
+  legend('lg-cost', costSeries);
+  chart('c-cost', { labels: dayNames, series: costSeries, type: 'bars', fmt: (v) => '$' + v.toFixed(4), axisFmt: usdAxis, xTicks: dayTicks, total: true, aria: 'Estimated cost per day by service' });
+  const months = D.cost.account.months;
+  const monthName = (m) => new Date(m + '-01T00:00:00Z').toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  chart('c-month', { labels: months.map((m) => monthName(m.month)), series: [{ name: 'Account bill', color: 'var(--fg-3)', values: months.map((m) => m.total) }], type: 'bars', fmt: (v) => '$' + v.toFixed(2), axisFmt: (v) => '$' + v, xTicks: months.map((m, i) => ({ i, text: monthName(m.month) })), height: 150, aria: 'Account bill by month' });
+  $('t-acct').innerHTML = `<thead><tr><th>Billed to the account, last ${D.windowDays} days</th><th class="n">Cost</th></tr></thead><tbody>` +
+    D.cost.account.byService.slice(0, 7).map((s) => `<tr><td>${esc(s.service)}</td><td class="n">${usd(s.cost)}</td></tr>`).join('') + '</tbody>';
+
+  $('notes').innerHTML = [
+    'The endpoint table counts requests that reached the API Lambda and were logged. Requests rejected earlier by API Gateway, and traffic from before the access log was deployed, only appear in the totals.',
+    'Cost is an attribution. The AWS account also hosts other projects, and Cost Explorer cannot split a bill by resource without cost-allocation tags. Each line multiplies harbor0 usage from CloudWatch by the account\'s effective rate for that usage type, so free-tier usage shows as $0. S3 web assets, KMS, Cognito and tax are left out. Cloudflare R2 is priced from its public list prices.',
+    'Days are UTC and the current day is partial. Cost Explorer lags by about a day.',
+  ].map((t) => `<p>${t}</p>`).join('');
+}
+
+// ---- live (only when served by `npm run cloud:dashboard -- --serve`) -------------
+function renderLive(L) {
+  $('live').hidden = false;
+  const m0 = Date.parse(L.minutes.start);
+  const mins = L.minutes.count.map((_, i) => new Date(m0 + i * 60e3));
+  if (mins.length) {
+    const series = [
+      { name: 'Succeeded', color: 'var(--s1)', values: L.minutes.count.map((c, i) => Math.max(0, c - L.minutes.e4[i] - L.minutes.e5[i])) },
+      { name: 'Client error (4xx)', color: 'var(--s4)', values: L.minutes.e4 },
+      { name: 'Server error (5xx)', color: 'var(--crit)', values: L.minutes.e5 },
+    ];
+    legend('lg-live', series);
+    chart('c-live', { labels: mins, tipLabels: mins.map((d) => clock(d)), series, type: 'bars', fmt: int, total: true, minTop: 4, height: 236,
+      xTicks: mins.map((d, i) => ({ d, i })).filter((x) => x.d.getMinutes() % 15 === 0).map((x) => ({ i: x.i, text: clock(x.d) })), aria: 'Requests per minute over the last hour' });
+    const last5 = sum(L.minutes.count.slice(-5)), p95 = L.minutes.p95.slice(-5).filter((v) => v > 0);
+    $('d-live').textContent = `${int(sum(L.minutes.count))} in the hour, ${int(last5)} in the last 5 minutes${p95.length ? `, p95 ${ms(Math.max(...p95))}` : ''}. CloudWatch minutes arrive 1–2 minutes late.`;
+  }
+  feedTable(L.requests, NOT_LOGGED);
+}
+
+// ---- /current: every counter starts at zero when the page loads -------------------
+function renderCurrent(S, t0) {
+  const R = S.requests, now = S.at, M = S.metrics;
+  const e4 = R.filter((r) => r.status >= 400 && r.status < 500).length, e5 = R.filter((r) => r.status >= 500).length;
+  const rates = S.rates || S.list, money = (v) => '$' + v.toFixed(4);
+  const fns = M ? M.fn : [], rcu = M ? sum(M.ddb.rcu) : 0, wcu = M ? sum(M.ddb.wcu) : 0;
+  const gbSeconds = (f) => (f.durationMs / 1000) * (f.memoryMb / 1024);
+  const items = [
+    ['API Gateway', 'HTTP API requests', Math.max(R.length, M ? M.gateway : 0), 'requests', 'apiRequest'],
+    ['DynamoDB', 'On-demand writes', wcu, 'write units', 'writeUnit'],
+    ['DynamoDB', 'On-demand reads', rcu, 'read units', 'readUnit'],
+    ['Lambda', 'Invocations', sum(fns.map((f) => f.invocations)), 'requests', 'lambdaRequest'],
+    ['Lambda', 'Compute', sum(fns.map(gbSeconds)), 'GB-seconds', 'lambdaGbSecond'],
+  ].map(([service, item, usage, unit, key]) => ({ service, item, usage, unit, cost: usage * rates[key], listCost: usage * S.list[key] }));
+  const C = S.cloudflare, P = C.prices, months = (now - t0) / (30 * 86400e3);
+  const gb = C.now ? C.now.bytes / 1e9 : null;
+  const cfRows = [
+    { item: 'Storage', usage: gb, shown: gb == null ? na : `${gb.toFixed(2)} GB held`, cost: gb == null ? null : gb * P.gbMonth * months },
+    { item: 'Class A operations (writes, lists)', usage: C.ops ? C.ops.classA : null, shown: C.ops ? int(C.ops.classA) : na, cost: C.ops ? (C.ops.classA * P.classAPerMillion) / 1e6 : null },
+    { item: 'Class B operations (reads)', usage: C.ops ? C.ops.classB : null, shown: C.ops ? int(C.ops.classB) : na, cost: C.ops ? (C.ops.classB * P.classBPerMillion) / 1e6 : null },
+  ];
+  const cfCost = sum(cfRows.map((r) => r.cost || 0));
+  const cost = sum(items.map((i) => i.cost)) + cfCost;
+  const delta = (a, b, fmt) => a == null || b == null ? '–' : (a - b > 0 ? '+' : a - b < 0 ? '−' : '') + fmt(Math.abs(a - b));
+  const stat = (label, value, hint) => `<div><div class="label">${label}</div><div class="value num">${value}</div><div class="muted">${hint}</div></div>`;
+  $('d-cf').textContent = `Bucket ${C.now ? C.now.bucket : ''} since the page loaded, at list price. The monthly free allowance (10 GB, 1M Class A, 10M Class B) is not applied here`;
+  $('cf-stats').innerHTML = stat('Stored', C.now ? bytes(C.now.bytes) : '–', `${delta(C.now && C.now.bytes, C.base && C.base.bytes, bytes)} since load`) +
+    stat('Objects', C.now ? int(C.now.objects) : '–', `${delta(C.now && C.now.objects, C.base && C.base.objects, int)} since load`);
+  cloudflareTable(cfRows.map((r) => ({ item: r.item, cells: [r.shown, r.cost == null ? na : money(r.cost)] })), ['Since page load', 'At list price'], money(cfCost));
+  $('cf-note').textContent = C.ops ? '' : CF_DENIED;
+  const kpi = (label, value, hint) => `<div class="kpi"><div class="label">${label}</div><div class="value num">${value}</div><div class="hint">${hint}</div></div>`;
+  const minutesElapsed = Math.max(1 / 60, (now - t0) / 60e3);
+  $('kpis').innerHTML =
+    kpi('API requests', int(R.length), `${(R.length / minutesElapsed).toFixed(1)} a minute`) +
+    kpi('Failed requests', pct(R.length ? ((e4 + e5) / R.length) * 100 : 0), `${int(e5)} server errors, ${int(e4)} client errors`) +
+    kpi('p95 duration', ms(p95(R.map((r) => r.ms))), R.length ? `slowest ${ms(Math.max(...R.map((r) => r.ms)))}, inside the API function` : 'no requests yet') +
+    kpi('Estimated cost', money(cost), 'AWS plus Cloudflare, usage so far');
+
+  // Per-minute chart from the access log; at least ten slots so early bars stay thin.
+  const m0 = Math.floor(t0 / 60e3) * 60e3, slots = Math.max(10, Math.floor((now - m0) / 60e3) + 1);
+  const mins = Array.from({ length: slots }, (_, i) => new Date(m0 + i * 60e3));
+  const bucket = (test) => { const a = mins.map(() => 0); for (const r of R) if (test(r.status)) a[Math.floor((r.t - m0) / 60e3)] += 1; return a; };
+  const series = [
+    { name: 'Succeeded', color: 'var(--s1)', values: bucket((s) => s < 400) },
+    { name: 'Client error (4xx)', color: 'var(--s4)', values: bucket((s) => s >= 400 && s < 500) },
+    { name: 'Server error (5xx)', color: 'var(--crit)', values: bucket((s) => s >= 500) },
+  ];
+  legend('lg-live', series);
+  const tickEvery = Math.max(1, Math.ceil(slots / 6));
+  chart('c-live', { labels: mins, tipLabels: mins.map((d) => clock(d)), series, type: 'bars', fmt: int, total: true, minTop: 4, height: 236,
+    xTicks: mins.map((d, i) => ({ i, text: clock(d) })).filter((x) => x.i % tickEvery === 0), aria: 'Requests per minute since the page loaded' });
+  feedTable(R.slice(0, 60), 'No requests since the page loaded.');
+
+  const byRoute = new Map();
+  for (const r of R) {
+    const key = r.method + ' ' + r.route, e = byRoute.get(key) || { method: r.method, route: r.route, count: 0, e4: 0, e5: 0, all: [] };
+    e.count += 1; e.all.push(r.ms); if (r.status >= 500) e.e5 += 1; else if (r.status >= 400) e.e4 += 1;
+    byRoute.set(key, e);
+  }
+  routesTable([...byRoute.values()].map((e) => ({ ...e, avgMs: sum(e.all) / e.count, p95Ms: p95(e.all) })).sort((a, b) => b.count - a.count), 'since the page loaded', 'No requests since the page loaded.');
+
+  $('t-fn').innerHTML = `<thead><tr><th>Function</th><th class="n">Invocations</th><th class="n">Errors</th><th class="n">Throttles</th><th class="n">Avg</th><th class="n">GB-seconds</th></tr></thead><tbody>` +
+    (fns.length ? fns.map((f) => `<tr><td>${esc(f.key)}<div class="muted">${f.memoryMb} MB</div></td><td class="n">${int(f.invocations)}</td><td class="n">${bad(f.errors)}</td><td class="n">${bad(f.throttles)}</td><td class="n">${f.invocations ? ms(f.durationMs / f.invocations) : '–'}</td><td class="n">${gbSeconds(f).toFixed(1)}</td></tr>`).join('') : `<tr><td class="empty" colspan="6">Waiting for the first full minute of CloudWatch data.</td></tr>`) + '</tbody>';
+  if (M && M.ddb.rcu.length) {
+    const d0 = Date.parse(M.start), dm = M.ddb.rcu.map((_, i) => new Date(d0 + i * 60e3));
+    while (dm.length < 10) dm.push(new Date(d0 + dm.length * 60e3));
+    const pad = (a) => dm.map((_, i) => a[i] || 0), every = Math.max(1, Math.ceil(dm.length / 6));
+    const ddb = [{ name: 'Read units', color: 'var(--s1)', values: pad(M.ddb.rcu) }, { name: 'Write units', color: 'var(--s2)', values: pad(M.ddb.wcu) }];
+    legend('lg-ddb', ddb);
+    chart('c-ddb', { labels: dm, tipLabels: dm.map((d) => clock(d)), series: ddb, type: 'bars', fmt: int, total: true, minTop: 4, xTicks: dm.map((d, i) => ({ i, text: clock(d) })).filter((x) => x.i % every === 0), aria: 'DynamoDB request units per minute since the page loaded' });
+  }
+  $('d-ddb').textContent = `${int(rcu)} read and ${int(wcu)} write units so far`;
+  const ops = M ? [...M.ddb.ops].sort((a, b) => b.count - a.count) : [];
+  $('t-ops').innerHTML = `<thead><tr><th>Operation</th><th class="n">Calls</th></tr></thead><tbody>` + ops.map((o) => `<tr><td>${esc(o.op)}</td><td class="n">${int(o.count)}</td></tr>`).join('') + '</tbody>';
+  $('t-cost').innerHTML = `<thead><tr><th>Service</th><th>Line item</th><th class="n">Usage</th><th class="n">Billed rate</th><th class="n">At list price</th></tr></thead><tbody>` +
+    items.map((i) => `<tr><td>${esc(i.service)}</td><td>${esc(i.item)}</td><td class="n">${i.unit === 'GB-seconds' ? i.usage.toFixed(1) : int(i.usage)}<div class="muted" style="font-family:var(--sans)">${esc(i.unit)}</div></td><td class="n">${money(i.cost)}</td><td class="n muted">${money(i.listCost)}</td></tr>`).join('') +
+    `</tbody><tfoot><tr><td colspan="3">Total</td><td class="n">${money(cost - cfCost)}</td><td class="n">${money(sum(items.map((i) => i.listCost)))}</td></tr></tfoot>`;
+}
+function startCurrent() {
+  const t0 = Date.now();
+  let last = 0;
+  for (const id of ['c-req', 'c-lat', 'c-hour', 'stats', 'c-cost', 'c-month']) $(id).closest('.panel').hidden = true;
+  const head = (id, title, desc) => { const p = $(id).closest('.panel'); p.querySelector('h3').textContent = title; if (desc) p.querySelector('.desc').textContent = desc; };
+  $('live').hidden = false;
+  head('c-live', 'Requests per minute since page load', 'From the API access log, a few seconds behind');
+  head('t-fn', 'Lambda functions', 'Since the page loaded. CloudWatch minutes arrive 1–2 minutes late');
+  head('c-ddb', 'DynamoDB capacity consumed', 'Request units per minute since the page loaded');
+  head('t-cost', 'What this session cost on AWS', 'Usage since the page loaded, priced at the rate the account was actually billed');
+  $('actions').innerHTML = `<a class="btn" href="/">Full dashboard</a><a class="btn primary" id="export" href="export.csv?since=${t0}">Export CSV</a>`;
+  $('notes').innerHTML = '<p>Every counter on this page started at zero when it loaded, and reloading resets them. Request counts, the endpoint table and the CSV come from the API access log. Lambda, DynamoDB and cost figures come from CloudWatch, which only counts whole minutes after the page loaded and runs 1–2 minutes behind.</p>';
+  const tickSub = () => {
+    const sec = Math.floor((Date.now() - t0) / 1000), age = Math.round((Date.now() - last) / 1000), stale = last && age > 20;
+    $('sub').textContent = `Counting since ${clock(new Date(t0), true)} · ${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, '0')}s elapsed`;
+    $('live-dot').classList.toggle('stale', !!stale);
+    $('live-note').textContent = !last ? 'connecting' : stale ? `collector not responding, last update ${age}s ago` : `updated ${age}s ago`;
+  };
+  const poll = () => fetch(`session.json?since=${t0}`, { cache: 'no-store' }).then((r) => r.json()).then((S) => { last = Date.now(); renderCurrent(S, t0); }).catch(() => {});
+  tickSub(); setInterval(tickSub, 1000);
+  poll(); setInterval(poll, 5000);
+}
+let shown = null;
+function show(D) {
+  if (!D) { $('sub').textContent = 'Collecting the first snapshot from AWS. This takes about half a minute.'; return; }
+  if (D.generatedAt === shown) return;
+  shown = D.generatedAt; render(D);
+}
+const CURRENT = location.protocol.startsWith('http') && location.pathname.replace(/\/$/, '') === '/current';
+if (CURRENT) startCurrent();
+else show(JSON.parse($('data').textContent));
+if (!CURRENT && location.protocol.startsWith('http')) {
+  let lastLive = 0, isLive = false;
+  const get = (path) => fetch(path, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+  const pollLive = () => get('live.json').then((L) => { isLive = true; lastLive = Date.now(); renderLive(L); }).catch(() => {});
+  const pollData = () => { if (isLive || !shown) get('data.json').then(show).catch(() => {}); };
+  pollLive().then(() => {
+    if (!isLive) return; // Published snapshot: no local collector behind the page.
+    $('actions').innerHTML = '<a class="btn" href="/current">Count from now</a>';
+    setInterval(pollLive, 5000);
+    setInterval(pollData, 15000);
+    setInterval(() => {
+      const age = Math.round((Date.now() - lastLive) / 1000), stale = age > 20;
+      $('live-dot').classList.toggle('stale', stale);
+      $('live-note').textContent = stale ? `collector not responding, last update ${age}s ago` : `updated ${age}s ago`;
+    }, 1000);
+  });
+}
+})();
+</script>

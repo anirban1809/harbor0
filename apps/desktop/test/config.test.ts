@@ -93,3 +93,22 @@ it('loads only public release settings and cannot enable development auth from t
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+it('exposes the web app URL for account links only when it is safe to open', () => {
+  expect(
+    desktopConfiguration(
+      { HARBOR_API_URL: 'https://api.example', HARBOR_WEB_URL: 'https://web.example/' },
+      true,
+    ).webUrl,
+  ).toBe('https://web.example');
+  expect(desktopConfiguration({ HARBOR_API_URL: 'https://api.example' }, true).webUrl).toBe('');
+  expect(
+    desktopConfiguration(
+      { HARBOR_API_URL: 'https://api.example', HARBOR_WEB_URL: 'http://web.example' },
+      true,
+    ).webUrl,
+  ).toBe('');
+  expect(desktopConfiguration({ HARBOR_DEV_AUTH: 'true' }, false).webUrl).toBe(
+    'http://127.0.0.1:3000',
+  );
+});

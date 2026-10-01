@@ -9,6 +9,7 @@ import type {
 export type { paths } from './generated';
 export { proxyBrowserRequest } from './session-proxy';
 export { SESSION_DURATION_SECONDS } from './session';
+export { LiveUpdates, LIVE_PING_MS, type LiveMessage } from './live-updates';
 export class ApiError extends Error {
   constructor(
     public code: string,
