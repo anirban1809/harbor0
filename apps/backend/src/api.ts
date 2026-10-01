@@ -22,7 +22,9 @@ import { transact } from './repository';
 import type { AuthProvider } from './auth';
 import type { Realtime } from './realtime';
 import { responseSchema, queryParameters } from './responses';
-type Env = { Variables: { identity: c.Identity; requestId: string } };
+type Env = {
+  Variables: { identity: c.Identity; requestId: string; timing?: Record<string, number> };
+};
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
 type Definition = {
   method: string;
@@ -78,6 +80,8 @@ export function createApp(
         route: matched === '/*' ? '(no route)' : matched,
         status: ctx.res.status,
         ms: Math.round(performance.now() - started),
+        // Milliseconds spent on each sign-in check before the route itself runs.
+        ...(ctx.get('timing') ? { timing: ctx.get('timing') } : {}),
       }),
     );
   });
@@ -176,7 +180,17 @@ export function createApp(
       if (!d.public) {
         const token = bearer(ctx);
         assert(token, 'AUTH_REQUIRED', 'Sign in to continue.', 401);
-        const identity = await auth.identity(token);
+        const timing: Record<string, number> = {};
+        ctx.set('timing', timing);
+        const timed = async <T>(name: string, work: Promise<T>) => {
+          const start = performance.now();
+          try {
+            return await work;
+          } finally {
+            timing[name] = Math.round(performance.now() - start);
+          }
+        };
+        const identity = await timed('auth', auth.identity(token));
         assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
         ctx.set('identity', identity);
         if (d.path !== '/v1/auth/session')
@@ -185,9 +199,10 @@ export function createApp(
         // database round trip each to every request. Failures report in their usual order.
         const checks = await Promise.allSettled([
           // A retried deletion must get past its own tombstone to finish removing the sign-in.
-          service.ensureUser(identity, d.path === deleteAccountPath),
-          d.path !== '/v1/auth/session' && service.checkDevice(identity.id, identity.deviceId!),
-          rateLimit(`user:${identity.id}`, 600),
+          timed('profile', service.ensureUser(identity, d.path === deleteAccountPath)),
+          d.path !== '/v1/auth/session' &&
+            timed('device', service.checkDevice(identity.id, identity.deviceId!)),
+          timed('rate', rateLimit(`user:${identity.id}`, 600)),
         ]);
         for (const check of checks) if (check.status === 'rejected') throw check.reason;
       }
