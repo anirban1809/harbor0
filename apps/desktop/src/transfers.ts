@@ -80,6 +80,8 @@ export async function uploadFile(
   state.size = info.size;
   if (!state.hash) state.hash = await hashFile(filename);
   persist();
+  // A freshly created upload has no parts yet; only a resumed one needs its server status.
+  let created = false;
   if (!state.uploadId) {
     const input = {
       operationId: state.operationId,
@@ -99,10 +101,11 @@ export async function uploadFile(
     state.uploadId = result.upload.id;
     state.partSize = result.upload.partSizeBytes;
     persist();
+    created = true;
   }
-  const status = await api.request(`/v1/uploads/${state.uploadId}`);
-  if (status.upload.state === 'COMPLETED') return status.upload.item as DriveItem;
-  if (['ABORTED', 'FAILED', 'EXPIRED'].includes(status.upload.state)) {
+  const status = created ? undefined : await api.request(`/v1/uploads/${state.uploadId}`);
+  if (status?.upload.state === 'COMPLETED') return status.upload.item as DriveItem;
+  if (status && ['ABORTED', 'FAILED', 'EXPIRED'].includes(status.upload.state)) {
     state.uploadId = undefined;
     state.operationId = crypto.randomUUID();
     persist();
@@ -120,7 +123,7 @@ export async function uploadFile(
     );
   }
   const parts: CompletedPart[] =
-    status.upload.state === 'COMPLETING' ? (state.parts ?? []) : status.parts;
+    status?.upload.state === 'COMPLETING' ? (state.parts ?? []) : (status?.parts ?? []);
   const count = Math.max(1, Math.ceil(info.size / state.partSize!));
   const completed = new Set(parts.map((part) => part.partNumber));
   const missing = Array.from({ length: count }, (_, i) => i + 1).filter((n) => !completed.has(n));

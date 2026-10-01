@@ -64,7 +64,7 @@ it('uploads four parts concurrently, batches signing, and reports byte-accurate 
     filename,
     'upload',
     null,
-    { operationId: 'op' },
+    { operationId: 'op', uploadId: 'upload', partSize: 4 },
     () => {},
     undefined,
     (n) => progress.push(n),
@@ -77,6 +77,34 @@ it('uploads four parts concurrently, batches signing, and reports byte-accurate 
   expect(progress).toEqual([...progress].sort((a, b) => a - b));
   expect(complete.mock.calls[0][0].parts.map((p: { partNumber: number }) => p.partNumber)).toEqual([
     1, 2, 3, 4, 5, 6,
+  ]);
+});
+
+it('starts sending a new upload without first asking for its status', async () => {
+  const filename = path.join(directory, 'upload');
+  await writeFile(filename, 'abcdef');
+  const endpoints: string[] = [];
+  const api = new ApiClient(async (endpoint, options) => {
+    endpoints.push(endpoint);
+    if (endpoint.endsWith('/parts'))
+      return {
+        parts: (options?.body as { partNumbers: number[] }).partNumbers.map((n) => ({
+          partNumber: n,
+          uploadUrl: `https://storage.test/${n}`,
+        })),
+      };
+    if (endpoint.endsWith('/complete')) return { item: { id: 'file' } };
+    return { upload: { id: 'upload', partSizeBytes: 4 } };
+  });
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => new Response(null, { headers: { etag: url } })),
+  );
+  await uploadFile(api, filename, 'upload', null, { operationId: 'op' }, () => {});
+  expect(endpoints).toEqual([
+    '/v1/uploads',
+    '/v1/uploads/upload/parts',
+    '/v1/uploads/upload/complete',
   ]);
 });
 

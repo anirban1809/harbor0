@@ -12,6 +12,7 @@ import {
   Notification,
   powerMonitor,
 } from 'electron';
+import { Agent, setGlobalDispatcher } from 'undici';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, chmod, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -45,6 +46,10 @@ import {
 import { DesktopSession, isSessionError } from './session';
 import { cloudLocation, localDirectory } from './sync-mapping';
 import { IncomingMonitor, type IncomingContent } from './incoming';
+// fetch closes idle connections after 4s, so the first request after a quiet moment
+// paid a fresh TCP + TLS handshake (about 0.6s far from the API region). Keeping them
+// open longer lets a sync after a pause start immediately.
+setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 600_000 }));
 // Keep existing credentials and sync state when the display name changes.
 const legacyDataPath = app.isPackaged
   ? path.join(app.getPath('appData'), 'Harbor')

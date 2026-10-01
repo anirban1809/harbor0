@@ -144,7 +144,9 @@ export class SyncEngine {
     const watcher = chokidar.watch(root.localPath, {
       ignoreInitial: false,
       followSymlinks: false,
-      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
+      // Short settle: uploadFile re-checks size and mtime before completing, so a file
+      // still being written restarts its upload instead of syncing partial content.
+      awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
       ignored: (p) =>
         this.ignored(root, path.relative(root.localPath, p).split(path.sep).join('/')),
     });
@@ -666,11 +668,23 @@ export class SyncEngine {
           await this.detachRoot(root);
       this.removedRemoteIds.clear();
       const available = new Set<string>();
+      // Shared folders check their revisions in parallel instead of one round trip each.
+      const shareStatus = (root: Root) =>
+        this.api.request(`/v1/sync/shares/${root.shareId}/status`);
+      const sharedStatuses = new Map(
+        (remote ? this.journal.roots() : [])
+          .filter((root) => root.shareId)
+          .map((root) => {
+            const request = shareStatus(root);
+            request.catch(() => {}); // Handled in the loop below; this tick may stop early.
+            return [root.id, request] as const;
+          }),
+      );
       for (let root of this.journal.roots()) {
         if (this.stopped || this.state.paused) return;
         if (root.shareId && remote) {
           try {
-            const status = await this.api.request(`/v1/sync/shares/${root.shareId}/status`);
+            const status = await (sharedStatuses.get(root.id) ?? shareStatus(root));
             if (root.sharedSequence !== status.sequence) {
               root = { ...root, needsReconcile: true, sharedSequence: status.sequence };
               this.journal.root(root);
@@ -1320,11 +1334,18 @@ export class SyncEngine {
       this.receipts.queue(root, relative, item, null);
       return;
     }
-    const versions = await this.api.request(`/v1/drive/items/${item.id}/versions`);
-    const hash = versions.items.find((v: any) => v.id === item.currentVersionId)?.contentHash;
-    if (!hash) throw new Error('File version is unavailable.');
+    // A new file skips the version lookup: the download is verified against its own hash.
+    let localHash: string | null = null;
     try {
-      if ((await hashFile(destination)) === hash) {
+      localHash = await hashFile(destination);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+    if (localHash) {
+      const versions = await this.api.request(`/v1/drive/items/${item.id}/versions`);
+      const hash = versions.items.find((v: any) => v.id === item.currentVersionId)?.contentHash;
+      if (!hash) throw new Error('File version is unavailable.');
+      if (localHash === hash) {
         this.journal.putFile({
           rootId: root.id,
           relativePath: relative,
@@ -1351,8 +1372,6 @@ export class SyncEngine {
         }
         return;
       }
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
     if (item.cloudState === 'RELEASED' || item.cloudState === 'REQUESTED') {
       await this.api.request(`/v1/sync/items/${item.id}/request-content`, { method: 'POST' });
@@ -1369,7 +1388,7 @@ export class SyncEngine {
       total: item.sizeBytes,
     };
     this.emit();
-    await downloadFile(
+    const hash = await downloadFile(
       this.api,
       { driveItemId: item.id, versionId: item.currentVersionId! },
       destination,
