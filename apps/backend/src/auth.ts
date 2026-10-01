@@ -32,18 +32,27 @@ export interface AuthProvider {
   forgot(email: string): Promise<unknown>;
   reset(email: string, code: string, password: string): Promise<unknown>;
 }
+// Cognito's GetUser is a network call on every request. A warm Lambda reuses its answer
+// for a short time; the token signature and expiry are still verified on every request,
+// and device revocation (sign-out, removed devices) is checked in DynamoDB on every request.
+const IDENTITY_CACHE_MS = 60_000;
+const IDENTITY_CACHE_SIZE = 1000;
 export class CognitoAuth implements AuthProvider {
   private client = new CognitoIdentityProviderClient({});
   private verifier;
+  private identities = new Map<string, { identity: Identity; until: number }>();
   constructor(
     private poolId: string,
     private clientId: string,
   ) {
     this.verifier = CognitoJwtVerifier.create({ userPoolId: poolId, clientId, tokenUse: 'access' });
   }
-  async identity(token: string) {
+  async identity(token: string): Promise<Identity> {
     try {
       const jwt = await this.verifier.verify(token);
+      const cached = this.identities.get(token);
+      if (cached && cached.until > Date.now()) return cached.identity;
+      this.identities.delete(token);
       const response = await this.client.send(new GetUserCommand({ AccessToken: token }));
       const attrs = Object.fromEntries(
         (response.UserAttributes ?? []).map((a) => [a.Name!, a.Value!]),
@@ -54,7 +63,7 @@ export class CognitoAuth implements AuthProvider {
         'Token revocation must be enabled on the Cognito client.',
         401,
       );
-      return {
+      const identity: Identity = {
         id: jwt.sub,
         email: attrs.email,
         emailVerified: attrs.email_verified === 'true',
@@ -63,6 +72,16 @@ export class CognitoAuth implements AuthProvider {
         deviceId: jwt.origin_jti,
         sessionId: jwt.origin_jti,
       };
+      // An unverified account is not cached, so verifying the email takes effect at once.
+      if (identity.emailVerified) {
+        if (this.identities.size >= IDENTITY_CACHE_SIZE)
+          this.identities.delete(this.identities.keys().next().value!);
+        this.identities.set(token, {
+          identity,
+          until: Math.min(Date.now() + IDENTITY_CACHE_MS, jwt.exp * 1000),
+        });
+      }
+      return identity;
     } catch (e) {
       if (e instanceof DomainError) throw e;
       throw new DomainError(
@@ -145,6 +164,7 @@ export class CognitoAuth implements AuthProvider {
     );
   }
   async deleteUser(accessToken: string) {
+    this.identities.delete(accessToken);
     await this.client.send(new DeleteUserCommand({ AccessToken: accessToken }));
   }
   async forgot(email: string) {
