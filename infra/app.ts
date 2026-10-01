@@ -127,7 +127,9 @@ const apiFunction = new lambda.Function(stack, 'Api', {
   runtime: lambda.Runtime.NODEJS_22_X,
   handler: 'index.handler',
   code: lambda.Code.fromAsset('dist/backend'),
-  memorySize: 512,
+  // Lambda CPU scales with memory; 1 GB trims the fixed cost of every request
+  // (token checks, request signing) that sync pays several times per file.
+  memorySize: 1024,
   timeout: Duration.seconds(29),
   environment,
   logGroup,

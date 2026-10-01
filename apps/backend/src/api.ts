@@ -179,13 +179,17 @@ export function createApp(
         const identity = await auth.identity(token);
         assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
         ctx.set('identity', identity);
-        // A retried deletion must get past its own tombstone to finish removing the sign-in.
-        await service.ensureUser(identity, d.path === deleteAccountPath);
-        if (d.path !== '/v1/auth/session') {
+        if (d.path !== '/v1/auth/session')
           assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
-          await service.checkDevice(identity.id, identity.deviceId);
-        }
-        await rateLimit(`user:${identity.id}`, 600);
+        // These checks are independent reads, so they run together rather than adding a
+        // database round trip each to every request. Failures report in their usual order.
+        const checks = await Promise.allSettled([
+          // A retried deletion must get past its own tombstone to finish removing the sign-in.
+          service.ensureUser(identity, d.path === deleteAccountPath),
+          d.path !== '/v1/auth/session' && service.checkDevice(identity.id, identity.deviceId!),
+          rateLimit(`user:${identity.id}`, 600),
+        ]);
+        for (const check of checks) if (check.status === 'rejected') throw check.reason;
       }
       let input: unknown = {};
       if (d.body) {

@@ -764,8 +764,17 @@ export class SyncEngine {
             await this.backups.unarchive(root, stopped);
             continue;
           }
-          if (root.archive !== 'removing')
-            await this.backups.process(root, (r, job) => this.localJob(r, job), stopped);
+          if (root.archive !== 'removing') {
+            // A backup run resumes from the journal, so it pauses between files when a
+            // local edit or live update arrives instead of holding up sync for the whole run.
+            let yielded = false;
+            await this.backups.process(
+              root,
+              (r, job) => this.localJob(r, job),
+              () => stopped() || (yielded = this.hurried),
+            );
+            if (yielded) continue;
+          }
           const current = this.journal.roots().find((r) => r.id === root.id);
           if (current?.archive && !stopped())
             await this.backups.archive(
