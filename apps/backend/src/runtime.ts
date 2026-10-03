@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { z } from 'zod';
 import { CognitoAuth } from './auth';
+import { invitationEmail } from './emails';
 import { DynamoRepository } from './repository';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
@@ -74,18 +75,15 @@ async function initialize() {
     service,
     sendEmail: c.EMAIL_FROM
       ? async (to: string, sender: string) => {
+          const email = invitationEmail(sender, c.WEB_ORIGIN);
           await new SESv2Client({}).send(
             new SendEmailCommand({
-              FromEmailAddress: c.EMAIL_FROM,
+              FromEmailAddress: `harbor0 <${c.EMAIL_FROM}>`,
               Destination: { ToAddresses: [to] },
               Content: {
                 Simple: {
-                  Subject: { Data: 'A file is waiting for you in harbor0' },
-                  Body: {
-                    Text: {
-                      Data: `${sender} sent you files in harbor0. Create an account with this email address and verify it to receive them. Sign in at ${c.WEB_ORIGIN}. Invitations expire after 30 days. Files are never available through public links.`,
-                    },
-                  },
+                  Subject: { Data: email.subject },
+                  Body: { Html: { Data: email.html }, Text: { Data: email.text } },
                 },
               },
             }),

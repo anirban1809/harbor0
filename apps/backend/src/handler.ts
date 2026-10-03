@@ -39,3 +39,4 @@ export async function realtimeStream(event: DynamoDBStreamEvent) {
 }
 
 export { preSignup } from './registration';
+export { customMessage } from './emails';

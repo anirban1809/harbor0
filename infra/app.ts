@@ -112,6 +112,20 @@ const registration = new lambda.Function(stack, 'Registration', {
 });
 table.grantReadWriteData(registration);
 pool.addTrigger(cognito.UserPoolOperation.PRE_SIGN_UP, registration);
+// Cognito's verification, reset and invitation mail is rendered as branded HTML; each pool
+// gets its own function so its links point at the right app.
+const brandEmails = (userPool: cognito.UserPool, id: string, signInUrl: string) =>
+  userPool.addTrigger(
+    cognito.UserPoolOperation.CUSTOM_MESSAGE,
+    new lambda.Function(stack, id, {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.customMessage',
+      code: lambda.Code.fromAsset('dist/backend'),
+      timeout: Duration.seconds(5),
+      environment: { SIGN_IN_URL: signInUrl, NODE_ENV: 'production' },
+    }),
+  );
+brandEmails(pool, 'CustomerEmails', webOrigin);
 const client = new cognito.CfnUserPoolClient(stack, 'Client', {
   userPoolId: pool.userPoolId,
   generateSecret: false,
@@ -192,7 +206,8 @@ jobsFunction.addToRolePolicy(
       `arn:${stack.partition}:ses:${stack.region}:${stack.account}:identity/*`,
       `arn:${stack.partition}:ses:${stack.region}:${stack.account}:configuration-set/*`,
     ],
-    conditions: { StringEquals: { 'ses:FromAddress': emailFrom } },
+    // The sender may carry a display name ("harbor0 <address>"), so match the address in both forms.
+    conditions: { StringLike: { 'ses:FromAddress': [emailFrom, `*<${emailFrom}>`] } },
   }),
 );
 // Live updates: clients hold a WebSocket; the table stream says which users to wake.
@@ -289,6 +304,7 @@ const staffPool = new cognito.UserPool(stack, 'Staff', {
   removalPolicy,
 });
 useSesForCognito(staffPool);
+brandEmails(staffPool, 'StaffEmails', adminOrigin);
 for (const [id, groupName, description] of [
   ['StaffAdmins', 'admin', 'Full console access: storage limits, suspension, deletion'],
   ['StaffSupport', 'support', 'Read access, notes, password resets and sign-outs'],
