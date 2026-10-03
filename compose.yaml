@@ -6,7 +6,9 @@ services:
     ports: ['127.0.0.1:8100:8000']
     volumes: ['dynamo-data:/home/dynamodblocal/data']
   storage:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # MinIO stopped publishing images (quay.io/minio and Docker Hub minio/minio are gone); this is
+    # the community pgsty build of the same server, pinned by digest.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
     command: server /data --console-address ':9001'
     environment:
       MINIO_ROOT_USER: local-storage

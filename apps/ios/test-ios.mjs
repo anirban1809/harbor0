@@ -1,3 +1,4 @@
+/* global console, process, fetch, setTimeout */
 // Runs iOS tests with disposable local services and cleans up only its own resources.
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -29,7 +30,7 @@ const start = (cmd, args) => {
 const ready = async (url, child) => {
   for (let attempt = 0; attempt < 40; attempt++) {
     if (child.exitCode !== null) throw new Error('Local test service exited early.');
-    try { await fetch(url); return; } catch {}
+    try { await fetch(url); return; } catch { /* Wait for the local test service to bind its port. */ }
     await new Promise(r => setTimeout(r, 250));
   }
   throw new Error('Local test service did not start.');

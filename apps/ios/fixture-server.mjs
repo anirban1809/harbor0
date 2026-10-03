@@ -1,3 +1,4 @@
+/* global console, Buffer, URL */
 // Disposable loopback API/storage fixtures for iOS tests. No cloud credentials or data.
 import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';

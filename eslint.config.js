@@ -16,6 +16,8 @@ export default ts.config(
       'apps/landing/out/**',
       'apps/admin/next-env.d.ts',
       'apps/admin/out/**',
+      // Generated one-off session outputs, not project code.
+      'outputs/**',
     ],
   },
   js.configs.recommended,
