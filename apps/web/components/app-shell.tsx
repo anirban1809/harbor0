@@ -12,7 +12,24 @@ import {
   loginDestination,
   driveHref,
   sharedHref,
+  placeHref,
 } from '../lib/routes';
+import type { BackupRoot } from '../../../packages/contracts/src/backups';
+import type { SyncFolderItem } from '@harbor/contracts';
+import { ownsBackup } from '../lib/devices';
+import {
+  ConnectedDevices,
+  DevicePlace,
+  drivePlaceOrder,
+  drivePlacePins,
+  drivePlaces,
+  isDrivePlace,
+  placeFolderIds,
+  placeGroups,
+  placeSizes,
+  type DrivePlace,
+  RevokeDetails,
+} from './device-folders';
 import { loadFolderTrail } from '../lib/folder-navigation';
 import { useDebouncedValue } from '../lib/use-debounced-value';
 import { downloadFolderZip } from '../lib/folder-download';
@@ -26,7 +43,6 @@ import { Input, InputGroup } from '../components/ui/input';
 import { Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Archive,
   ArrowDownToLine,
   Bell,
   Check,
@@ -65,10 +81,20 @@ import {
 import { ContentSkeleton, WorkspaceSkeleton } from '../components/loading-states';
 import { ThemeToggle } from '../components/theme-toggle';
 import { SharedTabs, type SharedTab } from './shared-tabs';
+import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { TransferTable, type TransferView } from './transfer-table';
-import { BackupsPage } from './backups-page';
+import { BackupFolderPanel } from './backup-folder-panel';
 import { DriveWorkspace } from './lazy-drive-workspace';
-import { AccountMenu, StorageIndicator } from './drive-account';
+import type { AddedItem } from './drive-workspace';
+import { loadUsage, type UsageMap } from '../lib/folder-usage';
+import {
+  AccountMenu,
+  FolderActivityStatus,
+  StorageIndicator,
+  type FolderActivity,
+} from './drive-account';
+import { MobileTabBar } from './mobile-nav';
+import { StorageAudit } from './storage-audit';
 import { Button } from '../components/ui/button';
 import { Dialog, DialogActions } from '../components/ui/dialog';
 import { Alert } from '../components/ui/alert';
@@ -84,7 +110,14 @@ import { finishedKeys, type FileUpload } from '../lib/upload-activity';
 import { UploadTray } from './upload-tray';
 import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { onLive, useLiveUpdates } from '../lib/live-updates';
-const api = new ApiClient(createTransport('/api'));
+import { registerBrowser } from '../lib/device-key';
+import {
+  guardTransport,
+  setSignedIn,
+  useDeploymentCheck,
+  useSessionEnd,
+} from '../lib/session-guard';
+const api = new ApiClient(guardTransport(createTransport('/api')));
 const loadPreview: PreviewLoader = async (item, signal) => {
   const result = await api.download({ driveItemId: item.id });
   signal.throwIfAborted();
@@ -120,17 +153,13 @@ type UploadJob = {
   upload?: BrowserUpload;
   running?: boolean;
   stopped?: boolean;
+  /** Waiting for a free upload slot. */
+  queued?: boolean;
 };
+/** Files uploaded at once; each file also sends a few parts in parallel. */
+const UPLOAD_SLOTS = 4;
 const date = (s: string) =>
   new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-const platforms: Record<string, string> = {
-  WEB: 'Web browser',
-  MACOS: 'Mac',
-  WINDOWS: 'Windows PC',
-  LINUX: 'Linux computer',
-  IOS: 'iPhone or iPad',
-  ANDROID: 'Android device',
-};
 const notificationTitles: Record<string, string> = {
   TRANSFER_RECEIVED: 'Someone sent you files',
   TRANSFER_ACCEPTED: 'Your transfer was accepted',
@@ -151,6 +180,8 @@ const selectBaseName = (input: HTMLInputElement) => {
 type Confirmation = {
   title: string;
   description: string;
+  /** More about what happens, shown below the description. */
+  details?: ReactNode;
   label: string;
   done?: string;
   run: () => Promise<unknown>;
@@ -159,7 +190,6 @@ const navigation = [
   { name: 'My Drive', icon: HardDrive },
   { name: 'Shared', icon: Users },
   { name: 'Trash', icon: Trash2 },
-  { name: 'Backups', icon: Archive },
   { name: 'Devices', icon: Laptop },
   { name: 'Storage', icon: Cloud },
   { name: 'Settings', icon: Settings },
@@ -197,6 +227,17 @@ function Workspace() {
     (Object.keys(workspaceRoutes) as WorkspaceSection[]).find(
       (name) => workspaceRoutes[name] === pathname,
     ) ?? (['/received', '/sent'].includes(pathname) ? 'Shared' : 'My Drive');
+  // Synced Folders (/sync), Backups and Archives (/drive?place=) are places inside My Drive.
+  const placeParam = searchParams.get('place');
+  const place: DrivePlace | null =
+    section === 'Sync'
+      ? 'synced'
+      : section === 'My Drive' && isDrivePlace(placeParam)
+        ? placeParam
+        : null;
+  const navSection = place ? 'My Drive' : section;
+  // Places list devices first; `device` picks one, `folder` opens one of its folders.
+  const deviceParam = place ? searchParams.get('device') : null;
   const sharedTab: SharedTab =
     pathname === '/sent' || searchParams.get('tab') === 'sent' ? 'Sent' : 'Received';
   const [transferPage, setTransferPage] = useState<{ tab: SharedTab; cursor?: string }>({
@@ -208,11 +249,27 @@ function Workspace() {
     if (pathname === '/received' || pathname === '/sent')
       router.replace(sharedHref(pathname === '/sent' ? 'Sent' : 'Received'));
   }, [pathname, router]);
+  // Backups moved into My Drive; old links open the same device there.
+  const oldBackupsDevice = section === 'Backups' ? searchParams.get('device') : null;
+  useEffect(() => {
+    if (section === 'Backups')
+      router.replace(
+        placeHref(
+          'backups',
+          oldBackupsDevice && oldBackupsDevice !== 'all' ? oldBackupsDevice : null,
+        ),
+      );
+  }, [section, oldBackupsDevice, router]);
   const authMode = (Object.keys(authRoutes) as AuthMode[]).find(
     (mode) => authRoutes[mode] === pathname,
   );
   const next = loginDestination(searchParams.get('next'));
-  const parentId = pathname === '/drive' ? searchParams.get('folder') || null : null;
+  const parentId =
+    (pathname === '/drive' && !place) || (place && deviceParam)
+      ? searchParams.get('folder') || null
+      : null;
+  // Pages that browse folders with the drive file browser.
+  const drivePage = (section === 'My Drive' && !place) || (!!place && !!parentId);
   const [query, setQuery] = useState('');
   const [driveReadOnly, setDriveReadOnly] = useState(true);
   const [grid, setGrid] = useState(false);
@@ -222,6 +279,7 @@ function Workspace() {
     item?: DriveItem;
     items?: DriveItem[];
   } | null>(null);
+  const [recipientKind, setRecipientKind] = useState<RecipientKind>('unknown');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [mac, setMac] = useState(true);
   useEffect(() => setMac(/Mac|iPhone|iPad/.test(navigator.platform)), []);
@@ -235,6 +293,9 @@ function Workspace() {
   const [progress, setProgress] = useState<FileUpload[]>([]);
   const [online, setOnline] = useState(true);
   const jobs = useRef(new Map<string, UploadJob>());
+  // Items this tab just uploaded, shown at once instead of refetching the folder per file.
+  const [addedItems, setAddedItems] = useState<AddedItem[]>([]);
+  const uploading = useRef(false);
   // Folders created for each batch of uploads, by path, so files in a folder share it.
   const batchFolders = useRef(new Map<string, Map<string, Promise<string>>>());
   const input = useRef<HTMLInputElement>(null);
@@ -249,12 +310,21 @@ function Workspace() {
     refetchOnReconnect: (query) => query.state.data !== undefined,
   });
   const user = me.data?.user;
+  const sessionEnd = useSessionEnd();
+  useEffect(() => setSignedIn(!!user), [user?.id]);
+  useDeploymentCheck(!!user);
   const live = useLiveUpdates(api, user?.id);
+  // Link this sign-in to the browser's key so the browser is listed once among devices.
+  useEffect(() => {
+    if (user) void registerBrowser(api.request, user.id).catch(() => {});
+  }, [user?.id]);
   const activity = useActivityFeed(user?.id);
   useEffect(() => {
     if (!user) clearBrowserCaches();
   }, [user?.id]);
-  const needsLogin = me.error instanceof ApiError && [401, 403].includes(me.error.status);
+  // An ended session waits for the user to acknowledge the dialog before leaving the page.
+  const needsLogin =
+    !sessionEnd && me.error instanceof ApiError && [401, 403].includes(me.error.status);
   useAccountAppearance(needsLogin ? undefined : user?.id, api.request);
   useEffect(() => {
     if (user && (pathname === '/' || authMode)) router.replace(authMode ? next : '/drive');
@@ -262,14 +332,27 @@ function Workspace() {
       const destination =
         pathname === '/drive'
           ? driveHref(parentId)
-          : section === 'Shared'
-            ? sharedHref(sharedTab)
-            : pathname === '/'
-              ? '/drive'
-              : pathname;
+          : pathname === '/sync' || pathname === '/backups'
+            ? `${pathname}${searchParams.size ? `?${searchParams}` : ''}`
+            : section === 'Shared'
+              ? sharedHref(sharedTab)
+              : pathname === '/'
+                ? '/drive'
+                : pathname;
       router.replace(`/login?next=${encodeURIComponent(destination)}`);
     }
-  }, [user, needsLogin, pathname, parentId, authMode, next, router, section, sharedTab]);
+  }, [
+    user,
+    needsLogin,
+    pathname,
+    parentId,
+    authMode,
+    next,
+    router,
+    section,
+    sharedTab,
+    searchParams,
+  ]);
   useEffect(() => {
     setQuery('');
     setSelected([]);
@@ -284,9 +367,9 @@ function Workspace() {
     queryFn: ({ signal }) => loadFolderTrail(api, parentId!, signal),
   });
   const trail = parentId ? (folderTrail.data ?? [{ id: parentId, name: 'Folder' }]) : [];
-  const fileSection = ['My Drive', 'Trash'].includes(section) || !!query;
+  const fileSection = drivePage || section === 'Trash' || !!query;
   // Search results replace the page they were started from until the search is cleared.
-  const searching = !!query && !['My Drive', 'Trash'].includes(section);
+  const searching = !!query && !drivePage && section !== 'Trash';
   const listingQuery = useDebouncedValue(query);
   const listing = useQuery<{ items: DriveItem[]; nextCursor: string | null }>({
     queryKey: ['files', section, parentId, listingQuery, cursor],
@@ -316,11 +399,80 @@ function Workspace() {
     enabled: !!user && section === 'Shared',
     queryFn: () => api.request(`/v1/shares/${sharedTab.toLowerCase()}`),
   });
+  const devicePage = section === 'Devices' || !!place;
+  // My Drive's root shows each place's total, so it needs the folders they hold.
+  const placesShown = !!place || (section === 'My Drive' && !parentId);
   const devices = useQuery<{ items: Device[] }>({
     queryKey: ['devices'],
-    enabled: !!user && section === 'Devices',
+    enabled: !!user && devicePage,
     queryFn: () => api.request('/v1/devices'),
   });
+  // Always loaded: the sidebar reports backups that need attention.
+  const backups = useQuery<{ items: BackupRoot[] }>({
+    queryKey: ['backups'],
+    enabled: !!user,
+    queryFn: () => api.request('/v1/backups'),
+  });
+  const syncFolders = useQuery<{ items: SyncFolderItem[] }>({
+    queryKey: ['sync-folders'],
+    enabled: !!user && (placesShown || section === 'Devices'),
+    queryFn: () => api.request('/v1/sync/folders'),
+  });
+  // The open folder is a backup's top folder: show its status and controls above the files.
+  const backupFolder =
+    !!parentId && !!backups.data?.items.some((root) => root.remoteRootDriveItemId === parentId);
+  const failing = (backups.data?.items ?? []).filter((root) => root.state === 'ERROR');
+  const folderActivity: FolderActivity | null = failing.length
+    ? {
+        tone: 'error',
+        label:
+          failing.length === 1
+            ? `${failing[0].localPathDisplayName} needs attention`
+            : `${failing.length} backups need attention`,
+      }
+    : null;
+  const openActivity = () => router.push(placeHref('backups'));
+  const groups = place
+    ? placeGroups(place, devices.data?.items ?? [], syncFolders.data?.items, backups.data?.items)
+    : [];
+  const usageIds = placesShown
+    ? drivePlaceOrder.flatMap((target) =>
+        placeFolderIds(target, syncFolders.data?.items, backups.data?.items),
+      )
+    : [];
+  const folderUsage = useQuery<UsageMap>({
+    queryKey: ['folder-usage', [...new Set(usageIds)].sort().join(',')],
+    enabled: !!user && usageIds.length > 0,
+    staleTime: 60_000,
+    placeholderData: (previous) => previous,
+    queryFn: ({ signal }) => loadUsage(api.request, usageIds, signal),
+  });
+  const placeGroup = groups.find((entry) => entry.key === deviceParam);
+  // My Drive › place › device, ahead of the open folder's own path.
+  const placeCrumbs = place && (
+    <>
+      <ChevronRight size={14} />
+      <Link
+        href={placeHref(place)}
+        onNavigate={resetPage}
+        aria-current={!deviceParam ? 'location' : undefined}
+      >
+        {drivePlaces[place].name}
+      </Link>
+      {deviceParam && (
+        <>
+          <ChevronRight size={14} />
+          <Link
+            href={placeHref(place, deviceParam)}
+            onNavigate={resetPage}
+            aria-current={!parentId ? 'location' : undefined}
+          >
+            {placeGroup?.name ?? 'Device'}
+          </Link>
+        </>
+      )}
+    </>
+  );
   const notices = useQuery<{ items: any[] }>({
     queryKey: ['notifications'],
     enabled: !!user && section === 'Notifications',
@@ -363,10 +515,10 @@ function Workspace() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
         e.preventDefault();
-        if (section !== 'My Drive' || !driveReadOnly) input.current?.click();
+        if (!drivePage || !driveReadOnly) input.current?.click();
       }
-      // My Drive handles its own selection shortcuts.
-      if (section === 'My Drive') return;
+      // The drive file browser handles its own selection shortcuts.
+      if (drivePage) return;
       if (
         (e.target as HTMLElement).closest?.(
           'input, textarea, select, [contenteditable], [role="dialog"], [role="menu"]',
@@ -384,24 +536,46 @@ function Workspace() {
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [selected, files, section, driveReadOnly]);
-  const refresh = async () => {
+  }, [selected, files, section, driveReadOnly, drivePage]);
+  // The Drive view reloads when this changes; it follows live hints itself, so those skip it.
+  const [driveRefresh, setDriveRefresh] = useState(0);
+  const refresh = async (reloadDrive = true) => {
+    if (reloadDrive) setDriveRefresh((value) => value + 1);
     const browser = browserSession(api.request, user?.id ?? 'anonymous');
     browser.data.clear();
     browser.views.clear();
     await Promise.all(
-      ['files', 'folder-trail', 'me', 'transfers', 'shares', 'devices', 'notifications'].map((k) =>
+      [
+        'files',
+        'folder-trail',
+        'me',
+        'transfers',
+        'shares',
+        'devices',
+        'backups',
+        'sync-folders',
+        'notifications',
+      ].map((k) => cache.invalidateQueries({ queryKey: [k] })),
+    );
+  };
+  // A pushed hint only refreshes what can change often; folder catalogs refresh lazily.
+  const refreshLive = () =>
+    Promise.all(
+      ['files', 'folder-trail', 'me', 'transfers', 'shares', 'notifications'].map((k) =>
         cache.invalidateQueries({ queryKey: [k] }),
       ),
     );
-  };
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  const refreshLiveRef = useRef(refreshLive);
+  refreshLiveRef.current = refreshLive;
   useEffect(
     () =>
       onLive((message) => {
-        if (message.type === 'changes') void refreshRef.current();
-        else
+        // This tab's own uploads cause most hints while they run; one refresh follows them.
+        if (message.type === 'changes') {
+          if (!uploading.current) void refreshLiveRef.current();
+        } else
           for (const key of ['notifications', 'transfers', 'shares'])
             void cache.invalidateQueries({ queryKey: [key] });
       }),
@@ -438,7 +612,7 @@ function Workspace() {
   function open(item: DriveItem) {
     if (item.type === 'FOLDER') {
       resetPage();
-      router.push(driveHref(item.id));
+      router.push(place ? placeHref(place, deviceParam, item.id) : driveHref(item.id));
     } else setModal({ mode: 'preview', item });
   }
   async function download(data: {
@@ -495,7 +669,10 @@ function Workspace() {
     for (const name of job.folders) {
       path += '/' + name;
       if (!created.has(path)) {
-        const pending = api.createFolder(name, parent).then(({ item }) => item.id);
+        const pending = api.createFolder(name, parent).then(({ item }) => {
+          addItem(item);
+          return item.id;
+        });
         created.set(path, pending);
         pending.catch(() => created.delete(path));
       }
@@ -511,11 +688,11 @@ function Workspace() {
       job.parent ??= await uploadParent(job);
       const upload = new BrowserUpload(api, user.id);
       job.upload = upload;
-      await upload.run(job.file, job.parent, ({ loaded, phase, error }) =>
+      const item = await upload.run(job.file, job.parent, ({ loaded, phase, error }) =>
         setUpload(key, { loaded, phase, error }),
       );
       jobs.current.delete(key);
-      await refresh();
+      addItem(item);
     } catch (e) {
       setUpload(key, {
         phase: (e as Error).name === 'AbortError' ? 'paused' : 'failed',
@@ -523,11 +700,29 @@ function Workspace() {
       });
     } finally {
       job.running = false;
+      pumpUploads();
     }
   }
-  // Uploads one file at a time; paused, cancelled or already running files are skipped.
-  async function drain(keys: string[]) {
-    for (const key of keys) await startUpload(key);
+  function addItem(item: DriveItem) {
+    setAddedItems((old) => [
+      ...old.filter((entry) => entry.id !== item.id).slice(-499),
+      { ...item, addedAt: Date.now() },
+    ]);
+  }
+  // Starts queued files, oldest first, until UPLOAD_SLOTS are busy.
+  function pumpUploads() {
+    let free = UPLOAD_SLOTS - [...jobs.current.values()].filter((j) => j.running).length;
+    for (const [key, job] of jobs.current) {
+      if (free <= 0) break;
+      if (!job.queued || job.stopped || job.running) continue;
+      job.queued = false;
+      free--;
+      void startUpload(key);
+    }
+    // Refresh once when the queue empties: storage use, sync status and other devices' changes.
+    const active = [...jobs.current.values()].some((j) => j.running || j.queued);
+    if (uploading.current && !active) void refreshRef.current();
+    uploading.current = active;
   }
   async function uploadFiles(files: FileList | File[] | null, folder = false) {
     if (!files) return;
@@ -543,7 +738,7 @@ function Workspace() {
     const batch = crypto.randomUUID();
     const queued = entries.map(({ file, folders }, i): FileUpload => {
       const key = `${batch}/${i}`;
-      jobs.current.set(key, { file, folders, batch, base: parentId });
+      jobs.current.set(key, { file, folders, batch, base: parentId, queued: true });
       return {
         key,
         name: file.name,
@@ -554,7 +749,7 @@ function Workspace() {
       };
     });
     setProgress((old) => [...old, ...queued]);
-    await drain(queued.map((u) => u.key));
+    pumpUploads();
   }
   function pauseUploads(keys: string[]) {
     for (const key of keys) {
@@ -568,10 +763,13 @@ function Workspace() {
   function resumeUploads(keys: string[]) {
     const waiting = keys.filter((key) => jobs.current.has(key));
     for (const key of waiting) {
-      jobs.current.get(key)!.stopped = false;
+      const job = jobs.current.get(key)!;
+      // A file still winding down from a pause is picked up again when its slot frees.
+      job.stopped = false;
+      job.queued = true;
       setUpload(key, { phase: 'queued', error: undefined });
     }
-    void drain(waiting);
+    pumpUploads();
   }
   function cancelUploads(keys: string[]) {
     const cancelled = new Set(keys);
@@ -677,7 +875,9 @@ function Workspace() {
         }
       },
       mode === 'send'
-        ? 'Sent. Your recipient will see it after signing in.'
+        ? recipientKind === 'invite'
+          ? 'Invitation sent. They’ll see your files after signing up.'
+          : 'Sent. Your recipient will see it after signing in.'
         : mode === 'share'
           ? 'Access shared.'
           : mode === 'folder'
@@ -788,7 +988,7 @@ function Workspace() {
         </Link>
         <Button
           onClick={() => input.current?.click()}
-          disabled={section === 'My Drive' && driveReadOnly}
+          disabled={drivePage && driveReadOnly}
           className="upload-button"
           aria-label="Upload files"
         >
@@ -803,8 +1003,8 @@ function Workspace() {
               key={name}
               aria-label={name}
               title={name}
-              className={`nav-item ${section === name ? 'active' : ''} ${name === 'Devices' ? 'nav-separated' : ''}`}
-              aria-current={section === name ? 'page' : undefined}
+              className={`nav-item ${navSection === name ? 'active' : ''} ${name === 'Devices' ? 'nav-separated' : ''}`}
+              aria-current={navSection === name ? 'page' : undefined}
             >
               <Icon aria-hidden="true" />
               <span>{name}</span>
@@ -812,11 +1012,20 @@ function Workspace() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <FolderActivityStatus activity={folderActivity} onOpen={openActivity} />
           <StorageIndicator storage={usage} onManage={() => navigate('Storage')} />
         </div>
       </aside>
       <div className="main-shell">
         <header className="topbar">
+          <Link
+            className="brand topbar-brand"
+            href="/drive"
+            onNavigate={resetPage}
+            aria-label="harbor0 home"
+          >
+            <BrandLogo />
+          </Link>
           <InputGroup className="search-box" icon={<Search aria-hidden="true" />}>
             <Input
               ref={search}
@@ -833,7 +1042,9 @@ function Workspace() {
             {!query && <kbd>{mac ? '⌘ K' : 'Ctrl K'}</kbd>}
           </InputGroup>
           <div className="topbar-right">
-            <ThemeToggle />
+            <span className="topbar-theme">
+              <ThemeToggle />
+            </span>
             <ActivityNotifications
               feed={activity}
               onAllNotifications={() => navigate('Notifications')}
@@ -844,6 +1055,7 @@ function Workspace() {
               onNavigate={navigate}
               onSignOut={() =>
                 void act(async () => {
+                  setSignedIn(false);
                   await api.request('/v1/auth/logout', { method: 'POST', body: {} });
                   cache.clear();
                   clearBrowserCaches();
@@ -856,12 +1068,12 @@ function Workspace() {
         <main
           id="workspace-content"
           tabIndex={-1}
-          className={`workspace ${section === 'My Drive' ? 'drive-page' : ''}`}
+          className={`workspace ${drivePage ? 'drive-page' : ''}`}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             // Files dropped outside a writable folder are ignored instead of landing in the root.
             e.preventDefault();
-            if (section === 'My Drive' && !driveReadOnly)
+            if (drivePage && !driveReadOnly)
               void readDroppedFiles(e.dataTransfer).then(uploadEntries);
           }}
         >
@@ -871,7 +1083,7 @@ function Workspace() {
                 You’re offline. Changes will sync when your connection returns.
               </Alert>
             )}
-            {pageError && (
+            {pageError && !sessionEnd && (
               <Alert
                 tone="error"
                 className="banner"
@@ -888,7 +1100,7 @@ function Workspace() {
               onCancel={() => zipJob.current?.abort()}
             />
           )}
-          {section !== 'My Drive' && (
+          {!drivePage && !(place && !searching) && (
             <div className={`page-heading ${section === 'Shared' ? 'shared-heading' : ''}`}>
               <div>
                 <h1>{searching ? 'Search results' : section}</h1>
@@ -915,8 +1127,29 @@ function Workspace() {
               )}
             </div>
           )}
-          {section === 'My Drive' && (
+          {drivePage && (
             <DriveWorkspace
+              key={place ?? section}
+              title="My Drive"
+              pinned={
+                place
+                  ? undefined
+                  : drivePlacePins(
+                      (target) => router.push(placeHref(target)),
+                      placeSizes(syncFolders.data?.items, backups.data?.items, folderUsage.data),
+                    )
+              }
+              showFolderUsage={!!place}
+              header={
+                backupFolder && (
+                  <BackupFolderPanel
+                    key={parentId}
+                    api={api}
+                    folderId={parentId!}
+                    onChanged={() => void backups.refetch()}
+                  />
+                )
+              }
               onActivity={activity.publish}
               request={api.request}
               parentId={parentId}
@@ -925,17 +1158,20 @@ function Workspace() {
               onClearSearch={() => setQuery('')}
               userId={user.id}
               storage={usage}
-              refreshKey={me.dataUpdatedAt}
+              refreshKey={driveRefresh}
+              addedItems={addedItems}
+              holdLive={() => uploading.current}
               breadcrumbs={
                 <>
                   <Link href="/drive" onNavigate={resetPage}>
                     My Drive
                   </Link>
+                  {placeCrumbs}
                   {trail.map((t) => (
                     <span key={t.id}>
                       <ChevronRight size={14} />
                       <Link
-                        href={driveHref(t.id)}
+                        href={place ? placeHref(place, deviceParam, t.id) : driveHref(t.id)}
                         onNavigate={resetPage}
                         aria-current={t.id === parentId ? 'location' : undefined}
                       >
@@ -951,8 +1187,12 @@ function Workspace() {
                 </>
               }
               onOpen={open}
-              onSyncRemoved={() => navigate('My Drive')}
-              onRoot={() => navigate('My Drive')}
+              onSyncRemoved={() =>
+                place ? router.push(placeHref(place, deviceParam)) : navigate('My Drive')
+              }
+              onRoot={() =>
+                place ? router.push(placeHref(place, deviceParam)) : navigate('My Drive')
+              }
               onReadOnlyChange={setDriveReadOnly}
               onUpload={() => input.current?.click()}
               onUploadFolder={() => folderInput.current?.click()}
@@ -961,11 +1201,11 @@ function Workspace() {
                 if (item.type === 'FOLDER') await downloadFolder(item);
                 else await download({ driveItemId: item.id, ...(versionId ? { versionId } : {}) });
               }}
-              onChanged={() => void refresh()}
+              onChanged={() => void refresh(false)}
               onManageStorage={() => navigate('Storage')}
             />
           )}
-          {fileSection && section !== 'My Drive' && (
+          {fileSection && !drivePage && (
             <>
               <div className="file-toolbar">
                 <div className="breadcrumbs">
@@ -1267,65 +1507,74 @@ function Workspace() {
               )}
             </SharedTabs>
           )}
-          {section === 'Backups' && !searching && <BackupsPage api={api} />}
+          {place && !searching && !drivePage && (
+            <DevicePlace
+              place={place}
+              groups={groups}
+              groupKey={deviceParam}
+              loading={
+                devices.isPending ||
+                (place === 'synced' ? syncFolders.isPending : backups.isPending)
+              }
+              error={
+                devices.isError || (place === 'synced' ? syncFolders.isError : backups.isError)
+              }
+              onRetry={() =>
+                void Promise.all([devices.refetch(), syncFolders.refetch(), backups.refetch()])
+              }
+              breadcrumbs={
+                <>
+                  <Link href="/drive" onNavigate={resetPage}>
+                    My Drive
+                  </Link>
+                  {placeCrumbs}
+                </>
+              }
+              usage={folderUsage.data}
+              onOpenGroup={(key) => router.push(placeHref(place, key))}
+              onOpenFolder={(key, folderId) => router.push(placeHref(place, key, folderId))}
+            />
+          )}
           {section === 'Devices' && !searching && (
-            <Card
-              className="panel"
-              title="Connected devices"
-              description="Use harbor0 on all your devices. Remove access whenever you need to."
-            >
-              {devices.isPending ? (
-                <ContentSkeleton label="Loading devices" />
-              ) : devices.isError && !devices.data?.items.length ? (
-                <LoadError compact onRetry={() => void devices.refetch()} />
-              ) : !devices.data?.items.length ? (
-                <EmptyState
-                  compact
-                  icon={<Laptop />}
-                  title="No connected devices"
-                  description="Sign in to the harbor0 desktop app to connect a computer. Your devices will appear here."
-                  actions={
-                    <Button variant="outline" onClick={() => void devices.refetch()}>
-                      Refresh devices
-                    </Button>
-                  }
-                />
-              ) : null}
-              {devices.data?.items.map((d) => (
-                <article className="list-row simple-row" key={d.id}>
-                  <span className="icon-tile">
-                    <Laptop aria-hidden="true" />
-                  </span>
-                  <div className="list-row-text">
-                    <strong>{d.name}</strong>
-                    <small>
-                      {platforms[d.platform] ?? d.platform} ·{' '}
-                      {d.revokedAt
-                        ? 'Access removed'
-                        : `Last active ${date(d.lastSeenAt ?? d.createdAt)}`}
-                    </small>
-                  </div>
-                  {!d.revokedAt && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        setConfirmation({
-                          title: `Revoke access for ${d.name}?`,
-                          description:
-                            'This device will be signed out and will stop syncing. If it is the browser you are using now, you will need to sign in again.',
-                          label: 'Revoke access',
-                          done: 'Device access removed.',
-                          run: () => api.request(`/v1/devices/${d.id}`, { method: 'DELETE' }),
-                        })
-                      }
-                    >
-                      Revoke
-                    </Button>
-                  )}
-                </article>
-              ))}
-            </Card>
+            <ConnectedDevices
+              devices={devices.data?.items}
+              loading={devices.isPending}
+              error={devices.isError}
+              onRetry={() => void devices.refetch()}
+              onSignOut={(d) =>
+                setConfirmation({
+                  title: `Sign out ${d.name}?`,
+                  description: `${d.name} is signed out of harbor0. Its sync and backups pause, and resume when you sign in on it again. Nothing is deleted.${d.platform === 'WEB' ? ' If it’s the browser you’re using now, you’ll need to sign in again.' : ''}`,
+                  label: 'Sign out',
+                  done: `${d.name} is signed out.`,
+                  run: () =>
+                    api.request(`/v1/devices/${d.id}/sign-out`, { method: 'POST', body: {} }),
+                })
+              }
+              onRevoke={(d) =>
+                setConfirmation({
+                  title: `Revoke ${d.name}?`,
+                  description: 'This removes the device and stops everything it does in harbor0.',
+                  details: (
+                    <RevokeDetails
+                      device={d}
+                      backups={(backups.data?.items ?? []).filter(
+                        (root) =>
+                          root.state !== 'REMOVED' &&
+                          root.state !== 'ARCHIVED' &&
+                          ownsBackup(d, root),
+                      )}
+                      syncFolders={(syncFolders.data?.items ?? []).filter((folder) =>
+                        folder.syncDevices.some((entry) => entry.id === d.id),
+                      )}
+                    />
+                  ),
+                  label: 'Revoke device',
+                  done: `${d.name} is revoked.`,
+                  run: () => api.request(`/v1/devices/${d.id}`, { method: 'DELETE' }),
+                })
+              }
+            />
           )}
           {section === 'Storage' && !searching && (
             <div className="storage-page">
@@ -1350,6 +1599,7 @@ function Workspace() {
                   retained for sent transfers. Permanently deleting unused files frees up space.
                 </p>
               </Card>
+              <StorageAudit api={api} />
               <Card
                 className="panel"
                 title="Plan features"
@@ -1435,6 +1685,27 @@ function Workspace() {
                   Manage devices
                 </Button>
               </Card>
+              <Card
+                className="panel"
+                title="Sync & backups"
+                description="Folders are synced and backed up by the harbor0 desktop and mobile apps. Open one in My Drive to see its status, backup history and saved versions. Backup, pause and archive controls are in the app on the device that backs the folder up."
+              >
+                <div className="settings-actions">
+                  {drivePlaceOrder.map((target) => {
+                    const Icon = drivePlaces[target].icon;
+                    return (
+                      <Button
+                        key={target}
+                        variant="outline"
+                        onClick={() => router.push(placeHref(target))}
+                      >
+                        <Icon />
+                        {drivePlaces[target].name}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </Card>
               <DeleteAccount
                 email={user.email}
                 onDelete={async (email) => {
@@ -1442,6 +1713,7 @@ function Workspace() {
                     method: 'POST',
                     body: { ...operation(), email },
                   });
+                  setSignedIn(false);
                   cache.clear();
                   clearBrowserCaches();
                   window.location.reload();
@@ -1451,6 +1723,14 @@ function Workspace() {
           )}
         </main>
       </div>
+      <MobileTabBar
+        section={navSection}
+        storage={usage}
+        onNavigate={resetPage}
+        onManageStorage={() => navigate('Storage')}
+        activity={folderActivity}
+        onOpenActivity={openActivity}
+      />
       <input
         ref={input}
         type="file"
@@ -1520,7 +1800,7 @@ function Workspace() {
           modal?.mode === 'empty-trash'
             ? 'Permanently delete all items in Trash, including items on other pages and their version history? This cannot be undone. Content needed by sent transfers remains stored until those transfers end.'
             : modal?.mode === 'send'
-              ? 'Send a copy to a person. They must sign in to receive it.'
+              ? 'Send a copy to a person. They sign in to harbor0 to receive it.'
               : modal?.mode === 'share'
                 ? 'Give a registered person access to the original item.'
                 : modal?.mode === 'permanent'
@@ -1607,21 +1887,12 @@ function Workspace() {
             )}
             {modal?.mode === 'move' && <FolderPicker />}
             {['send', 'share'].includes(modal?.mode ?? '') && (
-              <Field
-                label="To"
-                hint={
-                  modal?.mode === 'send' &&
-                  'New recipients can verify their email and find the transfer after signup.'
-                }
-              >
-                <Input
-                  autoFocus
-                  name="recipient"
-                  aria-label="To"
-                  required
-                  placeholder="@username or email address"
-                />
-              </Field>
+              <RecipientPicker
+                autoFocus
+                search={(path) => api.request(path)}
+                allowInvite={modal?.mode === 'send'}
+                onKindChange={setRecipientKind}
+              />
             )}
             {modal?.mode === 'share' && (
               <Field label="Permission">
@@ -1648,7 +1919,9 @@ function Workspace() {
                   : modal?.mode === 'empty-trash'
                     ? 'Empty Trash'
                     : modal?.mode === 'send'
-                      ? 'Send files'
+                      ? recipientKind === 'invite'
+                        ? 'Send invite'
+                        : 'Send files'
                       : modal?.mode === 'share'
                         ? 'Share access'
                         : modal?.mode === 'permanent'
@@ -1669,6 +1942,7 @@ function Workspace() {
         title={confirmation?.title ?? ''}
         description={confirmation?.description}
       >
+        {confirmation?.details}
         {error && <Alert tone="error">{error}</Alert>}
         <DialogActions>
           <Button variant="outline" disabled={busy} onClick={() => setConfirmation(null)}>
@@ -1842,6 +2116,36 @@ function FolderPicker() {
     </div>
   );
 }
+function SessionEndedDialog() {
+  const reason = useSessionEnd();
+  useEffect(() => {
+    // Clear the session cookies now, so the user is signed out even if they never press OK.
+    if (reason) void api.request('/v1/auth/logout', { method: 'POST', body: {} }).catch(() => {});
+  }, [reason]);
+  const leave = () => {
+    clearBrowserCaches();
+    const here = window.location.pathname + window.location.search;
+    window.location.assign(`/login?next=${encodeURIComponent(loginDestination(here))}`);
+  };
+  return (
+    <Dialog
+      open={!!reason}
+      onOpenChange={(open) => {
+        if (!open) leave();
+      }}
+      title="You’ve been signed out"
+      description={
+        reason === 'updated'
+          ? 'Harbor0 was updated. Sign in again to keep using the latest version.'
+          : 'Your session has expired. Sign in again to continue.'
+      }
+    >
+      <DialogActions>
+        <Button onClick={leave}>OK</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 export default function AppShell({ children }: { children: ReactNode }) {
   const [client] = useState(createQueryClient);
   return (
@@ -1849,6 +2153,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <Suspense fallback={<WorkspaceSkeleton />}>
         <Workspace />
       </Suspense>
+      <SessionEndedDialog />
       {children}
     </QueryClientProvider>
   );

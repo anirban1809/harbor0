@@ -1,0 +1,7 @@
+/* Tokens, element defaults and kit components come from the web app. */
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+@import '../../web/app/styles/tokens.css';
+@import '../../web/app/styles/base.css';
+@import '../../web/app/styles/components.css';
+@import './admin.css';

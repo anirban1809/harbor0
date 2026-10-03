@@ -5,9 +5,10 @@ import { BrandLogo } from '../../web/components/brand-logo';
 import { ThemeToggle } from './theme-toggle';
 
 // Accounts live in the web app, which is deployed separately.
-export const appUrl = (
-  process.env.NEXT_PUBLIC_APP_URL ?? 'https://d1bpha1d51nhxy.cloudfront.net'
-).replace(/\/$/, '');
+export const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.harbor0.com').replace(
+  /\/$/,
+  '',
+);
 export const signupUrl = `${appUrl}/signup`;
 export const loginUrl = `${appUrl}/login`;
 

@@ -1,10 +1,10 @@
 import { beforeEach, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { StorageService, userPK } from '../src/domain';
-import { MemoryRepository, Transaction } from '../src/repository';
+import { MemoryRepository, Transaction, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { SyncRelay } from '../src/sync-relay';
-import type { DriveItem } from '@harbor/contracts';
+import type { DriveItem, FileVersion } from '@harbor/contracts';
 
 let service: StorageService,
   relay: SyncRelay,
@@ -26,6 +26,20 @@ async function upload(previous?: DriveItem) {
   storage.uploads.get(stored.providerUploadId!)!.parts.set(1, Buffer.from('hello'));
   return (await service.completeUpload('alice', upload.id, [{ partNumber: 1, etag: 'one' }], hash))
     .item;
+}
+// A file whose bytes were released before synced files stayed in the cloud.
+async function markReleased(item: DriveItem) {
+  await transact(repo, async (tx) => {
+    const stored = (await tx.get<DriveItem>(userPK('alice'), `ITEM#${item.id}`))!;
+    const key = `VERSION#${item.id}#${stored.currentVersionId}`;
+    const version = (await tx.get<FileVersion>(userPK('alice'), key))!;
+    await service.reference(tx, version.storageObjectId, -1);
+    await tx.put(userPK('alice'), key, { ...version, cloudState: 'RELEASED' });
+    await tx.put(userPK('alice'), `ITEM#${item.id}`, { ...stored, cloudState: 'RELEASED' });
+    const account = await service.account(tx, 'alice');
+    account.storageUsedBytes -= version.sizeBytes;
+    await tx.put(userPK('alice'), 'PROFILE', account);
+  });
 }
 const ack = (device: string, item: DriveItem, contentHash = hash) =>
   relay.acknowledge('alice', device, item.id, {
@@ -53,13 +67,11 @@ beforeEach(async () => {
     await service.setSyncFolders('alice', id, [folder.id]);
   }
 });
-it('keeps cloud bytes for offline devices, releases only after all confirmations, and preserves metadata', async () => {
+it('keeps cloud bytes after every linked device confirms, so any device can fetch them', async () => {
   const item = await upload();
   expect((await relay.statuses('alice', [item.id])).items[0].state).toBe('PENDING');
   await ack('mac', item);
   await service.revokeSession('alice', 'pc');
-  await relay.release('alice', item.id);
-  expect((await service.me('alice')).storage.usedBytes).toBe(5);
   expect((await relay.statuses('alice', [folder.id, item.id])).items.map((i) => i.state)).toEqual([
     'SYNCING',
     'SYNCING',
@@ -71,29 +83,18 @@ it('keeps cloud bytes for offline devices, releases only after all confirmations
   );
   await ack('pc-new', item);
   await service.runJobs();
-  await service.runJobs();
-  expect((await service.list('alice', folder.id)).items[0]).toMatchObject({
-    id: item.id,
-    cloudState: 'RELEASED',
-    deletedAt: null,
-  });
-  expect((await service.me('alice')).storage.usedBytes).toBe(0);
   expect((await relay.statuses('alice', [folder.id, item.id])).items.map((i) => i.state)).toEqual([
     'SYNCED',
     'SYNCED',
   ]);
-  await expect(service.download('alice', { driveItemId: item.id })).rejects.toMatchObject({
-    code: 'SYNC_CONTENT_OFFLINE',
+  expect((await service.list('alice', folder.id)).items[0]).toMatchObject({
+    id: item.id,
+    cloudState: 'AVAILABLE',
   });
-  await relay.release('alice', item.id);
-  expect((await service.me('alice')).storage.usedBytes).toBe(0);
-  expect(
-    (await service.changes('alice', 0, 100)).changes.some((c) => c.type === 'FILE_DELETED'),
-  ).toBe(false);
-  const versions = await service.versions('alice', item.id);
-  expect(
-    await new Transaction(repo).get('OBJECT', versions.items[0].storageObjectId),
-  ).toBeUndefined();
+  expect((await service.me('alice')).storage.usedBytes).toBe(5);
+  await expect(service.download('alice', { driveItemId: item.id })).resolves.toMatchObject({
+    sizeBytes: 5,
+  });
 });
 it('rejects wrong hashes, stale revisions and unlinked devices', async () => {
   const item = await upload();
@@ -110,18 +111,17 @@ it('invalidates confirmations after unlinking and relinking the same installatio
   await ack('pc', item);
   await service.setSyncFolders('alice', 'pc', []);
   await service.setSyncFolders('alice', 'pc', [folder.id]);
-  await relay.release('alice', item.id);
   expect((await relay.statuses('alice', [item.id])).items[0]).toMatchObject({
     confirmedDevices: 1,
     requiredDevices: 2,
     cloudState: 'AVAILABLE',
   });
 });
-it('rehydrates for a newly linked device and requires new-version confirmations', async () => {
+it('rehydrates a legacy released file for a newly linked device', async () => {
   const item = await upload();
   await ack('mac', item);
   await ack('pc', item);
-  await relay.release('alice', item.id);
+  await markReleased(item);
   await service.registerDevice(
     'alice',
     { name: 'Third', platform: 'MACOS', devicePublicId: 'third' },
@@ -131,7 +131,6 @@ it('rehydrates for a newly linked device and requires new-version confirmations'
   expect((await relay.requestContent('alice', 'third', item.id)).item.cloudState).toBe('REQUESTED');
   const replacement = await upload(item);
   expect(replacement.currentVersionId).not.toBe(item.currentVersionId);
-  await relay.release('alice', replacement.id);
   expect((await relay.statuses('alice', [item.id])).items[0]).toMatchObject({
     confirmedDevices: 0,
     requiredDevices: 3,
@@ -139,37 +138,23 @@ it('rehydrates for a newly linked device and requires new-version confirmations'
   });
   await expect(ack('mac', item)).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
 });
-it('never releases ordinary cloud files or files with another storage reference', async () => {
+it('asks devices to upload legacy released files again', async () => {
   const item = await upload();
-  const version = (await service.versions('alice', item.id)).items[0];
-  const { transact } = await import('../src/repository');
-  await transact(repo, (tx) => service.reference(tx, version.storageObjectId, 1));
-  await ack('mac', item);
-  await ack('pc', item);
-  expect(await relay.release('alice', item.id)).toBe(false);
-  expect((await service.me('alice')).storage.usedBytes).toBe(5);
-  await service.setSyncFolders('alice', 'mac', []);
-  await service.setSyncFolders('alice', 'pc', []);
-  expect((await relay.statuses('alice', [item.id])).items).toEqual([]);
+  await markReleased(item);
+  expect(await relay.rehydrate('alice', false)).toBe(1);
   expect(
     (await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id))?.cloudState,
-  ).toBe('AVAILABLE');
-});
-
-it('cleans restored versions that share an object without leaking references or quota', async () => {
-  const original = await upload();
-  const { item } = await service.restoreVersion('alice', original.id, original.currentVersionId!, {
-    operationId: randomUUID(),
-    baseRevision: original.revision,
-  });
-  expect((await service.me('alice')).storage.usedBytes).toBe(10);
-  await ack('mac', item);
-  await ack('pc', item);
-  expect(await relay.release('alice', item.id)).toBe(true);
-  expect((await service.me('alice')).storage.usedBytes).toBe(0);
+  ).toBe('RELEASED');
+  expect(await relay.rehydrate('alice', true)).toBe(1);
   expect(
-    (await service.versions('alice', item.id)).items.every((v) => v.cloudState === 'RELEASED'),
-  ).toBe(true);
+    (await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id))?.cloudState,
+  ).toBe('REQUESTED');
+  expect((await service.changes('alice', 0, 100)).changes.at(-1)?.type).toBe(
+    'SYNC_CONTENT_REQUESTED',
+  );
+  const provided = await upload({ ...item, cloudState: 'REQUESTED' });
+  expect(provided.cloudState).toBe('AVAILABLE');
+  expect(await relay.rehydrate('alice', true)).toBe(0);
 });
 
 it('keeps mappings visible after sign-out while the offline installation still owes a copy', async () => {
@@ -182,7 +167,7 @@ it('does not charge storage twice when a released file is permanently deleted', 
   const item = await upload();
   await ack('mac', item);
   await ack('pc', item);
-  await relay.release('alice', item.id);
+  await markReleased(item);
   const deleted = (
     await service.mutate('alice', item.id, {
       operationId: randomUUID(),
@@ -316,4 +301,28 @@ it('also retires nested mappings when an ancestor sync folder is removed', async
     removedFolderIds: [nested.id],
   });
   expect((await service.syncFolders('alice')).items).toEqual([]);
+});
+it('lets the owner’s other app devices request a legacy released file', async () => {
+  const item = await upload();
+  await ack('mac', item);
+  await ack('pc', item);
+  await markReleased(item);
+  expect(
+    (await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id))?.cloudState,
+  ).toBe('RELEASED');
+  // A phone that opens the file on demand without syncing the folder.
+  await service.registerDevice('alice', { name: 'phone', platform: 'IOS', devicePublicId: 'phone' }, 'phone');
+  expect((await relay.requestContent('alice', 'phone', item.id)).item.cloudState).toBe('REQUESTED');
+  const provided = await upload(item);
+  expect(provided.cloudState).toBe('AVAILABLE');
+  // Web sessions still cannot ask linked devices for content.
+  await service.registerDevice('alice', { name: 'web', platform: 'WEB' }, 'web');
+  await expect(relay.requestContent('alice', 'web', item.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+});
+it('reports the latest change position without replaying the feed', async () => {
+  await upload();
+  const all = await service.changes('alice', 0, 500);
+  const latest = await service.latestChanges('alice');
+  expect(latest).toEqual({ changes: [], nextCursor: all.nextCursor, hasMore: false });
+  expect((await service.changes('alice', latest.nextCursor, 10)).changes).toEqual([]);
 });

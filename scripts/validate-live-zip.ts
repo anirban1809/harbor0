@@ -7,8 +7,8 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ZipReader, Uint8ArrayReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 
@@ -203,9 +203,12 @@ try {
   } finally {
     await browser.close();
     if (created)
-      await cognito.send(
-        new AdminDeleteUserCommand({ UserPoolId: output.UserPoolId, Username: email }),
-      );
+      await removeFixtureAccount(cognito, {
+        apiUrl: output.ApiUrl,
+        userPoolId: output.UserPoolId,
+        email,
+        password,
+      });
     await writeFile(
       '.cloud/live-zip-validation.json',
       JSON.stringify(

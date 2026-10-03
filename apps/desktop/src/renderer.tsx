@@ -11,16 +11,17 @@ import { previewKind, type PreviewLoader } from '../../web/lib/file-preview';
 import { UploadTray } from '../../web/components/upload-tray';
 import { finishedKeys, mergeUploads, type FileUpload } from '../../web/lib/upload-activity';
 import { Input, InputGroup, PasswordInput, Textarea } from '../../web/components/ui/input';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Archive,
   HardDrive,
   Inbox,
   Users,
   Send,
   Cloud,
   Laptop,
+  Pause,
+  Play,
   RefreshCw,
   Settings,
   Plus,
@@ -42,15 +43,36 @@ import { AppearanceSettings } from '../../web/components/appearance-settings';
 import { useAccountAppearance } from '../../web/lib/appearance';
 import { ApiClient, type Transport } from '@harbor/api-client';
 import { ThemeToggle } from '../../web/components/theme-toggle';
-import type { StorageUsage } from '@harbor/contracts';
+import type { Device, StorageUsage, SyncFolderItem } from '@harbor/contracts';
 import { StoragePanel } from './overview';
-import { BackupsPage } from '../../web/components/backups-page';
+import { BackupFolderPanel, type BackupDesktop } from '../../web/components/backup-folder-panel';
+import {
+  ConnectedDevices,
+  RevokeDetails,
+  DevicePlace,
+  drivePlaceOrder,
+  drivePlacePins,
+  drivePlaces,
+  placeFolderIds,
+  placeGroups,
+  placeSizes,
+  type DrivePlace,
+} from '../../web/components/device-folders';
+import { loadUsage, type UsageMap } from '../../web/lib/folder-usage';
+import { ownsBackup } from '../../web/lib/devices';
+import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { SharedTabs, type SharedTab } from '../../web/components/shared-tabs';
 import { TransferTable } from '../../web/components/transfer-table';
 import { DriveWorkspace } from '../../web/components/lazy-drive-workspace';
 import { publishLive, setLiveConnected } from '../../web/lib/live-updates';
-import { AccountMenu, StorageIndicator } from '../../web/components/drive-account';
-import { SyncPage } from './sync-page';
+import {
+  AccountMenu,
+  FolderActivityStatus,
+  StorageIndicator,
+  type FolderActivity,
+} from '../../web/components/drive-account';
+import { AddSyncFolderDialog, OpenFolderProgress, SyncFolderPanel } from './sync-page';
+import { folderState, syncRequirements, type SyncFolder } from './sync-state';
 import { SyncNotifications } from './sync-notifications';
 import { SharedSyncInvitations } from './sync-sharing';
 import { IncomingDialog } from './incoming-dialog';
@@ -63,6 +85,7 @@ import { Badge } from '../../web/components/ui/badge';
 import { Card } from '../../web/components/ui/card';
 import { Checkbox } from '../../web/components/ui/checkbox';
 import { Field } from '../../web/components/ui/field';
+import { RecipientPicker, type RecipientKind } from '../../web/components/recipient-picker';
 import { ActionsMenu, MenuItem, MenuSeparator } from '../../web/components/ui/menu';
 import '../../web/app/globals.css';
 import './desktop.css';
@@ -78,17 +101,11 @@ const loadPreview: PreviewLoader = async (item, signal) => {
   return { url: result.downloadUrl };
 };
 const op = () => ({ operationId: crypto.randomUUID() });
-const platforms: Record<string, string> = {
-  WEB: 'Web browser',
-  MACOS: 'Mac',
-  WINDOWS: 'Windows PC',
-  LINUX: 'Linux computer',
-  IOS: 'iPhone or iPad',
-  ANDROID: 'Android device',
-};
 type Confirmation = {
   title: string;
   description: string;
+  /** More about what happens, shown below the description. */
+  details?: ReactNode;
   label: string;
   done?: string;
   run: () => Promise<unknown>;
@@ -105,7 +122,7 @@ function App() {
     appearanceRequest,
   );
   const [section, setSection] = useState('My Drive');
-  const [syncViewRevision, setSyncViewRevision] = useState(0);
+  const [addingSync, setAddingSync] = useState(false);
   const [sharedTab, setSharedTab] = useState<SharedTab>('Received');
   const [incoming, setIncoming] = useState<IncomingContent | null>(null);
   const [invitationRevision, setInvitationRevision] = useState(0);
@@ -148,6 +165,7 @@ function App() {
     [],
   );
   const [modal, setModal] = useState<{ mode: string; item: any } | null>(null);
+  const [recipientKind, setRecipientKind] = useState<RecipientKind>('unknown');
   const [sync, setSync] = useState<any>();
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [storageError, setStorageError] = useState(false);
@@ -186,6 +204,85 @@ function App() {
     setTrail(nextTrail);
     setQuery('');
   }
+  // My Drive › a place (Synced Folders, Backups, Archives) › a device: the open folder's trail
+  // starts below it.
+  const [place, setPlace] = useState<{ place: DrivePlace; key?: string } | null>(null);
+  const [placeData, setPlaceData] = useState<{
+    devices?: Device[];
+    folders?: SyncFolderItem[];
+    backups?: BackupRoot[];
+    usage?: UsageMap;
+    error: boolean;
+  }>({ error: false });
+  const [placeRevision, setPlaceRevision] = useState(0);
+  // My Drive's root shows each place's total too.
+  const placesShown = section === 'My Drive' && (!!place || !trail.length);
+  useEffect(() => {
+    if (section !== 'My Drive') setPlace(null);
+  }, [section]);
+  useEffect(() => {
+    if (!placesShown) return;
+    let live = true;
+    Promise.all([request('/v1/devices'), request('/v1/sync/folders'), request('/v1/backups')])
+      .then(async ([devices, folders, backups]) => {
+        if (!live) return;
+        setPlaceData((previous) => ({
+          ...previous,
+          devices: devices.items,
+          folders: folders.items,
+          backups: backups.items,
+          error: false,
+        }));
+        const ids = drivePlaceOrder.flatMap((target) =>
+          placeFolderIds(target, folders.items, backups.items),
+        );
+        // Sizes fill in afterwards; the folders work without them.
+        const usage = ids.length
+          ? await loadUsage(appearanceRequest, ids).catch(() => undefined)
+          : {};
+        if (live && usage) setPlaceData((previous) => ({ ...previous, usage }));
+      })
+      .catch(() => {
+        if (live) setPlaceData((previous) => ({ ...previous, error: true }));
+      });
+    return () => {
+      live = false;
+    };
+  }, [placesShown, placeRevision]);
+  function goToPlace(next: { place: DrivePlace; key?: string } | null) {
+    setPlace(next);
+    goToFolder([]);
+  }
+  /** My Drive › a place, from anywhere in the app. */
+  function openPlace(target: DrivePlace, key?: string) {
+    setSection('My Drive');
+    goToPlace({ place: target, key });
+  }
+  const groups = place
+    ? placeGroups(place.place, placeData.devices ?? [], placeData.folders, placeData.backups)
+    : [];
+  const placeCrumbs = place && (
+    <>
+      <ChevronRight size={14} />
+      <button
+        aria-current={!place.key ? 'location' : undefined}
+        onClick={() => goToPlace({ place: place.place })}
+      >
+        {drivePlaces[place.place].name}
+      </button>
+      {place.key && (
+        <>
+          <ChevronRight size={14} />
+          <button
+            aria-current={!trail.length ? 'location' : undefined}
+            onClick={() => goToPlace({ ...place })}
+          >
+            {groups.find((entry) => entry.key === place.key)?.name ?? 'Device'}
+          </button>
+        </>
+      )}
+    </>
+  );
 
   async function openDriveItem(item: any) {
     if (item.type !== 'FOLDER') {
@@ -573,12 +670,148 @@ function App() {
     ['My Drive', HardDrive],
     ['Shared', Users],
     ['Trash', Trash2],
-    ['Backups', Archive],
     ['Devices', Laptop],
-    ['Sync', RefreshCw],
     ['Storage', Cloud],
     ['Settings', Settings],
   ] as const;
+  const roots: SyncFolder[] = status.roots;
+  const syncRoots = roots.filter((root) => root.mode === 'sync');
+  const backupRoots = roots.filter((root) => root.mode === 'backup');
+  const jobs = sync?.jobs ?? status.jobs ?? [];
+  const backupDesktop: BackupDesktop = {
+    roots: backupRoots.map((root) => ({ ...root, progress: sync?.progress?.[root.id] })),
+    backup: (id) => bridge.backupNow({ id }),
+    disconnect: (id) => bridge.disconnectBackup({ id }),
+    archive: (id, archived) => bridge.archiveBackup({ id, archived }),
+    setPaused: (root, paused) =>
+      bridge.rootSettings({ id: root.id, paused, excluded: root.excluded ?? [] }),
+    download: ({ itemId, versionId, name }) =>
+      bridge.download({ driveItemId: itemId, versionId, name }),
+    options: (root) => setModal({ mode: 'root', item: root }),
+    refresh: load,
+  };
+  // The open folder's own sync or backup, shown above its files.
+  const localSync = trailId
+    ? syncRoots.find(
+        (root) =>
+          root.remoteId === trailId || `local-sync:${encodeURIComponent(root.id)}:` === trailId,
+      )
+    : undefined;
+  // Folders synced on other devices can be synced here too; shared ones are linked from invitations.
+  const remoteSync =
+    trailId && !localSync
+      ? placeData.folders?.find(
+          (folder) =>
+            folder.id === trailId &&
+            !folder.syncRemovedAt &&
+            (!status.accountId || folder.ownerUserId === status.accountId),
+        )
+      : undefined;
+  const backupFolder =
+    !!trailId &&
+    (backupRoots.some((root) => root.remoteId === trailId) ||
+      !!placeData.backups?.some((root) => root.remoteRootDriveItemId === trailId));
+  const folderHeader = !trailId ? null : localSync || remoteSync ? (
+    <SyncFolderPanel
+      key={trailId}
+      root={localSync}
+      remote={remoteSync}
+      state={sync ?? {}}
+      jobs={jobs}
+      refresh={async () => {
+        await load();
+        setPlaceRevision((value) => value + 1);
+      }}
+      manageStorage={() => setSection('Storage')}
+    />
+  ) : backupFolder ? (
+    <BackupFolderPanel
+      key={trailId}
+      api={backupApi}
+      folderId={trailId}
+      desktop={backupDesktop}
+      onChanged={() => setPlaceRevision((value) => value + 1)}
+    />
+  ) : null;
+  // One line in the sidebar: problems first, then work under way, then all clear.
+  const average = (values: (number | undefined)[]) => {
+    const known = values.filter((value): value is number => value !== undefined);
+    return known.length
+      ? Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)
+      : undefined;
+  };
+  const failingBackups = (placeData.backups ?? []).filter((root) => root.state === 'ERROR');
+  const problems = sync ? syncRequirements(syncRoots, sync, jobs).length : 0;
+  const syncing = sync
+    ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')
+    : [];
+  const backingUp = backupRoots.filter(
+    (root) => !root.paused && sync?.progress?.[root.id] !== undefined,
+  );
+  const folderStatus: { activity: FolderActivity; open: () => void } | null =
+    !sync || !roots.length
+      ? null
+      : problems
+        ? {
+            activity: {
+              tone: 'error',
+              label: problems === 1 ? 'Sync needs attention' : `${problems} sync problems`,
+            },
+            open: () => openPlace('synced', status.deviceId ?? undefined),
+          }
+        : failingBackups.length
+          ? {
+              activity: {
+                tone: 'error',
+                label:
+                  failingBackups.length === 1
+                    ? `${failingBackups[0].localPathDisplayName} needs attention`
+                    : `${failingBackups.length} backups need attention`,
+              },
+              open: () => openPlace('backups'),
+            }
+          : sync.paused
+            ? {
+                activity: { tone: 'paused', label: 'Sync and backups paused' },
+                open: () => setSection('Settings'),
+              }
+            : !sync.online
+              ? {
+                  activity: { tone: 'paused', label: 'Offline · changes wait' },
+                  open: () => openPlace('synced', status.deviceId ?? undefined),
+                }
+              : syncing.length
+                ? {
+                    activity: {
+                      tone: 'busy',
+                      label: 'Syncing…',
+                      percent: average(syncing.map((root) => sync.progress?.[root.id])),
+                    },
+                    open: () => openPlace('synced', status.deviceId ?? undefined),
+                  }
+                : backingUp.length
+                  ? {
+                      activity: {
+                        tone: 'busy',
+                        label:
+                          backingUp.length === 1
+                            ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                            : `Backing up ${backingUp.length} folders…`,
+                        percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                      },
+                      open: () => openPlace('backups', status.deviceId ?? undefined),
+                    }
+                  : {
+                      activity: {
+                        tone: 'ok',
+                        label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                      },
+                      open: () =>
+                        openPlace(
+                          syncRoots.length ? 'synced' : 'backups',
+                          status.deviceId ?? undefined,
+                        ),
+                    };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
@@ -613,6 +846,7 @@ function App() {
               className={`nav-item ${section === name ? 'active' : ''} ${name === 'Devices' ? 'nav-separated' : ''}`}
               onClick={() => {
                 setSection(name);
+                if (name === 'My Drive') setPlace(null);
                 if (name === 'Shared') setSharedTab('Received');
                 setQuery('');
                 goToFolder([]);
@@ -625,6 +859,10 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <FolderActivityStatus
+            activity={folderStatus?.activity ?? null}
+            onOpen={() => folderStatus?.open()}
+          />
           <StorageIndicator
             storage={storage}
             onManage={() => setSection('Storage')}
@@ -658,11 +896,8 @@ function App() {
               state={sync ?? {}}
               jobs={sync?.jobs ?? status.jobs}
               refresh={load}
-              showBanner={section === 'Sync' && !zipProgress}
-              manageFolders={() => {
-                setSection('Sync');
-                setSyncViewRevision((value) => value + 1);
-              }}
+              showBanner={section === 'My Drive' && place?.place === 'synced' && !zipProgress}
+              manageFolders={() => openPlace('synced', status.deviceId ?? undefined)}
               manageStorage={() => setSection('Storage')}
             />
             <AccountMenu
@@ -686,7 +921,7 @@ function App() {
               setUploads((old) => old.filter((u) => !finished.has(u.key)));
             }}
           />
-          {section !== 'Sync' && section !== 'My Drive' && (
+          {section !== 'My Drive' && (
             <div className={`page-heading ${section === 'Shared' ? 'shared-heading' : ''}`}>
               <div>
                 <h1>{section}</h1>
@@ -711,7 +946,66 @@ function App() {
               retry={() => void load().catch(() => {})}
             />
           )}
-          {section === 'My Drive' && (
+          {section === 'My Drive' && place && !trail.length && !query && (
+            <DevicePlace
+              place={place.place}
+              groups={groups}
+              groupKey={place.key ?? null}
+              loading={!placeData.devices && !placeData.error}
+              error={placeData.error}
+              onRetry={() => setPlaceRevision((value) => value + 1)}
+              breadcrumbs={
+                <>
+                  <button onClick={() => goToPlace(null)}>My Drive</button>
+                  {placeCrumbs}
+                </>
+              }
+              usage={placeData.usage}
+              actions={
+                place.place === 'archives' ||
+                (place.key && place.key !== status.deviceId) ? undefined : place.place ===
+                  'synced' ? (
+                  <Button onClick={() => setAddingSync(true)}>
+                    <Plus />
+                    Sync a folder
+                  </Button>
+                ) : (
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      void act(async () => {
+                        if (!(await bridge.chooseRoot({ mode: 'backup' }))) return;
+                        setPlaceRevision((value) => value + 1);
+                        setToast(
+                          'Folder added. Its first backup starts once files have been unchanged for an hour.',
+                        );
+                      })
+                    }
+                  >
+                    <Plus />
+                    Back up a folder
+                  </Button>
+                )
+              }
+              onOpenGroup={(key) => goToPlace({ place: place.place, key })}
+              onOpenFolder={(key, folderId) => {
+                const folder = groups
+                  .find((entry) => entry.key === key)
+                  ?.folders.find((entry) => entry.id === folderId);
+                setPlace({ place: place.place, key });
+                goToFolder([{ id: folderId, name: folder?.name ?? 'Folder' }]);
+              }}
+            />
+          )}
+          {section === 'My Drive' && !query && trail.length > 0 && sync && !folderHeader && (
+            <OpenFolderProgress
+              roots={status.roots}
+              trail={trail}
+              state={sync}
+              jobs={sync.jobs ?? []}
+            />
+          )}
+          {section === 'My Drive' && !(place && !trail.length && !query) && (
             <DriveWorkspace
               onActivity={activity.publish}
               request={appearanceRequest}
@@ -743,9 +1037,20 @@ function App() {
               syncedFolderIds={status.roots
                 .filter((root: any) => root.mode === 'sync' && root.remoteId)
                 .map((root: any) => root.remoteId)}
+              pinned={
+                place
+                  ? undefined
+                  : drivePlacePins(
+                      (target) => goToPlace({ place: target }),
+                      placeSizes(placeData.folders, placeData.backups, placeData.usage),
+                    )
+              }
+              showFolderUsage={!!place}
+              header={folderHeader}
               breadcrumbs={
                 <>
-                  <button onClick={() => goToFolder([])}>My Drive</button>
+                  <button onClick={() => goToPlace(null)}>My Drive</button>
+                  {placeCrumbs}
                   {trail.map((entry, index) => (
                     <span key={entry.id}>
                       <ChevronRight size={14} />
@@ -765,7 +1070,7 @@ function App() {
                 await load();
               }}
               onSyncRemoved={() => goToFolder([])}
-              onRoot={() => goToFolder([])}
+              onRoot={() => goToPlace(null)}
               onReadOnlyChange={setDriveReadOnly}
               onDisconnectBackup={async (item) => {
                 const local = status.roots.find(
@@ -1079,128 +1384,62 @@ function App() {
               </div>
             </SharedTabs>
           )}
-          {section === 'Sync' && (
-            <SyncPage
-              key={syncViewRevision}
-              roots={status.roots}
-              jobs={sync?.jobs ?? status.jobs}
-              state={sync ?? {}}
-              deviceName={status.deviceName}
-              accountId={status.accountId}
-              refresh={load}
-              manageStorage={() => setSection('Storage')}
-              openCloud={(root) => {
-                setSection('My Drive');
-                goToFolder(
-                  root.remoteId
-                    ? [
-                        {
-                          id: root.remoteId,
-                          name: root.cloudPath?.split(' / ').at(-1) ?? root.localPathDisplayName,
-                        },
-                      ]
-                    : [],
-                );
-              }}
-            />
-          )}
-          {section === 'Backups' && (
-            <BackupsPage
-              api={backupApi}
-              desktop={{
-                roots: status.roots.filter((root: { mode: string }) => root.mode === 'backup'),
-                add: () => bridge.chooseRoot({ mode: 'backup' }),
-                backup: (id) => bridge.backupNow({ id }),
-                disconnect: (id) => bridge.disconnectBackup({ id }),
-                archive: (id, archived) => bridge.archiveBackup({ id, archived }),
-                setPaused: (root, paused) =>
-                  bridge.rootSettings({ id: root.id, paused, excluded: root.excluded ?? [] }),
-                download: ({ itemId, versionId, name }) =>
-                  bridge.download({ driveItemId: itemId, versionId, name }),
-                options: (root) => setModal({ mode: 'root', item: root }),
-                refresh: load,
-              }}
-            />
-          )}
           {section === 'Devices' && (
-            <Card
-              className="panel"
-              title="Connected devices"
-              description="Use harbor0 on all your devices. Remove access whenever you need to."
-            >
-              {loading && <ContentSkeleton label="Loading devices" />}
-              {!loading && loadError && !items.length && (
-                <LoadError
-                  compact
-                  onRetry={() => {
-                    setLoadedView('');
-                    void load().catch(() => {});
-                  }}
-                />
-              )}
-              {!loading && !loadError && !items.length && (
-                <EmptyState
-                  compact
-                  icon={<Laptop />}
-                  title="No connected devices"
-                  description="Computers signed in to harbor0 will appear here. Refresh to check for newly connected devices."
-                  actions={
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setLoadedView('');
-                        void load().catch(() => {});
-                      }}
-                    >
-                      Refresh devices
-                    </Button>
-                  }
-                />
-              )}
-
-              {!loading &&
-                items.map((d) => (
-                  <div className="list-row simple-row" key={d.id}>
-                    <span className="icon-tile">
-                      <Laptop aria-hidden="true" />
-                    </span>
-                    <div className="list-row-text">
-                      <strong>
-                        {d.name} {d.id === status.deviceId && <Badge>This computer</Badge>}
-                      </strong>
-                      <small>
-                        {platforms[d.platform] ?? d.platform} ·{' '}
-                        {d.revokedAt
-                          ? 'Revoked'
-                          : d.lastSeenAt
-                            ? `Active · Last seen ${new Date(d.lastSeenAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
-                            : 'Active'}
-                      </small>
-                    </div>
-                    {!d.revokedAt && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          setConfirmation({
-                            title: `Revoke access for ${d.name}?`,
-                            description:
-                              d.id === status.deviceId
-                                ? 'This is the computer you are using. You will be signed out and syncing and backups will stop until you sign in again.'
-                                : 'This device will be signed out and will stop syncing and backing up.',
-                            label: 'Revoke access',
-                            done: 'Device access removed.',
-                            run: () => request(`/v1/devices/${d.id}`, 'DELETE'),
-                          })
-                        }
-                      >
-                        Revoke
-                      </Button>
-                    )}
-                  </div>
-                ))}
-            </Card>
+            <ConnectedDevices
+              devices={loading ? undefined : items}
+              currentId={status.deviceId}
+              loading={loading}
+              error={!!loadError}
+              onRetry={() => {
+                setLoadedView('');
+                void load().catch(() => {});
+              }}
+              onSignOut={(d) =>
+                setConfirmation({
+                  title: `Sign out ${d.name}?`,
+                  description:
+                    d.id === status.deviceId
+                      ? 'This is the computer you’re using. You’ll be signed out, and its sync and backups pause until you sign in again. Nothing is deleted.'
+                      : `${d.name} is signed out of harbor0. Its sync and backups pause, and resume when you sign in on it again. Nothing is deleted.`,
+                  label: 'Sign out',
+                  done: `${d.name} is signed out.`,
+                  run: () => request(`/v1/devices/${d.id}/sign-out`, 'POST', {}),
+                })
+              }
+              onRevoke={(d) =>
+                void act(async () => {
+                  // What revoking stops, so the confirmation can list it.
+                  const [roots, synced] = await Promise.all([
+                    request('/v1/backups'),
+                    request('/v1/sync/folders'),
+                  ]);
+                  setConfirmation({
+                    title: `Revoke ${d.name}?`,
+                    description:
+                      d.id === status.deviceId
+                        ? 'This is the computer you’re using. It’s removed from your account and stops everything it does in harbor0.'
+                        : 'This removes the device and stops everything it does in harbor0.',
+                    details: (
+                      <RevokeDetails
+                        device={d}
+                        backups={(roots.items as BackupRoot[]).filter(
+                          (root) =>
+                            root.state !== 'REMOVED' &&
+                            root.state !== 'ARCHIVED' &&
+                            ownsBackup(d, root),
+                        )}
+                        syncFolders={(synced.items as SyncFolderItem[]).filter((folder) =>
+                          folder.syncDevices.some((entry) => entry.id === d.id),
+                        )}
+                      />
+                    ),
+                    label: 'Revoke device',
+                    done: `${d.name} is revoked.`,
+                    run: () => request(`/v1/devices/${d.id}`, 'DELETE'),
+                  });
+                })
+              }
+            />
           )}
           {section === 'Settings' && (
             <div className="settings-layout">
@@ -1223,6 +1462,50 @@ function App() {
                   </dl>
                 </Card>
               )}
+              <Card
+                className="panel"
+                title="Sync & backups"
+                description="Choose folders to sync or back up in My Drive, under Synced Folders and Backups. Open a folder there to see its status, pause it or change its settings."
+              >
+                <dl className="details">
+                  <dt>On this computer</dt>
+                  <dd>
+                    {sync?.paused
+                      ? 'Paused. Changes wait until you resume.'
+                      : `${syncRoots.length} synced, ${backupRoots.length} backed up`}
+                  </dd>
+                  <dt>Backups</dt>
+                  <dd>A new version is saved about an hour after you stop editing a file.</dd>
+                </dl>
+                <div className="settings-actions">
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(
+                        () => bridge.pause({ paused: !sync?.paused }),
+                        sync?.paused ? 'Sync and backups resumed.' : 'Sync and backups paused.',
+                      )
+                    }
+                  >
+                    {sync?.paused ? <Play /> : <Pause />}
+                    {sync?.paused ? 'Resume sync and backups' : 'Pause sync and backups'}
+                  </Button>
+                  {(['synced', 'backups'] as const).map((target) => {
+                    const Icon = drivePlaces[target].icon;
+                    return (
+                      <Button
+                        key={target}
+                        variant="outline"
+                        onClick={() => openPlace(target, status.deviceId ?? undefined)}
+                      >
+                        <Icon />
+                        {drivePlaces[target].name}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </Card>
               <Card
                 className="panel"
                 title="Desktop settings"
@@ -1277,6 +1560,15 @@ function App() {
           load={loadPreview}
           onClose={() => setModal(null)}
           onDownload={() => void download({ driveItemId: modal.item.id, name: modal.item.name })}
+        />
+      )}
+      {addingSync && (
+        <AddSyncFolderDialog
+          close={() => setAddingSync(false)}
+          refresh={async () => {
+            await load();
+            setPlaceRevision((value) => value + 1);
+          }}
         />
       )}
       {incoming && (
@@ -1393,9 +1685,12 @@ function App() {
             </Field>
           )}
           {modal?.mode === 'send' && (
-            <Field label="To">
-              <Input name="recipient" placeholder="@username or email" required />
-            </Field>
+            <RecipientPicker
+              autoFocus
+              search={(path) => request(path)}
+              allowInvite
+              onKindChange={setRecipientKind}
+            />
           )}
           {modal?.mode === 'root' && (
             <>
@@ -1442,7 +1737,11 @@ function App() {
                   ? 'Empty Trash'
                   : modal?.mode === 'permanent'
                     ? 'Delete permanently'
-                    : 'Save'}
+                    : modal?.mode === 'send'
+                      ? recipientKind === 'invite'
+                        ? 'Send invite'
+                        : 'Send'
+                      : 'Save'}
             </Button>
           </DialogActions>
         </form>
@@ -1455,6 +1754,7 @@ function App() {
         title={confirmation?.title ?? ''}
         description={confirmation?.description}
       >
+        {confirmation?.details}
         {error && <Alert tone="error">{error}</Alert>}
         <DialogActions>
           <Button variant="outline" disabled={busy} onClick={() => setConfirmation(null)}>

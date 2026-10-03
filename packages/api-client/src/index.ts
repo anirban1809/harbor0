@@ -5,6 +5,7 @@ import type {
   UploadInput,
   CompletedPart,
   SyncChange,
+  StorageAuditRow,
 } from '@harbor/contracts';
 export type { paths } from './generated';
 export { proxyBrowserRequest } from './session-proxy';
@@ -62,6 +63,15 @@ export class ApiClient {
   constructor(public request: Transport) {}
   me(): Promise<{ user: User; storage: StorageUsage }> {
     return this.request('/v1/users/me');
+  }
+  storageAuditPage(
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<{ rows: StorageAuditRow[]; storage: StorageUsage; nextCursor: string | null }> {
+    return this.request(
+      `/v1/storage/audit?limit=200${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`,
+      { signal },
+    );
   }
   list(
     parentId: string | null = null,

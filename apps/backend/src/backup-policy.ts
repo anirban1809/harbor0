@@ -73,12 +73,14 @@ export async function assertBackupWrite(
     409,
   );
   const device = await tx.get<Device>(pk(owner), `DEVICE#${context.deviceId}`);
-  const original = await tx.get<Device>(pk(owner), `DEVICE#${root.deviceId}`);
+  // Backups record their installation; older ones are looked up through their first session.
+  const source =
+    root.devicePublicId ??
+    (await tx.get<Device>(pk(owner), `DEVICE#${root.deviceId}`))?.devicePublicId;
   assert(
     device &&
       !device.revokedAt &&
-      (root.deviceId === device.id ||
-        (device.devicePublicId && device.devicePublicId === original?.devicePublicId)),
+      (root.deviceId === device.id || (device.devicePublicId && device.devicePublicId === source)),
     'FORBIDDEN',
     'Only the source computer can append backup versions.',
     403,

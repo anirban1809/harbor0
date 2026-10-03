@@ -24,8 +24,30 @@ export interface Repository {
   query(pk: string, prefix: string, limit?: number, cursor?: string, after?: string): Promise<Page>;
   commit(writes: Write[], checks: Write[]): Promise<void>;
   due(now: string, cursor?: string): Promise<Page>;
+  /** Every account PROFILE's storage fields; a full-table read, so callers cache the result. */
+  scanProfiles(): Promise<ProfileStorage[]>;
 }
+export type ProfileStorage = {
+  id?: string;
+  storageUsedBytes?: number;
+  storageQuotaBytes?: number;
+  storageReservedBytes?: number;
+  trashBytes?: number;
+  purgingBytes?: number;
+  deletedAt?: string;
+};
+const PROFILE_FIELDS = [
+  'id',
+  'storageUsedBytes',
+  'storageQuotaBytes',
+  'storageReservedBytes',
+  'trashBytes',
+  'purgingBytes',
+  'deletedAt',
+] as const;
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
+/** A cursor that resumes a query just after this row. */
+export const rowCursor = (row: Row) => encode({ pk: row.pk, sk: row.sk });
 function decode(cursor: string): Key {
   try {
     return JSON.parse(Buffer.from(cursor, 'base64url').toString());
@@ -137,6 +159,37 @@ export class DynamoRepository implements Repository {
       throw error;
     }
   }
+  async scanProfiles() {
+    // Parallel segments keep a large table within the console Lambda's timeout.
+    const segments = 4;
+    const parts = await Promise.all(
+      Array.from({ length: segments }, async (_, segment) => {
+        const out: ProfileStorage[] = [];
+        let start: Record<string, unknown> | undefined;
+        do {
+          const page = await this.db.send(
+            new ScanCommand({
+              TableName: this.table,
+              Segment: segment,
+              TotalSegments: segments,
+              FilterExpression: 'sk = :profile',
+              ProjectionExpression: PROFILE_FIELDS.map((_, i) => `#d.#f${i}`).join(', '),
+              ExpressionAttributeNames: {
+                '#d': 'data',
+                ...Object.fromEntries(PROFILE_FIELDS.map((f, i) => [`#f${i}`, f])),
+              },
+              ExpressionAttributeValues: { ':profile': 'PROFILE' },
+              ExclusiveStartKey: start,
+            }),
+          );
+          for (const item of page.Items ?? []) out.push((item.data ?? {}) as ProfileStorage);
+          start = page.LastEvaluatedKey;
+        } while (start);
+        return out;
+      }),
+    );
+    return parts.flat();
+  }
   async scanForMaintenance(cursor?: string) {
     return this.db.send(
       new ScanCommand({
@@ -178,6 +231,11 @@ export class MemoryRepository implements Repository {
       ),
       cursor: null,
     };
+  }
+  async scanProfiles() {
+    return [...this.rows.values()]
+      .filter((r) => r.sk === 'PROFILE')
+      .map((r) => structuredClone(r.data) as ProfileStorage);
   }
   async commit(writes: Write[], checks: Write[]) {
     if (writes.length + checks.length > 100)

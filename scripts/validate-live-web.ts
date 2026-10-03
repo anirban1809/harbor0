@@ -7,8 +7,8 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, createTransport } from '@harbor/api-client';
 
 const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
@@ -253,9 +253,12 @@ try {
       });
     }
   } finally {
-    await cognito.send(
-      new AdminDeleteUserCommand({ UserPoolId: output.UserPoolId, Username: email }),
-    );
+    await removeFixtureAccount(cognito, {
+      apiUrl: output.ApiUrl,
+      userPoolId: output.UserPoolId,
+      email,
+      password,
+    });
     await writeFile(
       '.cloud/live-web-validation.json',
       JSON.stringify(

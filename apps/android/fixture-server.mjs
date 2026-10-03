@@ -12,6 +12,25 @@ const bytes = new Map();
 const uploads = new Map();
 const sessions = new Map();
 let appearance = { preference: 'system', preset: 'default', palettes: { light: {}, dark: {} } };
+let profile = { displayName: 'Android test account', username: 'androidtest' };
+const now = () => new Date().toISOString();
+const later = () => new Date(Date.now() + 7 * 86400000).toISOString();
+const transfers = [
+  {
+    id: 'transfer-one',
+    state: 'PENDING',
+    createdAt: now(),
+    expiresAt: later(),
+    totalSizeBytes: 46,
+    savedAt: null,
+    recipientEmail: null,
+    preparationState: 'READY',
+    items: [{ id: 'entry-one', displayName: 'Fixture brief.txt', relativePath: 'Fixture brief.txt', itemType: 'FILE', sizeBytes: 46, mimeType: 'text/plain' }],
+    nextEntryCursor: null,
+    sender: { displayName: 'Bob Chen', username: 'bob' },
+    recipient: { displayName: 'Android test account', username: 'androidtest' },
+  },
+];
 const makeItem = (id, name, type, parentId = null, sizeBytes = 0) => ({
   id,
   name,
@@ -24,6 +43,10 @@ const makeItem = (id, name, type, parentId = null, sizeBytes = 0) => ({
   cloudState: 'AVAILABLE',
   revision: 1,
   deletedAt: null,
+  favorite: false,
+  createdAt: new Date().toISOString(),
+  ownerUserId: 'android-test',
+  currentVersionId: `${id}-v1`,
 });
 items.set('documents', makeItem('documents', 'Documents', 'FOLDER'));
 items.set('welcome', makeItem('welcome', 'Welcome.txt', 'FILE', null, welcome.length));
@@ -43,18 +66,44 @@ items.set('backup-file', {
   backupRootId: 'backup-root',
 });
 bytes.set('backup-file', welcome);
+items.set('archive-folder', { ...makeItem('archive-folder', 'Old projects', 'FOLDER'), backupRootId: 'archive-root' });
+items.set('orphan-folder', { ...makeItem('orphan-folder', 'Tax records', 'FOLDER'), backupRootId: 'orphan-root' });
 items.set('trash-note', {
   ...makeItem('trash-note', 'Old notes.txt', 'FILE', null, 123),
   deletedAt: new Date().toISOString(),
   revision: 2,
 });
+// Backups and Archives in My Drive group roots by device: by device key, by session id, or (here) a device that is gone.
 const backups = [
   {
     id: 'backup-root',
-    deviceName: 'MacBook Pro',
+    deviceId: 'mac-session',
+    deviceName: 'Studio Mac',
+    devicePublicId: 'mac-key',
     localPathDisplayName: 'Design archive',
     remoteRootDriveItemId: 'backup-folder',
     state: 'ACTIVE',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'archive-root',
+    deviceId: 'mac',
+    deviceName: 'Studio Mac',
+    localPathDisplayName: 'Old projects',
+    remoteRootDriveItemId: 'archive-folder',
+    state: 'ARCHIVED',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'orphan-root',
+    deviceId: 'retired-session',
+    deviceName: 'Old laptop',
+    localPathDisplayName: 'Tax records',
+    remoteRootDriveItemId: 'orphan-folder',
+    state: 'ARCHIVED',
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
 ];
@@ -118,21 +167,109 @@ const server = http.createServer(async (req, res) => {
     }
     const access = req.headers.authorization?.replace(/^Bearer /, '');
     if (!sessions.has(access)) return fail(401, 'Sign in to continue.');
+    // Device identity: the app signs a challenge once per sign-in. The fixture only checks its shape.
+    if (path === '/v1/auth/session/challenge')
+      return reply(200, { challenge: randomUUID(), userId: 'android-test' });
+    if (path === '/v1/auth/session') {
+      if (!data.proof?.signature || !data.devicePublicId) return fail(400, 'Missing device proof.');
+      return reply(200, { device: { id: 'android-device', name: data.name, platform: data.platform } });
+    }
+    if (path === '/v1/notifications')
+      return reply(200, {
+        items: [{ id: 'notice-one', type: 'TRANSFER_RECEIVED', data: {}, readAt: null, createdAt: now() }],
+        nextCursor: null,
+      });
+    if (path === '/v1/devices')
+      return reply(200, {
+        items: [
+          { id: 'android-device', name: 'Android emulator', platform: 'ANDROID', status: 'ACTIVE', lastSeenAt: now(), createdAt: now(), revokedAt: null },
+          { id: 'mac', name: 'Studio Mac', platform: 'MACOS', status: 'ACTIVE', devicePublicId: 'mac-key', lastSeenAt: now(), createdAt: now(), revokedAt: null },
+          { id: 'web', name: 'Chrome', platform: 'WEB', status: 'ACTIVE', lastSeenAt: now(), createdAt: now(), revokedAt: null },
+        ],
+      });
+    if (path === '/v1/transfers/received') return reply(200, { items: transfers, nextCursor: null });
+    if (path === '/v1/transfers/sent') return reply(200, { items: [], nextCursor: null });
+    const transferAction = path.match(/^\/v1\/transfers\/([^/]+)\/(accept|decline|save)$/);
+    if (transferAction) {
+      const transfer = transfers.find((t) => t.id === transferAction[1]);
+      if (!transfer || !data.operationId) return fail(400, 'Invalid transfer action.');
+      if (transferAction[2] === 'accept') transfer.state = 'ACCEPTED';
+      if (transferAction[2] === 'decline') transfer.state = 'DECLINED';
+      if (transferAction[2] === 'save') transfer.savedAt = now();
+      return reply(200, { transfer });
+    }
+    if (path === '/v1/shares/received' || path === '/v1/shares/sent') return reply(200, { items: [] });
+    if (path === '/v1/drive/usage') {
+      const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean);
+      if (ids.length > 50) return fail(400, 'Too many ids.');
+      // Every stored version of every non-trashed file in the subtree; one version per fixture file.
+      const usage = (id) => {
+        let bytes = 0, files = 0;
+        for (const item of items.values()) {
+          if (item.parentId !== id || item.deletedAt) continue;
+          if (item.type === 'FOLDER') { const inner = usage(item.id); bytes += inner.bytes; files += inner.files; }
+          else { bytes += item.sizeBytes; files += 1; }
+        }
+        return { bytes, files };
+      };
+      return reply(200, {
+        items: ids.filter((id) => items.has(id)).map((id) => ({ itemId: id, ...usage(id), complete: id !== 'orphan-folder' })),
+      });
+    }
+    const versions = path.match(/^\/v1\/drive\/items\/([^/]+)\/versions$/);
+    if (versions) {
+      const item = items.get(versions[1]);
+      if (!item) return fail(404, 'File not found.');
+      return reply(200, {
+        items: [{ id: `${item.id}-v1`, driveItemId: item.id, versionNumber: 1, sizeBytes: item.sizeBytes, contentHash: 'a'.repeat(64), contentHashAlgorithm: 'SHA256', sourceDeviceId: null, createdAt: item.updatedAt }],
+      });
+    }
+    const favorite = path.match(/^\/v1\/drive\/items\/([^/]+)\/favorite$/);
+    if (favorite) {
+      const item = items.get(favorite[1]);
+      if (!item) return fail(404, 'File not found.');
+      if (data.baseRevision !== item.revision || !data.operationId) return fail(409, 'Refresh this file before changing it.');
+      item.favorite = req.method === 'PUT';
+      item.revision++;
+      return reply(200, { item });
+    }
+    const move = path.match(/^\/v1\/drive\/items\/([^/]+)\/move$/);
+    if (move) {
+      const item = items.get(move[1]);
+      if (!item) return fail(404, 'File not found.');
+      if (data.baseRevision !== item.revision || !data.operationId) return fail(409, 'Refresh this file before changing it.');
+      item.parentId = data.parentId ?? null;
+      item.revision++;
+      return reply(200, { item });
+    }
+    if (path === '/v1/backups/backup-root/restores') return reply(200, { items: [], nextCursor: null });
+    if (path === '/v1/backups/backup-root/runs/run-one/files')
+      return reply(200, {
+        items: [{ relativePath: 'Saved brief.txt', itemId: 'backup-file', versionId: 'backup-file-v1', sizeBytes: welcome.length, modifiedAt: now(), savedAt: now() }],
+        nextCursor: null,
+      });
     if (path === '/v1/auth/logout') {
       sessions.delete(access);
       return reply(200, { loggedOut: true });
     }
     if (path === '/v1/users/me' && req.method === 'PATCH') {
-      if (!['default', 'ocean', 'forest', 'violet', 'sunset'].includes(data.appearance?.preset))
-        return fail(400, 'Invalid appearance.');
-      appearance = data.appearance;
+      if (!data.operationId) return fail(400, 'Missing operation.');
+      if (data.appearance) {
+        if (!['default', 'ocean', 'forest', 'violet', 'sunset'].includes(data.appearance.preset))
+          return fail(400, 'Invalid appearance.');
+        appearance = data.appearance;
+      }
+      if (data.displayName) profile.displayName = data.displayName;
+      if (data.username) profile.username = data.username;
     }
     if (path === '/v1/users/me')
       return reply(200, {
         user: {
           id: 'android-test',
           email: 'android-test@example.test',
-          displayName: 'Android test account',
+          displayName: profile.displayName,
+          username: profile.username,
+          emailVerified: true,
           appearance,
         },
         storage: {
@@ -141,7 +278,18 @@ const server = http.createServer(async (req, res) => {
           reservedBytes: 0,
         },
       });
-    if (path === '/v1/sync/folders') return reply(200, { items: [items.get('sync-root')] });
+    // On-device sync: register this phone and report an empty change feed and no invitations.
+    if (path === '/v1/sync/devices/register' && req.method === 'POST')
+      return reply(200, {
+        device: { id: 'android-device', userId: 'android-test', name: 'Android test', platform: 'ANDROID', appVersion: null,
+          devicePublicId: null, keyFingerprint: null, lastSeenAt: null, createdAt: new Date().toISOString(), revokedAt: null },
+      });
+    if (path === '/v1/sync/folders' && req.method === 'PUT') return reply(200, { ok: true, removedFolderIds: [] });
+    if (path === '/v1/sync/shares') return reply(200, { items: [] });
+    if (path === '/v1/sync/changes') return reply(200, { changes: [], nextCursor: 0, hasMore: false });
+    if (path === '/v1/sync/checkpoints') return reply(200, {});
+    if (/^\/v1\/sync\/items\/[^/]+\/acknowledge$/.test(path)) return reply(200, { ok: true, requiredDevices: 1, confirmedDevices: 1 });
+    if (path === '/v1/sync/folders') return reply(200, { items: [{ ...items.get('sync-root'), syncDevices: [{ id: 'mac', name: 'Studio Mac' }] }] });
     if (path === '/v1/sync/status')
       return reply(200, {
         items: [
@@ -170,11 +318,16 @@ const server = http.createServer(async (req, res) => {
         ],
         nextCursor: null,
       });
-    if (path === '/v1/search' && url.searchParams.get('trash') === 'true')
+    if (path === '/v1/search') {
+      const q = url.searchParams.get('q')?.toLowerCase();
+      const trash = url.searchParams.get('trash') === 'true';
       return reply(200, {
-        items: [...items.values()].filter((i) => i.deletedAt),
+        items: [...items.values()].filter(
+          (i) => !!i.deletedAt === trash && (!q || i.name.toLowerCase().includes(q)),
+        ),
         nextCursor: null,
       });
+    }
     if (path === '/v1/drive/trash/empty') {
       let count = 0;
       for (const item of items.values())
@@ -192,6 +345,12 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET') return reply(200, { item });
       if (data.baseRevision !== item.revision || !data.operationId)
         return fail(409, 'Refresh this file before changing it.');
+      if (req.method === 'PATCH') {
+        if (!data.name?.trim() || /[\\/]/.test(data.name)) return fail(400, 'Choose a valid name.');
+        item.name = data.name;
+        item.revision++;
+        return reply(200, { item });
+      }
       if (mutation[2] === 'permanent') {
         items.delete(item.id);
         bytes.delete(item.id);

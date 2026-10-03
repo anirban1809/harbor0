@@ -111,6 +111,12 @@ export class Journal {
   jobCount(): number {
     return (this.db.prepare('SELECT COUNT(*) AS count FROM jobs').get() as { count: number }).count;
   }
+  jobCounts(): Map<string, number> {
+    const rows = this.db
+      .prepare('SELECT root_id AS rootId, COUNT(*) AS count FROM jobs GROUP BY root_id')
+      .all() as { rootId: string; count: number }[];
+    return new Map(rows.map((row) => [row.rootId, row.count]));
+  }
   files(rootId: string): LocalFile[] {
     return (
       this.db.prepare('SELECT data FROM files WHERE root_id=?').all(rootId) as { data: string }[]

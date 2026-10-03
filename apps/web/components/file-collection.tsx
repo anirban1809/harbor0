@@ -1,5 +1,12 @@
 'use client';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import { File, FileImage, FileText, Folder, Star, Trash2 } from 'lucide-react';
 import { fileDate, fileKind, fileSize, fileSummary, type FileEntry } from '../lib/file-metadata';
 import { LoadMoreFiles } from './load-more-files';
@@ -92,6 +99,11 @@ function FileIdentity({
         <span className="file-entry-label">
           <strong>{item.name}</strong>
           {!compact && <small title={item.mimeType ?? undefined}>{fileKind(item)}</small>}
+          {/* Phones drop the size and date columns, so the row carries them instead. */}
+          <span className="file-entry-mobile-meta" aria-hidden="true">
+            {item.type === 'FOLDER' ? 'Folder' : fileSize(item.sizeBytes)} ·{' '}
+            {fileDate(item.deletedAt ?? item.updatedAt).date}
+          </span>
         </span>
       </button>
       {item.favorite && <Star className="file-favorite" size={14} aria-label="Favorite" />}
@@ -99,8 +111,65 @@ function FileIdentity({
     </>
   );
 }
+/**
+ * A folder-like place listed before the files, such as Synced Folders in My Drive or a device
+ * inside it. It opens like a folder but can't be selected, changed or moved.
+ */
+export type PinnedEntry = {
+  id: string;
+  name: string;
+  icon?: ComponentType<{ 'aria-hidden'?: boolean | 'true' }>;
+  /** A short line under the name, e.g. “3 folders”. */
+  detail?: string;
+  /** Storage it uses, e.g. “4.2 GB”, once known. */
+  size?: string;
+  onOpen: () => void;
+};
+function PinnedIdentity({
+  entry,
+  selectable,
+  grid,
+}: {
+  entry: PinnedEntry;
+  selectable: boolean;
+  grid?: boolean;
+}) {
+  const Icon = entry.icon ?? Folder;
+  return (
+    <div className="file-entry-identity">
+      {selectable && <span className="file-entry-select-spacer" aria-hidden="true" />}
+      <button
+        className="file-entry-open"
+        data-file-id={entry.id}
+        aria-label={[entry.name, entry.detail, entry.size].filter(Boolean).join(', ')}
+        title={entry.name}
+        onClick={entry.onOpen}
+      >
+        <span className="file-entry-icon" data-kind="folder">
+          <Icon aria-hidden="true" />
+        </span>
+        <span className="file-entry-label">
+          <strong>{entry.name}</strong>
+          {/* Cards have no size column, so the size joins the detail line. */}
+          {(entry.detail || (grid && entry.size)) && (
+            <small>{[entry.detail, grid && entry.size].filter(Boolean).join(' · ')}</small>
+          )}
+          {entry.size && (
+            <span className="file-entry-mobile-meta" aria-hidden="true">
+              {entry.size}
+            </span>
+          )}
+        </span>
+      </button>
+    </div>
+  );
+}
 type Props<T extends FileEntry> = {
   items: T[];
+  /** Listed first, in this order, regardless of sorting. */
+  pinned?: PinnedEntry[];
+  /** Storage used by folders, by ID, shown where files show their size. */
+  folderSizes?: Record<string, string>;
   userId?: string;
   grid?: boolean;
   trash?: boolean;
@@ -118,6 +187,8 @@ type Props<T extends FileEntry> = {
 };
 export function FileCollection<T extends FileEntry>({
   items,
+  pinned = [],
+  folderSizes,
   userId,
   grid,
   trash,
@@ -229,6 +300,17 @@ export function FileCollection<T extends FileEntry>({
     <section className={`files-collection ${compact ? 'drive-collection' : ''}`} aria-label="Files">
       {grid ? (
         <div className="files-view-grid file-grid">
+          {pinned.map((entry) => (
+            <article
+              className="card file-entry-card file-entry-pinned"
+              key={entry.id}
+              onDoubleClick={(event) => {
+                if (!(event.target as HTMLElement).closest('button')) entry.onOpen();
+              }}
+            >
+              <PinnedIdentity entry={entry} selectable={false} grid />
+            </article>
+          ))}
           {visibleItems.map((item) => (
             <article
               className={`card file-entry-card ${selected.includes(item.id) ? 'is-selected' : ''}`}
@@ -301,6 +383,38 @@ export function FileCollection<T extends FileEntry>({
             </tr>
           </thead>
           <tbody>
+            {pinned.map((entry) => (
+              <tr
+                key={entry.id}
+                className="file-entry-row file-entry-pinned"
+                onDoubleClick={(event) => {
+                  if (!(event.target as HTMLElement).closest('button')) entry.onOpen();
+                }}
+              >
+                <td>
+                  <PinnedIdentity entry={entry} selectable={!!onSelectionChange} />
+                </td>
+                {renderDevice && <td className="file-device-column" />}
+                {statusColumn && (
+                  <td className="file-sync-column">
+                    <span className="muted">—</span>
+                  </td>
+                )}
+                <td className="file-size-column">
+                  {entry.size ? <span>{entry.size}</span> : <span className="muted">—</span>}
+                </td>
+                <td className="file-modified-column">
+                  <span className="muted">—</span>
+                </td>
+                {!compact && (
+                  <>
+                    <td className="file-created-column" />
+                    <td className="file-owner-column" />
+                  </>
+                )}
+                <td className="file-actions-column" />
+              </tr>
+            ))}
             {visibleItems.map((item) => (
               <tr
                 key={item.id}
@@ -317,7 +431,13 @@ export function FileCollection<T extends FileEntry>({
                 )}
                 <td className="file-size-column">
                   {item.type === 'FOLDER' ? (
-                    <span title="Folder size is not calculated">—</span>
+                    folderSizes?.[item.id] ? (
+                      <span title="Storage used by this folder, every version included">
+                        {folderSizes[item.id]}
+                      </span>
+                    ) : (
+                      <span title="Folder size is not calculated">—</span>
+                    )
                   ) : (
                     <span title={`${item.sizeBytes.toLocaleString()} bytes`}>
                       {fileSize(item.sizeBytes)}

@@ -11,8 +11,30 @@ export const isLive = () => connected;
 export function setLiveConnected(value: boolean) {
   connected = value;
 }
-export function publishLive(message: LiveMessage) {
+// Every hint makes each open view refetch its data, and a device saving many files sends
+// several hints a second. Deliver the first at once, then at most one per window.
+export const LIVE_COALESCE_MS = 5000;
+const coalesced = new Map<
+  LiveMessage['type'],
+  { last: number; timer?: ReturnType<typeof setTimeout> }
+>();
+const dispatch = (message: LiveMessage) =>
   window.dispatchEvent(new CustomEvent<LiveMessage>(liveEvent, { detail: message }));
+export function publishLive(message: LiveMessage) {
+  const state = coalesced.get(message.type) ?? { last: -Infinity };
+  coalesced.set(message.type, state);
+  if (state.timer) return;
+  const wait = state.last + LIVE_COALESCE_MS - Date.now();
+  if (wait <= 0) {
+    state.last = Date.now();
+    dispatch(message);
+    return;
+  }
+  state.timer = setTimeout(() => {
+    state.timer = undefined;
+    state.last = Date.now();
+    dispatch(message);
+  }, wait);
 }
 export function onLive(listener: (message: LiveMessage) => void) {
   const handler = (event: Event) => listener((event as CustomEvent<LiveMessage>).detail);

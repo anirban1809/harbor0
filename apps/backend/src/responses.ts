@@ -124,6 +124,7 @@ export function queryParameters(path: string) {
     path.startsWith('/v1/backups/:id/') ||
     path === '/v1/search' ||
     path === '/v1/notifications' ||
+    path === '/v1/storage/audit' ||
     (path.startsWith('/v1/transfers/') && !path.endsWith('/save'))
   ) {
     query.cursor = z.string();
@@ -146,7 +147,7 @@ export function queryParameters(path: string) {
     ])
       query[name] = z.string();
   if (path === '/v1/users/lookup') query.q = z.string().min(3).max(32);
-  if (path === '/v1/drive/cloud-copies') query.cursor = z.string();
+  if (path === '/v1/drive/usage') query.ids = z.string();
   if (path === '/v1/sync/changes') {
     query.cursor = z.number().int().min(0);
     query.limit = z.number().int().min(1).max(500);

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   finishedKeys,
   mergeUploads,
+  orderActivity,
   summarizeUploads,
+  transferRate,
+  uploadTotals,
   type FileUpload,
 } from '../lib/upload-activity';
 
@@ -64,5 +67,53 @@ describe('mergeUploads and finishedKeys', () => {
     ]);
     // Trip is still waiting on b, so only the failed loose file is finished.
     expect([...finishedKeys(list)]).toEqual(['c']);
+  });
+});
+
+describe('uploadTotals', () => {
+  it('counts files by state and sums bytes, treating finished files as fully loaded', () => {
+    expect(
+      uploadTotals([
+        file('a', { phase: 'done', loaded: 0 }),
+        file('b', { phase: 'uploading', loaded: 30 }),
+        file('c', { phase: 'failed', loaded: 10 }),
+        file('d', { phase: 'paused', loaded: 20 }),
+        file('e'),
+      ]),
+    ).toEqual({ files: 5, done: 1, failed: 1, paused: 1, pending: 2, size: 500, loaded: 160 });
+  });
+});
+
+describe('orderActivity', () => {
+  it('puts transferring rows first and finished rows last, keeping order within a state', () => {
+    const rows = summarizeUploads([
+      file('done', { phase: 'done' }),
+      file('wait'),
+      file('up', { phase: 'uploading' }),
+      file('bad', { phase: 'failed' }),
+      file('hash', { phase: 'hashing' }),
+    ]);
+    expect(orderActivity(rows).map((r) => r.key)).toEqual(['up', 'hash', 'bad', 'wait', 'done']);
+  });
+});
+
+describe('transferRate', () => {
+  it('needs a second of history', () => {
+    expect(transferRate([{ at: 0, loaded: 0 }])).toBeNull();
+    expect(
+      transferRate([
+        { at: 0, loaded: 0 },
+        { at: 500, loaded: 100 },
+      ]),
+    ).toBeNull();
+  });
+  it('averages bytes per second across the window', () => {
+    expect(
+      transferRate([
+        { at: 0, loaded: 0 },
+        { at: 1000, loaded: 500 },
+        { at: 2000, loaded: 2000 },
+      ]),
+    ).toBe(1000);
   });
 });

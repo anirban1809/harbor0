@@ -34,7 +34,11 @@ const renderer: BuildOptions = {
   format: 'esm',
   target: 'chrome132',
   jsx: 'automatic',
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: {
+    'process.env.NODE_ENV': '"production"',
+    // Shared web code reads Next's inlined build ID; the desktop app updates itself instead.
+    'process.env.NEXT_PUBLIC_BUILD_ID': 'undefined',
+  },
 };
 /** The three bundles of the desktop app; `npm run dev` rebuilds them on change. */
 export const bundles = { main, preload, renderer };

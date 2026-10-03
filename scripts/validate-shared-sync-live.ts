@@ -7,8 +7,8 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, ApiError, createTransport } from '@harbor/api-client';
 import { SyncEngine } from '../apps/desktop/src/sync';
 import { Journal, type Root } from '../apps/desktop/src/journal';
@@ -22,7 +22,7 @@ const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGI
 const publicApi = new ApiClient(createTransport(output.ApiUrl));
 const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-live-shared-'));
 const run = randomUUID().replaceAll('-', '').slice(0, 12);
-const created: string[] = [];
+const created: { email: string; password: string }[] = [];
 const clients: {
   api: ApiClient;
   userId: string;
@@ -70,7 +70,7 @@ try {
         ],
       }),
     );
-    created.push(email);
+    created.push({ email, password });
     await cognito.send(
       new AdminSetUserPasswordCommand({
         UserPoolId: output.UserPoolId,
@@ -283,11 +283,14 @@ try {
   } catch (error) {
     cleanupErrors.push((error as Error).message);
   }
-  for (const email of created) {
+  for (const { email, password } of created) {
     try {
-      await cognito.send(
-        new AdminDeleteUserCommand({ UserPoolId: output.UserPoolId, Username: email }),
-      );
+      await removeFixtureAccount(cognito, {
+        apiUrl: output.ApiUrl,
+        userPoolId: output.UserPoolId,
+        email,
+        password,
+      });
     } catch (error) {
       cleanupErrors.push((error as Error).name);
     }

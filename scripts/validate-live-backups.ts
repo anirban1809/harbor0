@@ -8,8 +8,8 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, createTransport } from '@harbor/api-client';
 import { Journal, type Root } from '../apps/desktop/src/journal';
 import { SyncEngine } from '../apps/desktop/src/sync';
@@ -259,9 +259,12 @@ try {
     }
   } finally {
     if (userCreated)
-      await cognito.send(
-        new AdminDeleteUserCommand({ UserPoolId: output.UserPoolId, Username: email }),
-      );
+      await removeFixtureAccount(cognito, {
+        apiUrl: output.ApiUrl,
+        userPoolId: output.UserPoolId,
+        email,
+        password,
+      });
     journal.close();
     await rm(directory, { recursive: true, force: true });
     await writeFile(

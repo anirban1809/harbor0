@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 
 // The Android counterpart of apps/web/components/theme: one set of heights, radii, borders and tones for every screen.
@@ -127,15 +128,18 @@ enum class Variant { Primary, Outline, Ghost, Danger, DangerGhost, Link }
     }
 }
 
-@Composable fun Segmented(options: List<Pair<String, String>>, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+@Composable fun Segmented(options: List<Pair<String, String>>, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier,
+    icons: Map<String, ImageVector> = emptyMap(), hug: Boolean = false) {
     val t = theme
     Row(modifier.clip(RoundedCornerShape(10.dp)).background(t.fill2).padding(3.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         options.forEach { (id, label) ->
             val selected = id == value
             val shape = RoundedCornerShape(7.dp)
-            Box(Modifier.weight(1f).heightIn(min = 38.dp).then(if (selected) Modifier.shadow(1.dp, shape).background(t.surface, shape).border(1.dp, t.text.copy(alpha = .08f), shape) else Modifier)
-                .clip(shape).selectable(selected, role = Role.RadioButton) { onChange(id) }.padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
-                Text(label, style = Type.label, color = if (selected) t.text else t.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row((if (hug) Modifier else Modifier.weight(1f)).heightIn(min = 36.dp).then(if (selected) Modifier.shadow(1.dp, shape).background(t.surface, shape).border(1.dp, t.text.copy(alpha = .08f), shape) else Modifier)
+                .clip(shape).selectable(selected, role = Role.RadioButton) { onChange(id) }.padding(horizontal = if (hug) 14.dp else 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+                icons[id]?.let { Icon(it, null, Modifier.size(17.dp), tint = if (selected) t.text else t.text2) }
+                Text(label, style = Type.label.copy(fontSize = 14.sp), color = if (selected) t.text else t.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -205,38 +209,30 @@ enum class Tone { Neutral, Accent, Success, Warning, Danger }
     }
 }
 
-@Composable fun HMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+@Composable fun HMenu(expanded: Boolean, onDismiss: () -> Unit, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     val card = theme.palette.on(theme.palette.card)
-    DropdownMenu(expanded, onDismiss, shape = RoundedCornerShape(10.dp), containerColor = card.surface, tonalElevation = 0.dp, shadowElevation = 10.dp,
+    DropdownMenu(expanded, onDismiss, modifier.widthIn(min = 220.dp), shape = RoundedCornerShape(14.dp), containerColor = card.surface, tonalElevation = 0.dp, shadowElevation = 12.dp,
         border = BorderStroke(1.dp, card.line)) {
-        CompositionLocalProvider(LocalTokens provides card, LocalContentColor provides card.text) { content() }
+        CompositionLocalProvider(LocalTokens provides card, LocalContentColor provides card.text) { Column(Modifier.padding(horizontal = 6.dp), content = content) }
     }
 }
-@Composable fun HMenuItem(text: String, icon: ImageVector, onClick: () -> Unit, danger: Boolean = false) {
+/** A menu row: at least 44dp tall with an 18dp icon, as in the web phone menus. */
+@Composable fun HMenuItem(text: String, icon: ImageVector? = null, onClick: () -> Unit, modifier: Modifier = Modifier, danger: Boolean = false,
+    enabled: Boolean = true, checked: Boolean? = null) {
     val ink = if (danger) theme.dangerText else theme.text
-    DropdownMenuItem(text = { Text(text, style = Type.button.copy(fontWeight = Type.body.fontWeight), color = ink) }, onClick = onClick,
-        leadingIcon = { Icon(icon, null, Modifier.size(16.dp), tint = if (danger) ink else theme.text2) })
-}
-@OptIn(ExperimentalLayoutApi::class)
-@Composable fun HDialog(title: String, onDismiss: () -> Unit, description: String? = null, actions: @Composable RowScope.() -> Unit, content: (@Composable ColumnScope.() -> Unit)? = null) {
-    Dialog(onDismissRequest = onDismiss) {
-        val shape = RoundedCornerShape(Radius.xl)
-        Sheet(theme.palette.card, Modifier.widthIn(max = 440.dp).fillMaxWidth().shadow(24.dp, shape), shape, border = true) {
-            Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(title, style = Type.h2, modifier = Modifier.semantics { heading() })
-                    description?.let { Text(it, style = Type.sm.copy(lineHeight = Type.body.lineHeight), color = theme.text2) }
-                }
-                content?.invoke(this)
-                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
-            }
-        }
+    Row(modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(Radius.md)).alpha(if (enabled) 1f else .5f)
+        .clickable(enabled = enabled, role = if (checked != null) Role.Checkbox else Role.Button, onClick = onClick).padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        icon?.let { Icon(it, null, Modifier.size(18.dp), tint = if (danger) ink else theme.text2) }
+        Text(text, Modifier.weight(1f), style = Type.body.copy(fontSize = 15.sp), color = ink)
+        if (checked == true) Icon(Lucide.Check, null, Modifier.size(16.dp), tint = theme.accentText)
     }
 }
+@Composable fun HMenuSeparator() = Box(Modifier.padding(vertical = 4.dp).fillMaxWidth().height(1.dp).background(theme.line))
 @Composable fun Toast(text: String, modifier: Modifier = Modifier) {
     val t = theme
     val shape = RoundedCornerShape(10.dp)
-    Row(modifier.padding(16.dp).shadow(10.dp, shape).background(t.text, shape).padding(horizontal = 14.dp, vertical = 10.dp),
+    Row(modifier.padding(horizontal = 12.dp, vertical = 16.dp).shadow(10.dp, shape).background(t.text, shape).padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Lucide.Check, null, Modifier.size(16.dp), tint = t.surface)
         Text(text, style = Type.sm, color = t.surface)

@@ -152,52 +152,48 @@ async function check(page: Page, platform: 'web' | 'desktop') {
   await expect(nav.getByText(/^Recents?$/)).toHaveCount(0);
   await expect(nav.getByText(/^(Received|Sent)$/)).toHaveCount(0);
   await navigate('Received');
-  await expect(page.locator('.transfer-table tbody tr')).toHaveCount(4);
+  await expect(page.locator('.transfer-row')).toHaveCount(4);
   await expect(page.locator('.shared-heading')).toHaveCSS('border-bottom-width', '0px');
-  await expect(page.locator('.transfer-table-scroll')).toHaveCSS('border-top-width', '0px');
-  await expect(page.locator('.transfer-table th').first()).toHaveCSS(
-    'background-color',
-    'rgba(0, 0, 0, 0)',
-  );
-  await expect(page.locator('.transfer-file small')).toHaveCount(0);
-  await expect(page.locator('.transfer-file .file-entry-icon').first()).toHaveCSS('width', '28px');
+  await expect(page.locator('.transfer-table')).toHaveCount(0);
+  await expect(page.locator('.transfer-row .file-entry-icon').first()).toHaveCSS('width', '28px');
   if (platform === 'desktop') await expect(page.locator('.sync-shared-invitations')).toHaveCount(0);
-  await expect(page.locator('.transfer-table th')).toHaveText([
-    'Files',
-    'From',
-    'Size',
-    'Date sent',
-    'Expires',
-    'Status',
-    'Actions',
-  ]);
-  await expect(page.locator('.transfer-table')).toContainText('Preparing files');
+  // Each transfer is one summary line; its files stay collapsed until asked for.
+  await expect(page.locator('.transfer-files')).toHaveCount(0);
+  await expect(page.locator('.transfer-row').first()).toContainText('From Morgan Chen');
+  await expect(page.locator('.transfer-rows')).toContainText('Preparing files');
+  await page
+    .locator('.transfer-row')
+    .filter({ hasText: 'Project assets' })
+    .getByRole('button', { name: 'Show files' })
+    .click();
+  await expect(page.locator('.transfer-files')).toContainText(
+    'A very long project proposal and supporting documentation.pdf',
+  );
   await page.getByRole('button', { name: 'Load more files' }).click();
-  await expect(page.locator('.transfer-table')).toContainText('Additional file.pdf');
+  await expect(page.locator('.transfer-files')).toContainText('Additional file.pdf');
   await expect(page.getByRole('button', { name: 'Load more files' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Accept', exact: true }).click();
-  const pending = page
-    .locator('.transfer-table tbody tr')
-    .filter({ hasText: 'Brand guidelines.pdf' });
+  const pending = page.locator('.transfer-row').filter({ hasText: 'Brand guidelines.pdf' });
   await expect(pending.getByRole('button', { name: 'Save to My Drive' })).toBeVisible();
   await pending.getByRole('button', { name: 'Save to My Drive' }).click();
-  await expect(pending.getByRole('button', { name: 'Saved', exact: true })).toBeDisabled();
+  await expect(pending).toContainText('Saved to My Drive');
+  await expect(pending.getByRole('button', { name: /^Save/ })).toHaveCount(0);
   await pending.getByRole('button', { name: 'Download Brand guidelines.pdf' }).click();
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(page.locator('.transfer-table')).toContainText('Older document.pdf');
+  await expect(page.locator('.transfer-rows')).toContainText('Older document.pdf');
   await page.getByRole('button', { name: 'First page', exact: true }).click();
-  await expect(page.locator('.transfer-table tbody tr')).toHaveCount(4);
+  await expect(page.locator('.transfer-row')).toHaveCount(4);
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
-  await expect(page.locator('.transfer-table')).toContainText('Older document.pdf');
+  await expect(page.locator('.transfer-rows')).toContainText('Older document.pdf');
   await page.getByRole('tab', { name: 'Sent', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Sent', exact: true })).toHaveAttribute(
     'aria-selected',
     'true',
   );
   await expect(page.getByRole('button', { name: 'First page', exact: true })).toHaveCount(0);
-  await expect(page.locator('.transfer-table th').nth(1)).toHaveText('To');
-  await expect(page.locator('.transfer-table')).toContainText('Preparation failed');
-  const outgoing = page.locator('.transfer-table tbody tr').filter({ hasText: 'Welcome.pdf' });
+  await expect(page.locator('.transfer-row').first()).toContainText('To ');
+  await expect(page.locator('.transfer-rows')).toContainText('Preparation failed');
+  const outgoing = page.locator('.transfer-row').filter({ hasText: 'Welcome.pdf' });
   await outgoing.getByRole('button', { name: 'Cancel transfer' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel transfer' }).click();
   await expect(outgoing).toContainText('Cancelled');
@@ -212,6 +208,8 @@ async function check(page: Page, platform: 'web' | 'desktop') {
     ...(platform === 'web' ? ['Notifications'] : ['Backups', 'Sync']),
   ];
   for (const name of pages) {
+    // The sidebar is hidden at phone widths, so navigate from the desktop layout.
+    await page.setViewportSize({ width: 1440, height: 900 });
     await navigate(name);
     await expect(page.locator('main h1')).toHaveText(
       name === 'Sync' ? 'Sync on this computer' : name,

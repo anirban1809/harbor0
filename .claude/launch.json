@@ -1,8 +1,35 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "api", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 8787 },
-    { "name": "web", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:web"], "port": 3000 },
+    {
+      "name": "api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 8787
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:web"],
+      "port": 3000
+    },
+    {
+      "name": "web-local",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "API_URL=http://127.0.0.1:8787",
+        "APP_ORIGIN=http://localhost:3200",
+        "npm",
+        "run",
+        "dev",
+        "-w",
+        "@harbor/web",
+        "--",
+        "-p",
+        "3200"
+      ],
+      "port": 3200
+    },
     {
       "name": "landing",
       "runtimeExecutable": "npm",
@@ -14,6 +41,29 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "cloud:dashboard", "--", "--serve"],
       "port": 4319
+    },
+    {
+      "name": "web-local-3000",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "API_URL=http://127.0.0.1:8787",
+        "APP_ORIGIN=http://localhost:3000",
+        "npm",
+        "run",
+        "dev",
+        "-w",
+        "@harbor/web",
+        "--",
+        "-p",
+        "3000"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "admin",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:admin"],
+      "port": 3300
     }
   ]
 }

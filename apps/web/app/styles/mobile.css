@@ -1,0 +1,596 @@
+/* Phone layout. Below 760px the app swaps the desktop frame for a phone one:
+   a sticky top bar, a bottom tab bar, a floating “New” button on My Drive,
+   list rows instead of wide tables, and bottom sheets instead of centred dialogs.
+   The page scrolls as a document so mobile browser chrome can collapse. */
+
+/* Phone-only pieces stay out of the desktop frame. */
+.topbar-brand,
+.mobile-tabbar,
+.drive-fab,
+.file-entry-mobile-meta {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --gutter: 16px;
+    --control: 40px;
+    --control-sm: 32px;
+    --control-lg: 44px;
+    --topbar-height: 56px;
+    --tabbar-height: 60px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    /* Clearance for anything pinned above the tab bar. */
+    --dock: calc(var(--tabbar-height) + var(--safe-bottom));
+  }
+  :is(a, button, summary, label) {
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 16px keeps iOS Safari from zooming into focused fields. */
+  :is(.input, .select > select, textarea) {
+    font-size: 16px;
+  }
+
+  /* Frame ----------------------------------------------------------------- */
+  .app-shell {
+    display: block;
+    height: auto;
+    min-height: 100dvh;
+    background: var(--background);
+  }
+  .sidebar {
+    display: none;
+  }
+  .main-shell {
+    min-height: 100dvh;
+    margin: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    gap: 4px;
+    height: calc(var(--topbar-height) + var(--safe-top));
+    padding: var(--safe-top) calc(8px + var(--safe-right)) 0 calc(12px + var(--safe-left));
+    border-bottom-color: transparent;
+    background: color-mix(in oklab, var(--surface) 88%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    backdrop-filter: blur(16px) saturate(1.5);
+    transition: border-color var(--ease);
+  }
+  .topbar-brand {
+    display: flex;
+    flex-shrink: 0;
+    margin-right: 4px;
+    border-radius: var(--radius);
+  }
+  .topbar-brand .brand-mark {
+    width: 26px;
+    height: 26px;
+  }
+  .topbar-brand .brand-wordmark,
+  .topbar-theme {
+    display: none;
+  }
+  .search-box {
+    flex: 1;
+    min-width: 0;
+  }
+  .search-box > .input {
+    border-radius: 999px;
+  }
+  .search-box kbd {
+    display: none;
+  }
+  .search-box:has(kbd) > .input {
+    padding-right: 12px;
+  }
+  .topbar-right {
+    gap: 0;
+  }
+  .account-trigger {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-left: 0;
+  }
+  .activity-unread {
+    top: 9px;
+    right: 9px;
+  }
+  .workspace {
+    overflow: visible;
+    padding: 12px calc(var(--gutter) + var(--safe-right)) calc(var(--dock) + 32px)
+      calc(var(--gutter) + var(--safe-left));
+  }
+  .workspace.drive-page {
+    padding-bottom: calc(var(--dock) + 96px);
+  }
+  .page-heading {
+    min-height: 0;
+    margin-bottom: 14px;
+  }
+  .page-heading h1 {
+    font-size: 24px;
+    letter-spacing: -0.025em;
+  }
+  .card {
+    padding: 16px;
+  }
+  .zip-download-status {
+    top: calc(var(--topbar-height) + var(--safe-top) + 8px);
+  }
+
+  /* Bottom tab bar -------------------------------------------------------- */
+  .mobile-tabbar {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 45;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    height: var(--dock);
+    padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    border-top: 1px solid var(--line);
+    background: color-mix(in oklab, var(--background) 90%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    backdrop-filter: blur(16px) saturate(1.5);
+  }
+  .mobile-tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+  .mobile-tab svg {
+    box-sizing: content-box;
+    width: 20px;
+    height: 20px;
+    padding: 4px 18px;
+    border-radius: 999px;
+    transition:
+      background-color var(--ease),
+      color var(--ease);
+  }
+  .mobile-tab:is([aria-current='page'], [data-active]) {
+    color: var(--text);
+  }
+  .mobile-tab:is([aria-current='page'], [data-active]) svg {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  .mobile-tab:focus-visible {
+    outline-offset: -4px;
+    border-radius: var(--radius-lg);
+  }
+  .mobile-tab span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* “More” sheet */
+  .mobile-more-sheet .drawer-body {
+    display: grid;
+    gap: 16px;
+    padding-top: 8px;
+  }
+  .mobile-more-links {
+    display: grid;
+  }
+  .mobile-more-link {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 60px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--line);
+    font-size: var(--text-base);
+  }
+  .mobile-more-link .icon-tile {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+  }
+  .mobile-more-link .icon-tile svg {
+    width: 18px;
+    height: 18px;
+  }
+  .mobile-more-link[aria-current='page'] .icon-tile {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  .mobile-more-theme {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+    font-size: var(--text-base);
+    font-weight: 500;
+  }
+  .mobile-more-sheet .drive-storage {
+    padding: 14px;
+    font-size: var(--text-sm);
+  }
+
+  /* Sheets, menus and toasts -------------------------------------------- */
+  .dialog,
+  .drawer {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-height: calc(100dvh - var(--safe-top) - 24px);
+    border-width: 1px 0 0;
+    border-radius: 20px 20px 0 0;
+    transform: none;
+  }
+  .dialog::before,
+  .drawer::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--fill-3);
+    transform: translateX(-50%);
+  }
+  .dialog {
+    padding: 28px calc(20px + var(--safe-right)) calc(20px + var(--safe-bottom))
+      calc(20px + var(--safe-left));
+  }
+  .dialog[data-starting-style],
+  .dialog[data-ending-style],
+  .drawer[data-starting-style],
+  .drawer[data-ending-style] {
+    opacity: 1;
+    transform: translateY(100%);
+  }
+  .dialog,
+  .drawer {
+    transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  .dialog-close {
+    top: 18px;
+    right: 14px;
+  }
+  .drawer > .dialog-header {
+    padding: 28px 56px 14px 20px;
+  }
+  .drawer-body {
+    padding: 16px 20px calc(20px + var(--safe-bottom));
+  }
+  .drawer:has(.drawer-footer) .drawer-body {
+    padding-bottom: 16px;
+  }
+  .dialog-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .dialog-actions > .btn {
+    height: var(--control-lg);
+  }
+  .drawer-footer > .btn {
+    flex: 1;
+  }
+  .file-preview-tray,
+  .backup-history {
+    height: calc(100dvh - var(--safe-top) - 24px);
+  }
+  .menu {
+    min-width: 220px;
+    padding: 6px;
+    border-radius: 14px;
+    font-size: var(--text-base);
+  }
+  .menu-item {
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+  .menu-item svg {
+    width: 18px;
+    height: 18px;
+  }
+  .account-menu {
+    width: min(300px, calc(100vw - 16px));
+  }
+  .toast {
+    bottom: calc(var(--dock) + 16px);
+    width: auto;
+    max-width: calc(100vw - 24px);
+  }
+  .upload-tray {
+    right: calc(12px + var(--safe-right));
+    bottom: calc(var(--dock) + 12px);
+    left: calc(12px + var(--safe-left));
+    width: auto;
+    max-height: 40vh;
+  }
+  .app-shell:has(.drive-fab:not(:disabled)) .upload-tray {
+    bottom: calc(var(--dock) + 84px);
+  }
+
+  /* My Drive --------------------------------------------------------------- */
+  .drive-tabs {
+    gap: 10px;
+  }
+  .drive-heading .heading-actions {
+    display: contents;
+  }
+  .drive-heading .heading-actions > .btn:not(.drive-fab),
+  .drive-folder-upload {
+    display: none;
+  }
+  .drive-title {
+    flex: 1;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    min-width: 0;
+  }
+  .drive-title h1 {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .drive-location-tabs {
+    flex-shrink: 0;
+  }
+  .drive-fab {
+    position: fixed;
+    right: calc(16px + var(--safe-right));
+    bottom: calc(var(--dock) + 16px);
+    z-index: 44;
+    display: inline-flex;
+    width: 56px;
+    height: 56px;
+    border-radius: 18px;
+    box-shadow:
+      0 8px 24px -6px color-mix(in oklab, var(--primary) 55%, transparent),
+      0 2px 6px rgb(16 18 24 / 0.16);
+  }
+  .drive-fab svg {
+    width: 24px;
+    height: 24px;
+  }
+  .drive-fab:is(:disabled, [data-disabled]),
+  .drive-workspace:has(.drive-selection-actions) .drive-fab {
+    display: none;
+  }
+  .drive-fab-menu {
+    min-width: 230px;
+  }
+  .breadcrumbs,
+  .drive-breadcrumbs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    white-space: nowrap;
+  }
+  .breadcrumbs::-webkit-scrollbar {
+    display: none;
+  }
+  .drive-toolbar {
+    gap: 8px;
+  }
+  .drive-toolbar > .view-switch {
+    margin-left: auto;
+  }
+  /* Filters become one row of chips that scrolls sideways. */
+  .drive-filters {
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    order: 3;
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 2px var(--gutter);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .drive-filters::-webkit-scrollbar {
+    display: none;
+  }
+  .drive-filters > * {
+    flex-shrink: 0;
+  }
+  .drive-filters .select > select,
+  .drive-filters > .btn {
+    height: 34px;
+    border-radius: 999px;
+    font-size: var(--text-sm);
+  }
+  .drive-filters .select > select {
+    padding-left: 14px;
+  }
+  .drive-filters > .btn {
+    padding: 0 12px 0 14px;
+  }
+  /* With files selected, the actions dock above the tab bar. */
+  .drive-selection-actions {
+    position: fixed;
+    right: calc(10px + var(--safe-right));
+    bottom: calc(var(--dock) + 10px);
+    left: calc(10px + var(--safe-left));
+    z-index: 46;
+    flex-wrap: nowrap;
+    justify-content: space-around;
+    gap: 0;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--background);
+    box-shadow: var(--shadow-pop);
+  }
+  .drive-selection-actions > .btn {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    height: 52px;
+    padding: 4px 2px;
+    font-size: 11px;
+  }
+  .drive-selection-actions > .btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  .drive-selection-actions > .btn span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .drive-selection-actions > .btn[aria-haspopup] {
+    flex: 0 0 48px;
+  }
+  .drive-new-folder {
+    flex-wrap: wrap;
+  }
+  .drive-new-folder .input {
+    flex: 1 1 160px;
+  }
+
+  /* File lists: name rows with size and date underneath. ------------------ */
+  .files-table {
+    --table-min-width: 0px;
+  }
+  .files-table
+    :is(
+      .file-size-column,
+      .file-modified-column,
+      .file-created-column,
+      .file-owner-column,
+      .file-sync-column,
+      .file-device-column
+    ) {
+    display: none;
+  }
+  .files-table :is(th, td) {
+    padding-inline: 4px;
+  }
+  .files-table th {
+    height: 40px;
+  }
+  .files-table td {
+    height: 64px;
+  }
+  .files-table .file-actions-column {
+    width: 44px;
+    padding: 0;
+  }
+  .files-table .file-actions-column > .btn {
+    width: 40px;
+    height: 40px;
+  }
+  .file-entry-identity {
+    gap: 10px;
+  }
+  .file-entry-open {
+    flex: 1 1 auto;
+    gap: 12px;
+    min-height: 48px;
+  }
+  .file-entry-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+  }
+  .file-entry-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  .file-entry-label {
+    gap: 2px;
+  }
+  .file-entry-label strong {
+    font-size: 15px;
+  }
+  .file-entry-label small {
+    display: none;
+  }
+  .file-entry-mobile-meta {
+    display: block;
+    color: var(--text-2);
+    font-size: var(--text-xs);
+  }
+  .file-entry-card .file-entry-mobile-meta {
+    display: none;
+  }
+  .files-view-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .file-list-summary {
+    justify-content: center;
+  }
+  .file-toolbar {
+    flex-wrap: nowrap;
+  }
+
+  /* Shared: status sits above the actions, which fill the row. -------------- */
+  .transfer-summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 6px 12px;
+  }
+  .transfer-status {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .transfer-actions {
+    grid-column: 1 / -1;
+    width: auto;
+  }
+  .transfer-sent-date {
+    display: none;
+  }
+  .transfer-actions:empty {
+    display: none;
+  }
+  .transfer-actions > .btn:not([data-size^='icon']) {
+    flex: 1;
+    height: var(--control);
+    font-size: var(--text-sm);
+  }
+  .transfer-files,
+  .transfer-row > .alert {
+    margin-left: 0;
+  }
+
+  /* Other pages ---------------------------------------------------------- */
+  .list-row-actions .btn,
+  .list-row > .btn {
+    flex-shrink: 0;
+  }
+}
+@media (max-width: 400px) {
+  /* Narrow phones give the storage tabs their own full-width row. */
+  .drive-title {
+    flex-wrap: wrap;
+  }
+  .drive-location-tabs {
+    display: flex;
+    width: 100%;
+  }
+  .drive-location-tabs > .tab {
+    flex: 1;
+  }
+}

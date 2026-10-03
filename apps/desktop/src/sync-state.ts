@@ -50,6 +50,8 @@ export type SyncRuntime = {
   queued: number;
   lastSync: string | null;
   active: SyncProgress | null;
+  // Percent complete of the sync or backup under way, by root id; absent when idle.
+  progress?: Record<string, number>;
   issues: SyncIssue[];
   recent: SyncActivityItem[];
 };

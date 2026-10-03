@@ -12,7 +12,12 @@ import { R2Storage } from './storage';
 import { StorageService } from './domain';
 import { createApp } from './api';
 import { Realtime, type RealtimeGateway } from './realtime';
+import { LazyApnsSender, PushDelivery, PushRegistrations } from './push';
 import { proxyBrowserRequest } from '@harbor/api-client';
+import { createAdminApp } from './admin/api';
+import { CognitoDirectory } from './admin/directory';
+import { CognitoStaffAuth } from './admin/staff-auth';
+import type { ObjectStorage } from './storage';
 const configSchema = z.object({
   TABLE_NAME: z.string().min(1),
   COGNITO_USER_POOL_ID: z.string().min(1),
@@ -127,10 +132,69 @@ export function realtimeRuntime() {
       REALTIME_ENDPOINT: z.url().optional(),
     })
     .parse(process.env);
+  const repo = new DynamoRepository(c.TABLE_NAME);
   realtimeInstance ??= new Realtime(
-    new DynamoRepository(c.TABLE_NAME),
+    repo,
     c.REALTIME_URL,
     c.REALTIME_ENDPOINT ? new ApiGatewayRealtime(c.REALTIME_ENDPOINT) : undefined,
+    process.env.APNS_SECRET_ID
+      ? new PushDelivery(
+          new PushRegistrations(repo),
+          new LazyApnsSender(
+            () => apnsCredentials(process.env.APNS_SECRET_ID!),
+            process.env.APNS_BUNDLE_ID ?? 'app.harbor0.ios',
+          ),
+        )
+      : undefined,
   );
   return realtimeInstance;
+}
+
+/** The APNs signing key ({ keyId, teamId, privateKey }); push is off until the secret exists. */
+async function apnsCredentials(secretId: string) {
+  try {
+    const secret = await new SecretsManagerClient({}).send(
+      new GetSecretValueCommand({ SecretId: secretId }),
+    );
+    return z
+      .object({
+        keyId: z.string().min(1),
+        teamId: z.string().min(1),
+        privateKey: z.string().min(1),
+      })
+      .parse(JSON.parse(secret.SecretString!));
+  } catch (error) {
+    if ((error as { name?: string }).name === 'ResourceNotFoundException') return null;
+    throw error;
+  }
+}
+
+let adminInstance: ReturnType<typeof createAdminApp>['app'] | undefined;
+/**
+ * The management console API. It reads and writes the table and administers the customer
+ * pool, but holds no R2 credentials: no console action needs file bytes.
+ */
+export function adminRuntime() {
+  if (adminInstance) return adminInstance;
+  const c = z
+    .object({
+      TABLE_NAME: z.string().min(1),
+      COGNITO_USER_POOL_ID: z.string().min(1),
+      COGNITO_CLIENT_ID: z.string().min(1),
+      STAFF_USER_POOL_ID: z.string().min(1),
+      STAFF_CLIENT_ID: z.string().min(1),
+      ADMIN_ORIGIN: z.union([z.url(), z.literal('')]).default(''),
+    })
+    .parse(process.env);
+  const noStorage = new Proxy({} as ObjectStorage, {
+    get: () => () =>
+      Promise.reject(new Error('The management console has no file storage access.')),
+  });
+  adminInstance = createAdminApp(
+    new StorageService(new DynamoRepository(c.TABLE_NAME), noStorage),
+    new CognitoDirectory(c.COGNITO_USER_POOL_ID, c.COGNITO_CLIENT_ID),
+    new CognitoStaffAuth(c.STAFF_USER_POOL_ID, c.STAFF_CLIENT_ID),
+    { origins: c.ADMIN_ORIGIN ? [c.ADMIN_ORIGIN] : [], secureCookies: true },
+  ).app;
+  return adminInstance;
 }

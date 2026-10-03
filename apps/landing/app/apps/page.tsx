@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 const mac = {
   version: '0.1.1',
   size: '290 MB',
-  url: 'https://d1bpha1d51nhxy.cloudfront.net/downloads/harbor0-0.1.1-mac-arm64.dmg',
+  url: 'https://app.harbor0.com/downloads/harbor0-0.1.1-mac-arm64.dmg',
   sha256: '14cf11492cdf91c335d3051465691b2cecae27711cb6a19356a702dc77e4b755',
 };
 

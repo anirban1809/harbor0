@@ -182,6 +182,26 @@ describe('filesystem consistency', () => {
     });
     expect((await service.download('alice', { driveItemId: f.item.id })).sizeBytes).toBe(6);
   });
+  it('fills trash pages past runs of live items', async () => {
+    const folders = [];
+    for (let i = 0; i < 12; i++)
+      folders.push(
+        (await service.createFolder('alice', { operationId: op(), parentId: null, name: `f${i}` }))
+          .item,
+      );
+    // Item keys sort by id, so trash the ones that land at the end of the scan order.
+    const doomed = [...folders].sort((a, b) => a.id.localeCompare(b.id)).slice(-3);
+    for (const f of doomed)
+      await service.mutate('alice', f.id, { operationId: op(), baseRevision: 1, action: 'trash' });
+    const first = await service.browseSpecial('alice', { trash: 'true' }, 2);
+    expect(first.items).toHaveLength(2);
+    expect(first.nextCursor).toBeTruthy();
+    const rest = await service.browseSpecial('alice', { trash: 'true' }, 2, first.nextCursor!);
+    expect([...first.items, ...rest.items].map((i) => i.id).sort()).toEqual(
+      doomed.map((f) => f.id).sort(),
+    );
+    expect(rest.nextCursor).toBeNull();
+  });
   it('preserves old file versions and checks revision at content commit', async () => {
     const a = await uploaded();
     const r = await service.createUpload('alice', {
@@ -375,6 +395,64 @@ describe('authenticated transfers and sharing', () => {
     await expect(service.download('bob', { driveItemId: a.item.id })).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+  });
+});
+describe('recipient search and contacts', () => {
+  it('matches username prefixes and exact emails, never the searcher', async () => {
+    await service.ensureUser({
+      ...bob,
+      id: 'bobby',
+      email: 'bobby@example.test',
+      username: 'bobby',
+    });
+    const prefix = await service.searchUsers('alice', '@bo');
+    expect(prefix.users.map((u) => u.username).sort()).toEqual(['bob', 'bobby']);
+    expect(prefix.users[0]).not.toHaveProperty('email');
+    expect((await service.searchUsers('bob', 'bo')).users.map((u) => u.username)).toEqual([
+      'bobby',
+    ]);
+    expect((await service.searchUsers('alice', 'b')).users).toEqual([]);
+    expect((await service.searchUsers('alice', 'BOB@example.test')).users).toMatchObject([
+      { username: 'bob' },
+    ]);
+    // Partial emails do not match, so addresses cannot be guessed letter by letter.
+    expect((await service.searchUsers('alice', 'bob@example')).users).toEqual([]);
+    expect((await service.searchUsers('alice', 'nobody@example.test')).users).toEqual([]);
+  });
+  it('ranks people by how often files are exchanged, in both directions', async () => {
+    await service.ensureUser({
+      ...bob,
+      id: 'carol',
+      email: 'carol@example.test',
+      username: 'carol',
+    });
+    const a = await uploaded();
+    const send = (value: string) =>
+      service.createTransfer('alice', {
+        operationId: op(),
+        recipient: { type: 'USERNAME', value },
+        items: [{ driveItemId: a.item.id }],
+      });
+    await send('carol');
+    await send('bob');
+    await send('bob');
+    expect((await service.contacts('alice')).users).toMatchObject([
+      { username: 'bob', exchangeCount: 2 },
+      { username: 'carol', exchangeCount: 1 },
+    ]);
+    expect((await service.contacts('bob')).users).toMatchObject([
+      { username: 'alice', exchangeCount: 2 },
+    ]);
+    // An invitation counts once the recipient signs up and claims it.
+    await service.createTransfer('alice', {
+      operationId: op(),
+      recipient: { type: 'EMAIL', value: 'dave@example.test' },
+      items: [{ driveItemId: a.item.id }],
+    });
+    expect((await service.contacts('alice')).users).toHaveLength(2);
+    await service.ensureUser({ ...bob, id: 'dave', email: 'dave@example.test', username: 'dave' });
+    await service.claimPending('dave');
+    expect((await service.contacts('dave')).users).toMatchObject([{ username: 'alice' }]);
   });
 });
 describe('API security contract', () => {
@@ -642,7 +720,7 @@ describe('metadata-only trash', () => {
     expect(await service.permanentDelete('alice', item.id, input)).toEqual(result);
   });
 
-  it('empties every page, replays each batch safely, and leaves live and other users’ items alone', async () => {
+  it('empties the whole trash in one replayable request and leaves live and other users’ items alone', async () => {
     for (let i = 0; i < 23; i++) {
       const { item } = await service.createFolder('alice', {
         operationId: op(),
@@ -665,22 +743,113 @@ describe('metadata-only trash', () => {
         throw new Error('No storage I/O');
       },
     });
-    let cursor: string | undefined;
-    let count = 0;
-    let pages = 0;
-    do {
-      const input = { operationId: op(), ...(cursor ? { cursor } : {}) };
-      const page = await service.emptyTrash('alice', input);
-      expect(await service.emptyTrash('alice', input)).toEqual(page);
-      count += page.count;
-      pages++;
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    expect(pages).toBeGreaterThan(1);
-    expect(count).toBe(23);
+    const input = { operationId: op() };
+    const result = await service.emptyTrash('alice', input);
+    expect(result.nextCursor).toBeNull();
+    expect(await service.emptyTrash('alice', input)).toEqual(result);
     expect((await service.browseSpecial('alice', { trash: 'true' })).items).toHaveLength(0);
     expect((await service.list('alice', null)).items.map((i) => i.id)).toEqual([live.id]);
     expect((await service.browseSpecial('bob', { trash: 'true' })).items).toHaveLength(1);
-    expect((await service.emptyTrash('alice', { operationId: op() })).count).toBe(0);
+    await drain();
+    expect((await service.browseSpecial('alice', { trash: 'true' })).items).toHaveLength(0);
+    expect((await repo.query(userPK('alice'), 'ITEM#')).rows.map((r) => r.sk)).toEqual([
+      `ITEM#${live.id}`,
+    ]);
+    expect((await service.browseSpecial('bob', { trash: 'true' })).items).toHaveLength(1);
+  });
+});
+/** Runs background jobs until none are due. */
+async function drain() {
+  for (let i = 0; i < 20 && (await repo.due(new Date().toISOString())).rows.length; i++)
+    await service.runJobs();
+  expect((await repo.due(new Date().toISOString())).rows).toHaveLength(0);
+}
+const ledger = async () => {
+  const u = (await repo.get({ pk: userPK('alice'), sk: 'PROFILE' }))!.data as {
+    storageUsedBytes: number;
+    trashBytes?: number;
+    purgingBytes?: number;
+  };
+  return { used: u.storageUsedBytes, trash: u.trashBytes ?? 0, purging: u.purgingBytes ?? 0 };
+};
+describe('instant permanent deletion', () => {
+  const trash = async (item: { id: string; revision: number }) =>
+    (
+      await service.mutate('alice', item.id, {
+        operationId: op(),
+        baseRevision: item.revision,
+        action: 'trash',
+      })
+    ).item;
+  const folder = async (name: string, parentId: string | null = null) =>
+    (await service.createFolder('alice', { operationId: op(), parentId, name })).item;
+
+  it('frees a deleted file’s bytes in the request and keeps the ledger exact after the purge', async () => {
+    const kept = (await uploaded('kept.txt', 'keep')).item;
+    const { item } = await uploaded('big.txt', 'x'.repeat(100));
+    const trashed = await trash(item);
+    expect(await ledger()).toEqual({ used: 104, trash: 100, purging: 0 });
+    await service.permanentDelete('alice', item.id, {
+      operationId: op(),
+      baseRevision: trashed.revision,
+    });
+    expect((await service.me('alice')).storage.usedBytes).toBe(4);
+    expect(await ledger()).toEqual({ used: 4, trash: 0, purging: 100 });
+    await drain();
+    expect(await ledger()).toEqual({ used: 4, trash: 0, purging: 0 });
+    expect((await service.list('alice', null)).items.map((i) => i.id)).toEqual([kept.id]);
+  });
+
+  it('measures trashed folders, frees them when emptied, and undoes the measure on restore', async () => {
+    const outer = await folder('Outer');
+    const inner = await folder('Inner', outer.id);
+    await uploaded('a.txt', 'a'.repeat(10), outer.id);
+    await uploaded('b.txt', 'b'.repeat(20), inner.id);
+    const loose = (await uploaded('c.txt', 'c'.repeat(5))).item;
+    const kept = (await uploaded('d.txt', 'd')).item;
+    // A file trashed on its own inside a folder that is trashed later counts once.
+    const nested = (await uploaded('e.txt', 'e'.repeat(7), inner.id)).item;
+    await trash(nested);
+    const trashedOuter = await trash(outer);
+    await trash(loose);
+    await drain();
+    expect(await ledger()).toEqual({ used: 43, trash: 42, purging: 0 });
+
+    const restored = (
+      await service.mutate('alice', outer.id, {
+        operationId: op(),
+        baseRevision: trashedOuter.revision,
+        action: 'restore',
+      })
+    ).item;
+    expect(await ledger()).toEqual({ used: 43, trash: 12, purging: 0 });
+    await trash(restored);
+    await drain();
+    expect(await ledger()).toEqual({ used: 43, trash: 42, purging: 0 });
+
+    await service.emptyTrash('alice', { operationId: op() });
+    expect((await service.me('alice')).storage.usedBytes).toBe(1);
+    expect((await service.browseSpecial('alice', { trash: 'true' })).items).toHaveLength(0);
+    await drain();
+    expect(await ledger()).toEqual({ used: 1, trash: 0, purging: 0 });
+    expect((await service.list('alice', null)).items.map((i) => i.id)).toEqual([kept.id]);
+    await expect(
+      service.mutate('alice', loose.id, { operationId: op(), baseRevision: 99, action: 'restore' }),
+    ).rejects.toMatchObject({ code: 'ITEM_NOT_FOUND' });
+  });
+
+  it('keeps items trashed after emptying, and frees a folder emptied before it was measured', async () => {
+    const outer = await folder('Outer');
+    await uploaded('a.txt', 'a'.repeat(10), outer.id);
+    await trash(outer);
+    // Emptying before the measure ran: its bytes leave the ledger as the measure finds them.
+    await service.emptyTrash('alice', { operationId: op() });
+    const later = await trash((await uploaded('later.txt', 'later')).item);
+    expect(await ledger()).toEqual({ used: 15, trash: 5, purging: 0 });
+    await drain();
+    expect(await ledger()).toEqual({ used: 5, trash: 5, purging: 0 });
+    expect(
+      (await service.browseSpecial('alice', { trash: 'true' })).items.map((i) => i.id),
+    ).toEqual([later.id]);
   });
 });

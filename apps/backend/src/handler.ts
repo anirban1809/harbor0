@@ -1,8 +1,11 @@
 import { handle, type LambdaEvent, type LambdaContext } from 'hono/aws-lambda';
 import type { DynamoDBStreamEvent } from 'aws-lambda';
-import { runtime, realtimeRuntime } from './runtime';
+import { runtime, realtimeRuntime, adminRuntime } from './runtime';
 export async function handler(event: LambdaEvent, context: LambdaContext) {
   return handle((await runtime()).app)(event, context);
+}
+export async function admin(event: LambdaEvent, context: LambdaContext) {
+  return handle(adminRuntime())(event, context);
 }
 export async function jobs() {
   const r = await runtime();

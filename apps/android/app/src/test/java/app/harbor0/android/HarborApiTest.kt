@@ -35,6 +35,34 @@ class HarborApiTest {
         assertEquals("test@example.test", body["email"]!!.jsonPrimitive.content)
         assertTrue(api.signedIn.value); assertNotNull(store.value)
     }
+    @Test fun loginProvesDeviceKeyWithSignedChallenge() = runBlocking {
+        val pair = java.security.KeyPairGenerator.getInstance("EC").apply {
+            initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        }.generateKeyPair()
+        val key = DeviceKey(pair.public.encoded, pair.private)
+        val signed = HarborApi(server.url("/").toString(), store, deviceKeys = object: DeviceKeyStore {
+            override fun key(account: String) = key.also { assertEquals("user-1", account) }
+        })
+        server.enqueue(json(tokens))
+        server.enqueue(json("""{"challenge":"nonce","userId":"user-1","expiresAt":"2030-01-01T00:00:00Z"}"""))
+        server.enqueue(json("{}"))
+        signed.login("a@b.test", "secret", "Pixel")
+        assertEquals("/v1/auth/login", server.takeRequest().path)
+        val challenge = server.takeRequest()
+        assertEquals("/v1/auth/session/challenge", challenge.path)
+        assertEquals("Bearer access", challenge.getHeader("Authorization"))
+        val body = harborJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals(key.fingerprint, body["devicePublicId"]!!.jsonPrimitive.content)
+        assertEquals("Pixel", body["name"]!!.jsonPrimitive.content)
+        val proof = body["proof"]!!.jsonObject
+        val decode = { name: String -> java.util.Base64.getUrlDecoder().decode(proof[name]!!.jsonPrimitive.content) }
+        val publicKey = java.security.KeyFactory.getInstance("EC").generatePublic(java.security.spec.X509EncodedKeySpec(decode("publicKey")))
+        val valid = java.security.Signature.getInstance("SHA256withECDSA").run {
+            initVerify(publicKey); update("harbor0-device-v1\nnonce\nuser-1\n${key.fingerprint}".toByteArray()); verify(decode("signature"))
+        }
+        assertTrue(valid)
+        assertTrue(store.value!!.deviceProven)
+    }
     @Test fun failedPersistenceNeverSignsIn() = runBlocking {
         store.failSave = true
         assertTrue(runCatching { login() }.isFailure)
@@ -145,5 +173,15 @@ class HarborApiTest {
             val abort = server.takeRequest()
             assertEquals("DELETE", abort.method); assertEquals("/v1/uploads/abort", abort.path)
         } finally { directory.deleteRecursively() }
+    }
+    @Test fun syncFoldersAndDevicesDecodeForSyncedFolders() = runBlocking {
+        login(); server.takeRequest()
+        server.enqueue(json("""{"items":[{"id":"f1","name":"Photos","type":"FOLDER","syncDevices":[{"id":"mac","name":"Studio Mac"}]}],"nextCursor":null}"""))
+        server.enqueue(json("""{"items":[{"id":"mac","name":"Studio Mac","platform":"MACOS","status":"ACTIVE","devicePublicId":"k1"},{"id":"w","name":"Chrome","platform":"WEB","status":"ACTIVE"}]}"""))
+        val folders = api.all<DriveItem>("/v1/sync/folders")
+        val devices = api.get<Page<Device>>("/v1/devices").items
+        assertEquals(listOf("mac"), folders.single().syncDevices.map { it.id })
+        assertEquals("ACTIVE", devices[0].status); assertFalse(devices[0].isPhone)
+        assertEquals("/v1/sync/folders", server.takeRequest().path)
     }
 }

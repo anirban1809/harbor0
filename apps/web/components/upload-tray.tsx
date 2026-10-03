@@ -1,7 +1,25 @@
-import { Check, File as FileIcon, Folder, Pause, Play, X } from 'lucide-react';
-import { summarizeUploads, type FileUpload, type UploadActivity } from '../lib/upload-activity';
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  File as FileIcon,
+  Folder,
+  Pause,
+  Play,
+  RotateCw,
+  X,
+} from 'lucide-react';
+import { useRef, useState } from 'react';
+import {
+  orderActivity,
+  summarizeUploads,
+  transferRate,
+  uploadTotals,
+  type FileUpload,
+  type RateSample,
+  type UploadActivity,
+} from '../lib/upload-activity';
 import { Button } from './ui/button';
-import { Progress } from './ui/progress';
 
 const bytes = (n: number) =>
   n < 1000
@@ -14,15 +32,22 @@ const bytes = (n: number) =>
 
 const count = (n: number) => `${n} ${n === 1 ? 'file' : 'files'}`;
 
+const remaining = (seconds: number) =>
+  seconds < 60
+    ? `${Math.max(1, Math.round(seconds))} s left`
+    : seconds < 3600
+      ? `${Math.round(seconds / 60)} min left`
+      : `${(seconds / 3600).toFixed(1)} h left`;
+
 function detail(a: UploadActivity) {
   const amount = `${bytes(a.loaded)} of ${bytes(a.size)}`;
   if (a.kind === 'file')
     return {
-      queued: 'Waiting…',
-      hashing: 'Preparing file…',
+      queued: `Waiting · ${bytes(a.size)}`,
+      hashing: 'Preparing…',
       uploading: amount,
       paused: `Paused · ${amount}`,
-      done: 'Uploaded',
+      done: bytes(a.size),
       failed: a.error ?? 'Upload failed',
     }[a.phase];
   const failed = a.filesFailed ? ` · ${a.filesFailed} failed` : '';
@@ -32,9 +57,41 @@ function detail(a: UploadActivity) {
     hashing: `${files} · ${amount}${failed}`,
     uploading: `${files} · ${amount}${failed}`,
     paused: `Paused · ${files}${failed}`,
-    done: `${count(a.files)} uploaded`,
+    done: `${count(a.files)} · ${bytes(a.size)}`,
     failed: `${a.filesFailed} of ${count(a.files)} failed${a.error ? ` · ${a.error}` : ''}`,
   }[a.phase];
+}
+
+function Bar({ value, max, label }: { value: number; max: number; label: string }) {
+  const percent = max ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div
+      className="progress-track"
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(percent)}
+    >
+      <span style={{ width: `${percent}%` }} />
+    </div>
+  );
+}
+
+/** Keeps a few seconds of byte totals while uploads run, to estimate speed and time left. */
+function useRate(loaded: number, running: boolean) {
+  const samples = useRef<RateSample[]>([]);
+  if (!running) {
+    samples.current = [];
+    return null;
+  }
+  const now = Date.now();
+  const last = samples.current.at(-1);
+  // A cancelled upload drops bytes from the total; start the window over.
+  if (last && loaded < last.loaded) samples.current = [];
+  samples.current.push({ at: now, loaded });
+  samples.current = samples.current.filter((s) => now - s.at <= 6000);
+  return transferRate(samples.current);
 }
 
 /**
@@ -54,88 +111,158 @@ export function UploadTray({
   onResume?: (keys: string[]) => void;
   onCancel?: (keys: string[]) => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const totals = uploadTotals(uploads);
+  const running = totals.pending > 0;
+  const rate = useRate(totals.loaded, running);
   if (!uploads.length) return null;
-  const activity = summarizeUploads(uploads);
-  const running = activity.filter((a) => !['done', 'failed'].includes(a.phase)).length;
+  const activity = orderActivity(summarizeUploads(uploads));
+  const finished = activity.filter((a) => a.phase === 'done' || a.phase === 'failed').length;
+  const failedKeys = uploads.filter((u) => u.phase === 'failed').map((u) => u.key);
+  const openKeys = uploads.filter((u) => u.phase !== 'done').map((u) => u.key);
+
+  const title = running
+    ? `Uploading ${count(totals.pending + totals.paused)}`
+    : totals.paused
+      ? `${count(totals.paused)} paused`
+      : totals.failed
+        ? `${totals.failed} of ${count(totals.files)} failed`
+        : `${count(totals.done)} uploaded`;
+  const summary = running
+    ? [
+        `${totals.done} of ${totals.files} done`,
+        `${bytes(totals.loaded)} of ${bytes(totals.size)}`,
+        rate && `${bytes(rate)}/s`,
+        rate && remaining((totals.size - totals.loaded) / rate),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : `${bytes(totals.size)} total`;
+
   return (
-    <aside className="floating-card upload-tray" aria-label="Uploads" aria-live="polite">
-      <div className="upload-title">
-        <strong>
-          {running
-            ? `Uploading ${running} ${running === 1 ? 'item' : 'items'}`
-            : activity.some((a) => a.phase === 'failed')
-              ? 'Some uploads failed'
-              : 'Uploads complete'}
-        </strong>
+    <aside
+      className="floating-card upload-tray"
+      aria-label="Uploads"
+      data-collapsed={collapsed}
+      data-state={running ? 'running' : totals.failed ? 'failed' : 'done'}
+    >
+      <header className="upload-head">
+        <div className="upload-head-text" aria-live="polite">
+          <strong>
+            {!running &&
+              !totals.paused &&
+              (totals.failed ? (
+                <AlertCircle size={16} className="upload-failed-icon" aria-hidden="true" />
+              ) : (
+                <Check size={16} className="upload-done" aria-hidden="true" />
+              ))}
+            {title}
+          </strong>
+          <small>{summary}</small>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={collapsed ? 'Show uploads' : 'Hide uploads'}
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Expand' : 'Collapse'}
+          className="upload-collapse"
+          onClick={() => setCollapsed((c) => !c)}
+        >
+          <ChevronDown />
+        </Button>
         <Button
           variant="ghost"
           size="icon-sm"
           aria-label="Dismiss finished uploads"
           title="Dismiss finished uploads"
-          disabled={running === activity.length}
+          disabled={!finished}
           onClick={onDismiss}
         >
           <X />
         </Button>
-      </div>
-      <div className="upload-list">
-        {activity.map((a) => {
-          const Icon = a.kind === 'folder' ? Folder : FileIcon;
-          const resumable = a.phase === 'paused' || a.phase === 'failed';
-          return (
-            <div className="upload-entry" key={a.key} data-phase={a.phase}>
-              <div>
-                <span className="upload-name">
-                  <Icon size={16} aria-hidden="true" />
-                  <strong title={a.name}>{a.name}</strong>
-                </span>
-                <span>
-                  {a.phase === 'done' ? (
-                    <Check size={16} className="upload-done" aria-label="Uploaded" />
-                  ) : resumable ? (
-                    onResume && (
+      </header>
+      {running && <Bar value={totals.loaded} max={totals.size} label="Overall upload progress" />}
+      {!collapsed && (
+        <>
+          <ul className="upload-list">
+            {activity.map((a) => {
+              const Icon = a.kind === 'folder' ? Folder : FileIcon;
+              const resumable = a.phase === 'paused' || a.phase === 'failed';
+              const transferring =
+                a.phase === 'uploading' || a.phase === 'hashing' || a.phase === 'paused';
+              return (
+                <li className="upload-entry" key={a.key} data-phase={a.phase}>
+                  <span className="upload-icon" aria-hidden="true">
+                    <Icon size={16} />
+                  </span>
+                  <div className="upload-body">
+                    <strong title={a.name}>{a.name}</strong>
+                    <small>{detail(a)}</small>
+                    {transferring && (
+                      <Bar value={a.loaded} max={a.size} label={`${a.name} progress`} />
+                    )}
+                  </div>
+                  <span className="upload-actions">
+                    {a.phase === 'done' ? (
+                      <Check size={16} className="upload-done" aria-label="Uploaded" />
+                    ) : resumable ? (
+                      onResume && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`${a.phase === 'failed' ? 'Retry' : 'Resume'} ${a.name}`}
+                          title={a.phase === 'failed' ? 'Retry' : 'Resume'}
+                          onClick={() => onResume(a.keys)}
+                        >
+                          {a.phase === 'failed' ? <RotateCw /> : <Play />}
+                        </Button>
+                      )
+                    ) : (
+                      onPause && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Pause ${a.name}`}
+                          title="Pause"
+                          onClick={() => onPause(a.keys)}
+                        >
+                          <Pause />
+                        </Button>
+                      )
+                    )}
+                    {a.phase !== 'done' && onCancel && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={`${a.phase === 'failed' ? 'Retry' : 'Resume'} ${a.name}`}
-                        title={a.phase === 'failed' ? 'Retry' : 'Resume'}
-                        onClick={() => onResume(a.keys)}
+                        aria-label={`Cancel ${a.name}`}
+                        title="Cancel"
+                        onClick={() => onCancel(a.keys)}
                       >
-                        <Play />
+                        <X />
                       </Button>
-                    )
-                  ) : (
-                    onPause && (
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Pause ${a.name}`}
-                        title="Pause"
-                        onClick={() => onPause(a.keys)}
-                      >
-                        <Pause />
-                      </Button>
-                    )
-                  )}
-                  {a.phase !== 'done' && onCancel && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Cancel ${a.name}`}
-                      title="Cancel"
-                      onClick={() => onCancel(a.keys)}
-                    >
-                      <X />
-                    </Button>
-                  )}
-                </span>
-              </div>
-              <Progress value={a.loaded} max={a.size || 1} />
-              <small>{detail(a)}</small>
-            </div>
-          );
-        })}
-      </div>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {((failedKeys.length > 0 && onResume) || (openKeys.length > 1 && onCancel)) && (
+            <footer className="upload-foot">
+              {failedKeys.length > 0 && onResume && (
+                <Button variant="ghost" size="sm" onClick={() => onResume(failedKeys)}>
+                  <RotateCw /> Retry failed
+                </Button>
+              )}
+              {openKeys.length > 1 && onCancel && (
+                <Button variant="ghost" size="sm" onClick={() => onCancel(openKeys)}>
+                  Cancel all
+                </Button>
+              )}
+            </footer>
+          )}
+        </>
+      )}
     </aside>
   );
 }

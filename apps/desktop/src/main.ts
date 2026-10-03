@@ -30,6 +30,7 @@ import {
 } from '@harbor/api-client';
 import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
+import { DeviceKey } from './device-key';
 import { SyncEngine } from './sync';
 import { syncView } from './sync-view';
 import { FolderDiskUsageCache } from './folder-disk-usage';
@@ -83,6 +84,13 @@ let notificationError: string | null = null;
 const localSelections = new Map<string, string>();
 const rendererPath = path.join(__dirname, 'renderer/index.html');
 const securePath = () => path.join(app.getPath('userData'), 'credentials.bin');
+// Revoking this computer stops its sync and backups for good: the next sign-in starts fresh.
+// Signing it out only pauses them, so its folders are kept for when it signs in again.
+let revokedJournal: Journal | undefined;
+function noteRevoked(error: unknown) {
+  if (error instanceof ApiError && error.code === 'DEVICE_REVOKED' && accountReady)
+    revokedJournal = journal;
+}
 const session = new DesktopSession({
   async persist(saved) {
     if (
@@ -110,6 +118,13 @@ const session = new DesktopSession({
     accountReady = false;
     localSelections.clear();
     stoppingSync = Promise.all([stoppingSync, previous?.stop()]).then(() => {});
+    const revoked = revokedJournal;
+    revokedJournal = undefined;
+    if (revoked)
+      // Forget the folders once the engine has stopped. Only bookkeeping goes; files stay.
+      stoppingSync = stoppingSync.then(() => {
+        for (const root of revoked.roots()) revoked.removeRoot(root.id);
+      });
     window?.webContents.send('harbor:signed-out');
   },
   async renew(refreshToken) {
@@ -120,12 +135,15 @@ const session = new DesktopSession({
       body: JSON.stringify({ refreshToken }),
     });
     const data = await response.json();
-    if (!response.ok)
-      throw new ApiError(
+    if (!response.ok) {
+      const error = new ApiError(
         data.error?.code ?? 'REQUEST_FAILED',
         data.error?.message ?? 'Could not renew your session. Try again.',
         response.status,
       );
+      noteRevoked(error);
+      throw error;
+    }
     return data;
   },
 });
@@ -138,6 +156,7 @@ const api = new ApiClient(async (endpoint, init) => {
   try {
     return await transport(endpoint, init);
   } catch (error) {
+    noteRevoked(error);
     if (isSessionError(error)) await session.invalidate();
     throw error;
   }
@@ -145,6 +164,13 @@ const api = new ApiClient(async (endpoint, init) => {
 async function connected() {
   const { user } = await api.me();
   journal = profiles.select(user.id);
+  const deviceKey = DeviceKey.load(journal, {
+    seal: (value) => safeStorage.encryptString(value).toString('base64'),
+    open: (sealed) => safeStorage.decryptString(Buffer.from(sealed, 'base64')),
+  });
+  const { challenge }: { challenge: string } = await api.request('/v1/auth/session/challenge', {
+    method: 'POST',
+  });
   const response = await api.request('/v1/auth/session', {
     method: 'POST',
     body: {
@@ -155,8 +181,9 @@ async function connected() {
           : process.platform === 'win32'
             ? 'WINDOWS'
             : 'LINUX',
-      devicePublicId: journal.devicePublicId(),
+      devicePublicId: deviceKey.devicePublicId,
       appVersion: app.getVersion(),
+      proof: deviceKey.prove(challenge, user.id),
     },
   });
   journal.set('deviceId', response.device.id);

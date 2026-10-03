@@ -99,3 +99,17 @@ it('moves items out of the source and into the destination while preserving unre
     ),
   ).toEqual([]);
 });
+it('prunes listings while keeping catalogs, and stops stale loads from repopulating', async () => {
+  const cache = new BrowserCache<string>();
+  cache.set('/v1/backups', 'catalog');
+  cache.set('/v1/drive/folders/root/children', 'listing');
+  let finish!: (value: string) => void;
+  const inflight = cache.load('/v1/search?q=a', () => new Promise((r) => (finish = r)));
+  await Promise.resolve();
+  cache.prune((key) => key.startsWith('/v1/backups'));
+  finish('stale');
+  await inflight;
+  expect(cache.get('/v1/backups')).toBe('catalog');
+  expect(cache.get('/v1/drive/folders/root/children')).toBeUndefined();
+  expect(cache.get('/v1/search?q=a')).toBeUndefined();
+});

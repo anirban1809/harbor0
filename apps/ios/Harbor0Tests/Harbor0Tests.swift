@@ -105,6 +105,53 @@ final class Harbor0Tests: XCTestCase {
         XCTAssertEqual(store.value?.tokens.refreshToken, "refresh")
     }
 
+    func testLoginProvesDeviceKeyWithSignedChallenge() async throws {
+        struct MemoryKeys: DeviceKeyStore {
+            let key = P256.Signing.PrivateKey()
+            func key(for account: String) throws -> DeviceKey { DeviceKey(key) }
+        }
+        let keys = MemoryKeys()
+        let store = MemoryCredentials()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubProtocol.self]
+        let api = HarborAPI(baseURL: URL(string: "https://test.harbor.invalid")!, session: URLSession(configuration: config), credentials: store, deviceKeys: keys)
+        let response = json(tokens)
+        var calls: [String] = []
+        var registration: [String: Any] = [:]
+        StubProtocol.handler = { request in
+            calls.append(request.url!.path)
+            switch request.url!.path {
+            case "/v1/auth/session/challenge":
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+                return (200, Data(#"{"challenge":"nonce","userId":"user-1","expiresAt":"2030-01-01T00:00:00Z"}"#.utf8))
+            case "/v1/auth/session":
+                let stream = request.httpBodyStream!
+                stream.open(); defer { stream.close() }
+                var bytes = [UInt8](repeating: 0, count: 4096)
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                registration = try JSONSerialization.jsonObject(with: Data(bytes.prefix(count))) as! [String: Any]
+                return (200, Data("{}".utf8))
+            default: return (200, response)
+            }
+        }
+        try await api.login(email: "a@b.com", password: "secret", deviceName: "iPhone")
+        XCTAssertEqual(calls, ["/v1/auth/login", "/v1/auth/session/challenge", "/v1/auth/session"])
+        XCTAssertEqual(store.value?.deviceProven, true)
+        let fingerprint = DeviceKey(keys.key).fingerprint
+        XCTAssertEqual(registration["devicePublicId"] as? String, fingerprint)
+        XCTAssertEqual(registration["platform"] as? String, "IOS")
+        let proof = registration["proof"] as! [String: String]
+        func decode(_ value: String) -> Data {
+            var text = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            while text.count % 4 != 0 { text += "=" }
+            return Data(base64Encoded: text)!
+        }
+        let publicKey = try P256.Signing.PublicKey(derRepresentation: decode(proof["publicKey"]!))
+        let signature = try P256.Signing.ECDSASignature(derRepresentation: decode(proof["signature"]!))
+        let message = Data("harbor0-device-v1\nnonce\nuser-1\n\(fingerprint)".utf8)
+        XCTAssertTrue(publicKey.isValidSignature(signature, for: message))
+    }
+
     func testKeychainFailureDoesNotEnterApp() async throws {
         let store = MemoryCredentials(); store.shouldFail = true
         let api = client(store)
@@ -259,5 +306,28 @@ final class Harbor0Tests: XCTestCase {
         let item = DriveItem(id: "corrupt", parentId: nil, type: "FILE", name: "corrupt.txt", mimeType: "text/plain", sizeBytes: 3, updatedAt: "", backupRootId: nil, cloudState: nil)
         do { _ = try await FileTransfers(api: api).download(item) { _, _ in }; XCTFail("Corrupt download accepted") }
         catch { XCTAssertTrue(error.localizedDescription.contains("integrity check")) }
+    }
+
+    func testUsageTotalSumsUniqueFolderIDs() {
+        let usage = ["a": FolderUsage(itemId: "a", bytes: 4_000_000_000, files: 3, complete: true),
+                     "b": FolderUsage(itemId: "b", bytes: 200_000_000, files: 2, complete: true)]
+        // A folder synced on two devices (or listed twice) counts once.
+        let total = UsageTotal.sum(["a", "b", "a"], usage: usage)
+        XCTAssertEqual(total, UsageTotal(bytes: 4_200_000_000, files: 5, complete: true))
+        XCTAssertEqual(total?.label, Format.size(4_200_000_000))
+        XCTAssertEqual(total?.short, Format.size(4_200_000_000))
+        XCTAssertEqual(UsageTotal.sum([String](), usage: usage), UsageTotal(bytes: 0, files: 0, complete: true))
+        // Sizes fill in only once every folder has loaded.
+        XCTAssertNil(UsageTotal.sum(["a", "missing"], usage: usage))
+    }
+
+    func testPartialUsageShowsAtLeast() {
+        let usage = ["a": FolderUsage(itemId: "a", bytes: 4_000_000_000, files: 3, complete: true),
+                     "big": FolderUsage(itemId: "big", bytes: 200_000_000, files: 9, complete: false)]
+        let total = UsageTotal.sum(["a", "big"], usage: usage)
+        XCTAssertEqual(total?.complete, false)
+        XCTAssertEqual(total?.bytes, 4_200_000_000)
+        XCTAssertEqual(total?.label, "At least " + Format.size(4_200_000_000))
+        XCTAssertEqual(total?.short, Format.size(4_200_000_000) + "+")
     }
 }

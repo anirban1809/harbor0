@@ -108,19 +108,14 @@ export const syncItemStatusSchema = z.object({
   pendingItems: z.number().int().min(0),
 });
 export type SyncItemStatus = z.infer<typeof syncItemStatusSchema>;
-export const cloudCopySchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  rootId: z.string(),
-  state: z.enum(['SAVING', 'COMPLETED', 'FAILED']),
-  waiting: z.boolean(),
-  error: z.string().optional(),
-  createdAt: z.string(),
-  mode: z.enum(['SNAPSHOT', 'SYNC']).default('SNAPSHOT'),
-  syncStatus: z.enum(['SYNCING', 'SYNCED', 'WAITING', 'ERROR', 'STOPPED']).optional(),
-  updatedAt: z.string().optional(),
+/** Storage a folder's files use, every stored version included; a lower bound if incomplete. */
+export const folderUsageSchema = z.object({
+  itemId: id,
+  bytes: z.number().int().min(0),
+  files: z.number().int().min(0),
+  complete: z.boolean(),
 });
-export type CloudCopy = z.infer<typeof cloudCopySchema>;
+export type FolderUsage = z.infer<typeof folderUsageSchema>;
 export const itemSchema = z.object({
   backupRootId: z.string().optional(),
   syncRemovedAt: z.string().nullable().optional(),
@@ -163,10 +158,28 @@ export const deviceSchema = z.object({
   platform,
   appVersion: z.string().nullable(),
   devicePublicId: z.string().nullable(),
+  // SHA-256 (base64url) of the installation's public key, once it has proven possession.
+  keyFingerprint: z.string().nullable().default(null),
   lastSeenAt: z.string().nullable(),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
+  // Signed out pauses sync and backups until the next sign-in; revoked removes the device.
+  status: z.enum(['ACTIVE', 'SIGNED_OUT', 'REVOKED']).optional(),
 });
+// Installations hold an ECDSA P-256 key (Secure Enclave / Android Keystore / OS keychain)
+// and sign a single-use, session-bound challenge to claim their devicePublicId.
+export const deviceProofSchema = z
+  .object({
+    // SPKI DER, base64url.
+    publicKey: z.string().min(1).max(512),
+    challenge: z.string().min(1).max(128),
+    // ECDSA signature over deviceProofMessage(), base64url: ASN.1 DER, or raw r‖s from browsers.
+    signature: z.string().min(1).max(256),
+  })
+  .strict();
+export type DeviceProof = z.infer<typeof deviceProofSchema>;
+export const deviceProofMessage = (challenge: string, userId: string, devicePublicId: string) =>
+  ['harbor0-device-v1', challenge, userId, devicePublicId].join('\n');
 export const manifestEntrySchema = z.object({
   id: z.string(),
   sourceDriveItemId: z.string(),
@@ -203,6 +216,28 @@ export const storageSchema = z.object({
   usedBytes: z.number(),
   reservedBytes: z.number(),
   availableBytes: z.number(),
+});
+// One stored file version, the unit storage is charged in. `countedBytes` is what the version
+// adds to `usedBytes` (0 for legacy content held only on synced devices).
+export const storageAuditRowSchema = z.object({
+  itemId: z.string(),
+  versionId: z.string(),
+  path: z.string(),
+  location: z.enum(['MY_DRIVE', 'BACKUP', 'SYNC', 'TRASH', 'DELETING']),
+  locationDetail: z.string().nullable(),
+  state: z.enum(['CURRENT', 'PREVIOUS_VERSION', 'RETAINED_FOR_TRANSFER', 'ON_DEVICES_ONLY']),
+  versionNumber: z.number(),
+  sizeBytes: z.number(),
+  countedBytes: z.number(),
+  contentHash: z.string(),
+  uploadedAt: z.string(),
+  uploadedFrom: z.string().nullable(),
+});
+export type StorageAuditRow = z.infer<typeof storageAuditRowSchema>;
+export const storageAuditPageSchema = z.object({
+  rows: z.array(storageAuditRowSchema),
+  storage: storageSchema,
+  nextCursor: z.string().nullable(),
 });
 export const changeSchema = z.object({
   sequence: z.number(),

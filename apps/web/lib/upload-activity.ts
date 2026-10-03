@@ -84,3 +84,66 @@ export function finishedKeys(uploads: FileUpload[]): Set<string> {
       .flatMap((a) => a.keys),
   );
 }
+
+export type UploadTotals = {
+  files: number;
+  done: number;
+  failed: number;
+  paused: number;
+  /** Files still queued or transferring. */
+  pending: number;
+  size: number;
+  loaded: number;
+};
+
+/** File-level totals across every upload in the card, for the header summary. */
+export function uploadTotals(uploads: FileUpload[]): UploadTotals {
+  const totals = {
+    files: uploads.length,
+    done: 0,
+    failed: 0,
+    paused: 0,
+    pending: 0,
+    size: 0,
+    loaded: 0,
+  };
+  for (const u of uploads) {
+    totals.size += u.size;
+    totals.loaded += u.phase === 'done' ? u.size : u.loaded;
+    if (u.phase === 'done') totals.done++;
+    else if (u.phase === 'failed') totals.failed++;
+    else if (u.phase === 'paused') totals.paused++;
+    else totals.pending++;
+  }
+  return totals;
+}
+
+const rank: Record<UploadPhase, number> = {
+  uploading: 0,
+  hashing: 0,
+  failed: 1,
+  paused: 2,
+  queued: 3,
+  done: 4,
+};
+
+/** Rows in display order: transferring first, then failed, paused, waiting, finished. */
+export function orderActivity(activity: UploadActivity[]): UploadActivity[] {
+  return activity
+    .map((a, i) => [a, i] as const)
+    .sort(([a, i], [b, j]) => rank[a.phase] - rank[b.phase] || i - j)
+    .map(([a]) => a);
+}
+
+export type RateSample = { at: number; loaded: number };
+
+/** Bytes per second over the samples, or null until there's at least a second of history. */
+export function transferRate(samples: RateSample[]): number | null {
+  if (samples.length < 2) return null;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const seconds = (last.at - first.at) / 1000;
+  if (seconds < 1) return null;
+  const rate = (last.loaded - first.loaded) / seconds;
+  return rate > 0 ? rate : null;
+}

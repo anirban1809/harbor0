@@ -5,7 +5,6 @@ import {
   Download,
   Send,
   FolderInput,
-  CloudUpload,
   Trash2,
   Star,
   Pencil,
@@ -13,24 +12,33 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  FolderPlus,
+  FolderUp,
   LayoutGrid,
   List,
   Plus,
   X,
 } from 'lucide-react';
-import type { CloudCopy, DriveItem, StorageUsage, SyncItemStatus } from '@harbor/contracts';
+import type { DriveItem, StorageUsage, SyncItemStatus } from '@harbor/contracts';
 import type { Transport } from '@harbor/api-client';
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { browserSession, applyOptimisticItems, type OptimisticChange } from '../lib/browser-cache';
 import { useDebouncedValue } from '../lib/use-debounced-value';
 import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { LoadMoreFiles } from './load-more-files';
+import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { driveLocations, type DriveLocation } from '../lib/drive-locations';
 import { operation } from '@harbor/api-client';
 import { defaultDriveFilters, driveView } from '../lib/drive-view';
 import { isLive, onLive } from '../lib/live-updates';
 import { fileDate, fileKind, fileSize } from '../lib/file-metadata';
-import { FileCollection, FileCollectionSkeleton, FileLoadError } from './file-collection';
+import { loadUsage, usageLabel, type UsageMap } from '../lib/folder-usage';
+import {
+  FileCollection,
+  FileCollectionSkeleton,
+  FileLoadError,
+  type PinnedEntry,
+} from './file-collection';
 import { EmptyState } from './empty-state';
 import type { ActivityUpdate } from './activity-notifications';
 import { Button } from './ui/button';
@@ -38,7 +46,6 @@ import { Input } from './ui/input';
 import { Dialog, DialogActions, Drawer } from './ui/dialog';
 import { Alert } from './ui/alert';
 import { Badge } from './ui/badge';
-import { Radio } from './ui/checkbox';
 import { Field } from './ui/field';
 import {
   ActionsMenu,
@@ -53,7 +60,7 @@ import {
 } from './ui/menu';
 import { Segmented } from './ui/segmented';
 import { Select } from './ui/select';
-import { Tab, TabList, TabPanel, Tabs } from './ui/tabs';
+import { useSessionEnd } from '../lib/session-guard';
 
 type Item = DriveItem & {
   location?: DriveLocation;
@@ -64,6 +71,14 @@ type Item = DriveItem & {
   syncDevices?: { id: string; name: string }[];
 };
 type Trail = { id: string; name: string }[];
+/** An item this tab just created, shown until a listing loaded after it includes it. */
+export type AddedItem = DriveItem & { addedAt: number };
+// Folder catalogs and item lookups change rarely; listings refetch on every pushed change.
+const CATALOG_MS = 60_000;
+const catalogPath = (path: string) =>
+  path.startsWith('/v1/sync/folders') ||
+  path.startsWith('/v1/backups') ||
+  path.startsWith('/v1/drive/items/');
 type Props = {
   request: Transport;
   onActivity: (update: ActivityUpdate) => void;
@@ -76,6 +91,9 @@ type Props = {
   storage?: StorageUsage | null;
   refreshKey?: unknown;
   pendingItems?: Item[];
+  addedItems?: AddedItem[];
+  /** While true, pushed changes are this tab's own work and the parent refreshes afterwards. */
+  holdLive?: () => boolean;
   syncedFolderIds?: string[];
   localSyncDevices?: Record<string, { id: string; name: string }[]>;
   canOpenDeviceCopy?: boolean;
@@ -91,8 +109,19 @@ type Props = {
   onReadOnlyChange?: (readOnly: boolean) => void;
   onRoot: () => void;
   onDisconnectBackup?: (item: DriveItem) => Promise<unknown>;
+  /** Folder-like places listed first at the root, e.g. Synced Folders. */
+  pinned?: PinnedEntry[];
+  /** Show the storage folders use, e.g. inside Synced Folders, Backups and Archives. */
+  showFolderUsage?: boolean;
+  /** The page heading, e.g. Sync when a synced folder is open. */
+  title?: string;
+  /** Shown under the breadcrumbs, e.g. the status and controls of an open backup folder. */
+  header?: ReactNode;
 };
 const noPending: Item[] = [];
+const noAdded: AddedItem[] = [];
+const notHeld = () => false;
+const noPinned: PinnedEntry[] = [];
 async function allItems<T extends { id: string } = Item>(
   request: Transport,
   path: string,
@@ -128,7 +157,11 @@ export function DriveWorkspace({
   storage,
   refreshKey,
   pendingItems = noPending,
+  addedItems = noAdded,
+  holdLive = notHeld,
   syncedFolderIds = [],
+  pinned = noPinned,
+  showFolderUsage = false,
   onOpen,
   canOpenDeviceCopy = false,
   onUpload,
@@ -142,6 +175,8 @@ export function DriveWorkspace({
   onRoot,
   onReadOnlyChange,
   onDisconnectBackup,
+  title = 'My Drive',
+  header,
 }: Props) {
   const query = useDebouncedValue(searchQuery);
   const lastRefresh = useRef(refreshKey);
@@ -156,7 +191,11 @@ export function DriveWorkspace({
   const [refreshing, setRefreshing] = useState(false);
   const syncRemovedCallback = useRef(onSyncRemoved);
   syncRemovedCallback.current = onSyncRemoved;
+  // My Drive lists cloud items; a backup or sync folder opened by link still shows its files.
   const [activeTab, setActiveTab] = useState<DriveLocation>('Cloud');
+  useEffect(() => {
+    if (!parentId) setActiveTab('Cloud');
+  }, [parentId]);
   const [backupFolders, setBackupFolders] = useState<Item[]>([]);
   const [backupRoots, setBackupRoots] = useState<BackupRoot[]>([]);
   const [catalogError, setCatalogError] = useState(false);
@@ -176,14 +215,15 @@ export function DriveWorkspace({
   const [syncStatusError, setSyncStatusError] = useState(false);
   const [syncFoldersError, setSyncFoldersError] = useState(false);
   const [error, setError] = useState('');
+  // Requests fail while the signed-out dialog is up; it explains the failure instead.
+  const sessionEnd = useSessionEnd();
   function setNotice(message: string) {
     onActivity({ id: crypto.randomUUID(), message, status: 'info' });
   }
-  const [cloudCopies, setCloudCopies] = useState<CloudCopy[]>([]);
-  const [copyStatusError, setCopyStatusError] = useState(false);
-  const copyConnectionInterrupted = useRef(false);
-  const copyStates = useRef(new Map<string, CloudCopy['state']>());
-  const copyOperations = useRef(new Map<string, string>());
+  const held = useRef(holdLive);
+  held.current = holdLive;
+  // When the listing shown was requested; items added before then are already in it.
+  const [loadedAt, setLoadedAt] = useState(0);
   const changedCallback = useRef(onChanged);
   changedCallback.current = onChanged;
   const [revision, setRevision] = useState(0);
@@ -203,103 +243,13 @@ export function DriveWorkspace({
   const [metadataError, setMetadataError] = useState('');
   const [detailLocation, setDetailLocation] = useState('Loading…');
   const [sharing, setSharing] = useState('Loading…');
+  const [recipientKind, setRecipientKind] = useState<RecipientKind>('unknown');
   const [moveTrail, setMoveTrail] = useState<Trail>([]);
   const [moveFolders, setMoveFolders] = useState<Item[]>([]);
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveError, setMoveError] = useState('');
-  const location = ['My Drive', ...trail.map((entry) => entry.name)].join(' / ');
+  const location = [title, ...trail.map((entry) => entry.name)].join(' / ');
   const pendingFolder = parentId?.startsWith('local-sync:') ?? false;
-  useEffect(() => {
-    const controller = new AbortController();
-    let fetching = false;
-    async function refreshCopies() {
-      if (fetching) return;
-      fetching = true;
-      try {
-        const copies = await allItems<CloudCopy>(
-          request,
-          '/v1/drive/cloud-copies',
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        const completed = copies.some(
-          (copy) => copy.state === 'COMPLETED' && copyStates.current.get(copy.id) === 'SAVING',
-        );
-        for (const copy of copies) copyStates.current.set(copy.id, copy.state);
-        setCloudCopies(
-          copies
-            .filter(
-              (copy) =>
-                copy.mode === 'SYNC' ||
-                copy.state === 'SAVING' ||
-                Date.parse(copy.createdAt) > Date.now() - 86400_000,
-            )
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        );
-        setCopyStatusError(false);
-        if (completed) {
-          session.data.clear();
-          setRevision((value) => value + 1);
-          changedCallback.current();
-        }
-      } catch {
-        if (!controller.signal.aborted) setCopyStatusError(true);
-      } finally {
-        fetching = false;
-      }
-    }
-    void refreshCopies();
-    const timer = window.setInterval(() => void refreshCopies(), 5000);
-    return () => {
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [request]);
-  useEffect(() => {
-    for (const copy of cloudCopies) {
-      onActivity({
-        id: `cloud-copy:${copy.id}`,
-        createdAt: copy.createdAt,
-        status:
-          copy.state === 'FAILED' || copy.syncStatus === 'ERROR' || copy.syncStatus === 'STOPPED'
-            ? 'error'
-            : copy.state === 'SAVING' || (copy.mode === 'SYNC' && copy.syncStatus !== 'SYNCED')
-              ? 'progress'
-              : 'success',
-        message:
-          copy.state === 'COMPLETED'
-            ? copy.mode === 'SYNC'
-              ? copy.syncStatus === 'ERROR' || copy.syncStatus === 'STOPPED'
-                ? `“${copy.name}”: ${copy.error ?? 'Sync has stopped. Check your linked device.'}`
-                : copy.syncStatus === 'WAITING'
-                  ? `“${copy.name}”: waiting for a linked device to sync files.`
-                  : copy.syncStatus === 'SYNCED'
-                    ? `“${copy.name}” is kept synced with your local folder.`
-                    : `Updating “${copy.name}” from your local folder…`
-              : `“${copy.name}” saved in My Drive.`
-            : copy.state === 'FAILED'
-              ? `Could not create “${copy.name}”. ${copy.error ?? 'Try Copy to cloud again.'}`
-              : copy.waiting
-                ? `Copying “${copy.name}”: waiting for files from a linked device. Keep a synced device online.`
-                : `Copying “${copy.name}” to My Drive…`,
-      });
-    }
-    if (copyStatusError && cloudCopies.some((copy) => copy.state === 'SAVING')) {
-      copyConnectionInterrupted.current = true;
-      onActivity({
-        id: 'cloud-copy-connection',
-        status: 'error',
-        message: 'Cloud copy progress is temporarily unavailable. Reconnecting…',
-      });
-    } else if (!copyStatusError && copyConnectionInterrupted.current) {
-      copyConnectionInterrupted.current = false;
-      onActivity({
-        id: 'cloud-copy-connection',
-        status: 'success',
-        message: 'Cloud copy progress is connected again.',
-      });
-    }
-  }, [cloudCopies, copyStatusError, onActivity]);
   useEffect(() => {
     try {
       setGrid(localStorage.getItem('harbor-drive-view') === 'grid');
@@ -350,6 +300,7 @@ export function DriveWorkspace({
       setBackupRoots(cached?.backupRoots ?? []);
     }
     if (cached?.activeTab && parentId) setActiveTab(cached.activeTab);
+    if (!sameView || cached) setLoadedAt(cached?.loadedAt ?? 0);
     setSyncFoldersError(false);
     let knownFolders: Item[] = cached?.syncedFolders ?? (sameView ? syncedFolders : []);
     let haveSyncCatalog = !!cached || sameView;
@@ -359,7 +310,7 @@ export function DriveWorkspace({
         : `/v1/drive/folders/${encodeURIComponent(parentId ?? 'root')}/children`;
     const read: Transport = (path, init) =>
       session.data
-        .load(path, () => request(path))
+        .load(path, () => request(path), catalogPath(path) ? CATALOG_MS : undefined)
         .then((data) => {
           init?.signal?.throwIfAborted();
           return data;
@@ -391,6 +342,7 @@ export function DriveWorkspace({
       fetching = true;
       setRefreshing(true);
       const epoch = mutationEpoch.current;
+      const startedAt = Date.now();
       try {
         const [driveResult, syncResult, backupsResult] = await Promise.allSettled([
           pendingFolder ? { items: [], nextCursor: null } : readPages(),
@@ -477,7 +429,9 @@ export function DriveWorkspace({
           nextCursor: driveResult.value.nextCursor,
           activeTab: resolvedTab,
           pages,
+          loadedAt: startedAt,
         });
+        setLoadedAt(startedAt);
         loadedView.current = viewKey;
         setNextCursor(driveResult.value.nextCursor);
         if (!parentId) changingTab.current = false;
@@ -512,21 +466,21 @@ export function DriveWorkspace({
     // Keep changes from other devices current without flashing a loading state.
     const refreshOnFocus = () => {
       if (document.visibilityState !== 'hidden') {
-        session.data.clear();
+        session.data.prune(catalogPath);
         updatedAt = Date.now();
         void update();
       }
     };
     // Pushed changes refresh at once, so polling drops to once a minute while live.
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'hidden') return;
+      if (document.visibilityState === 'hidden' || held.current()) return;
       if (isLive() && Date.now() - updatedAt < 60_000) return;
       updatedAt = Date.now();
       void update();
     }, 15000);
     const offLive = onLive((message) => {
-      if (message.type !== 'changes') return;
-      session.data.clear();
+      if (message.type !== 'changes' || held.current()) return;
+      session.data.prune(catalogPath);
       updatedAt = Date.now();
       void update();
     });
@@ -635,8 +589,19 @@ export function DriveWorkspace({
         ? status.state === 'SYNCED'
           ? 'All contents confirmed on linked devices.'
           : `${status.pendingItems} items waiting for linked devices.`
-        : `${status.confirmedDevices} of ${status.requiredDevices} linked devices confirmed. ${status.cloudState === 'RELEASED' ? 'Stored on linked devices. Cloud copy removed.' : status.cloudState === 'REQUESTED' ? 'Waiting for a linked device to provide a temporary cloud copy.' : 'Cloud copy kept until every linked device confirms; other transfers may also need it.'}`;
+        : `${status.confirmedDevices} of ${status.requiredDevices} linked devices confirmed. ${status.cloudState === 'RELEASED' ? 'Stored only on linked devices.' : status.cloudState === 'REQUESTED' ? 'Waiting for a linked device to upload it to the cloud.' : 'Stored in the cloud.'}`;
   }
+  if (!query)
+    for (const added of addedItems) {
+      // A rename, move or deletion made since is already reflected through `changes`.
+      if (added.parentId !== parentId || added.addedAt <= loadedAt || changes.has(added.id))
+        continue;
+      const index = merged.findIndex((item) => item.id === added.id);
+      const { addedAt: _, ...item } = added;
+      if (index < 0) merged.push({ ...item, location: activeTab });
+      else if (added.revision > merged[index].revision)
+        merged[index] = { ...merged[index], ...item };
+    }
   const syncIds = new Set([...syncedFolders.map((item) => item.id), ...syncedFolderIds]);
   if (!query)
     for (const pending of pendingItems) {
@@ -667,6 +632,14 @@ export function DriveWorkspace({
     ),
     filters,
   );
+  const pinnedHere =
+    !parentId &&
+    !query &&
+    activeTab === 'Cloud' &&
+    filters.type === defaultDriveFilters.type &&
+    filters.modified === defaultDriveFilters.modified
+      ? pinned
+      : noPinned;
   const canModify = (item: Item) => !item.backupRootId && !catalogError;
   const canWriteHere =
     !loading &&
@@ -685,6 +658,27 @@ export function DriveWorkspace({
     onClearSearch();
     onRoot();
   }
+  // Sizes fill in after the list shows; the server caches them for a minute.
+  const usageIds = showFolderUsage
+    ? [
+        ...(parentId ? [parentId] : []),
+        ...files.filter((item) => item.type === 'FOLDER' && !item.localOnly).map((item) => item.id),
+      ]
+    : [];
+  const usageKey = loading ? '' : usageIds.join(',');
+  const [usage, setUsage] = useState<UsageMap>({});
+  useEffect(() => {
+    if (!usageKey) return;
+    const controller = new AbortController();
+    loadUsage(request, usageKey.split(','), controller.signal)
+      .then((map) => setUsage((previous) => ({ ...previous, ...map })))
+      .catch(() => {}); // Sizes are optional; the folders still work without them.
+    return () => controller.abort();
+  }, [request, usageKey, revision]);
+  const folderSizes = Object.fromEntries(
+    Object.values(usage).map((entry) => [entry.itemId, usageLabel(entry)!]),
+  );
+  const folderTotal = parentId && usage[parentId] ? usageLabel(usage[parentId]) : undefined;
   const selection = files.filter((item) => selected.includes(item.id));
   const blocked = busy || selection.some((item) => item.localOnly || changes.get(item.id)?.pending);
   const canTrash = (item: Item) =>
@@ -810,10 +804,6 @@ export function DriveWorkspace({
       return;
     if (mode === 'trash' && !targets.every(canTrash)) return;
     if (mode === 'move' && targets.some(isSyncFolder)) return;
-    if (mode === 'copy-cloud') {
-      if (!targets.every(isSyncFolder)) return;
-      copyOperations.current = new Map(targets.map((item) => [item.id, operation().operationId]));
-    }
     const active = document.activeElement;
     // A menu item unmounts with its menu, so return focus to the trigger that opened it.
     modalReturnFocus.current = active?.closest('[role="menu"]')
@@ -965,21 +955,6 @@ export function DriveWorkspace({
       else
         for (const item of targets) {
           const base = { ...operation(), baseRevision: item.revision };
-          if (mode === 'copy-cloud') {
-            const { copy } = await request(`/v1/drive/folders/${item.id}/copy-to-cloud`, {
-              method: 'POST',
-              body: {
-                ...base,
-                operationId: copyOperations.current.get(item.id),
-                mode: values.copyMode || 'SNAPSHOT',
-              },
-            });
-            copyStates.current.set(copy.id, copy.state);
-            setCloudCopies((previous) => [
-              copy,
-              ...previous.filter((value) => value.id !== copy.id),
-            ]);
-          }
           if (mode === 'share')
             await request('/v1/shares', {
               method: 'POST',
@@ -1017,7 +992,7 @@ export function DriveWorkspace({
       setSelected([]);
       if (mode === 'disconnect-backup') {
         changeTab('Cloud');
-        setNotice('Backup disconnected. Its folder and versions are now in Cloud.');
+        setNotice('Backup disconnected. Its folder and versions are now in My Drive.');
       } else if (mode === 'remove-sync') {
         const removed = new Set(targets.map((item) => item.id));
         setItems((previous) => previous.filter((item) => !removed.has(item.id)));
@@ -1025,13 +1000,13 @@ export function DriveWorkspace({
         setNotice('Folder removed from sync. Local files are preserved on every device.');
       } else
         setNotice(
-          mode === 'copy-cloud'
-            ? 'Cloud copy started. You can keep using My Drive while it finishes.'
-            : mode === 'send'
-              ? `Sent ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`}. Track it in Shared → Sent.`
-              : mode === 'share'
-                ? 'Access shared.'
-                : 'Changes saved.',
+          mode === 'send'
+            ? recipient.type === 'EMAIL' && recipientKind === 'invite'
+              ? `Invitation sent to ${recipient.value}. Track it in Shared → Sent.`
+              : `Sent ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`}. Track it in Shared → Sent.`
+            : mode === 'share'
+              ? 'Access shared.'
+              : 'Changes saved.',
         );
     } else setRevision((value) => value + 1); // Reconcile successful items if a later operation failed.
   }
@@ -1053,13 +1028,7 @@ export function DriveWorkspace({
             <MenuItem onClick={() => show('send', [item])}>Send</MenuItem>
             <MenuSeparator />
             <MenuItem onClick={() => show('rename', [item])}>Rename</MenuItem>
-            {isSyncFolder(item) ? (
-              <MenuItem disabled={busy} onClick={() => show('copy-cloud', [item])}>
-                Copy to cloud
-              </MenuItem>
-            ) : (
-              <MenuItem onClick={() => show('move', [item])}>Move</MenuItem>
-            )}
+            {!isSyncFolder(item) && <MenuItem onClick={() => show('move', [item])}>Move</MenuItem>}
             {!isSyncFolder(item) && (
               <MenuItem onClick={() => void favorite([item])}>
                 {item.favorite ? 'Remove favorite' : 'Add to favorites'}
@@ -1101,6 +1070,8 @@ export function DriveWorkspace({
           label={label}
           compact
           items={entries}
+          pinned={pinnedHere}
+          folderSizes={showFolderUsage ? folderSizes : undefined}
           grid={grid}
           userId={userId}
           selected={selected}
@@ -1229,17 +1200,10 @@ export function DriveWorkspace({
         }
       }}
     >
-      <Tabs className="drive-tabs" value={activeTab} onValueChange={changeTab}>
+      <div className="drive-tabs">
         <div className="page-heading drive-heading">
           <div className="drive-title">
-            <h1>{query ? 'Search results' : 'My Drive'}</h1>
-            <TabList className="drive-location-tabs" aria-label="Drive storage locations">
-              {(['Cloud', 'Backup', 'Sync'] as const).map((tab) => (
-                <Tab key={tab} value={tab} id={`drive-tab-${tab}`}>
-                  {tab}
-                </Tab>
-              ))}
-            </TabList>
+            <h1>{query ? 'Search results' : (trail.at(-1)?.name ?? title)}</h1>
           </div>
           <div className="heading-actions">
             <Button
@@ -1254,6 +1218,30 @@ export function DriveWorkspace({
               <ArrowUpFromLine />
               Upload files
             </Button>
+            {/* Phones replace the two buttons above with one floating “New” button. */}
+            <Menu>
+              <MenuTrigger
+                render={<Button className="drive-fab" />}
+                disabled={busy || pendingFolder || !canWriteHere}
+                aria-label="New"
+              >
+                <Plus aria-hidden="true" />
+              </MenuTrigger>
+              <MenuContent side="top" className="drive-fab-menu">
+                <MenuItem onClick={onUpload}>
+                  <ArrowUpFromLine aria-hidden="true" /> Upload files
+                </MenuItem>
+                {onUploadFolder && (
+                  <MenuItem onClick={onUploadFolder}>
+                    <FolderUp aria-hidden="true" /> Upload a folder
+                  </MenuItem>
+                )}
+                <MenuSeparator />
+                <MenuItem onClick={() => setCreating(true)}>
+                  <FolderPlus aria-hidden="true" /> New folder
+                </MenuItem>
+              </MenuContent>
+            </Menu>
           </div>
         </div>
         {parentId && (
@@ -1261,6 +1249,7 @@ export function DriveWorkspace({
             {breadcrumbs}
           </nav>
         )}
+        {!query && header}
         {query && (
           <div className="drive-search-scope">
             <span>Results for “{query}”</span>
@@ -1295,8 +1284,8 @@ export function DriveWorkspace({
               low on storage.
             </Alert>
           )}
-        {loadError && <Alert tone="error">{loadError}</Alert>}
-        {error && <Alert tone="error">{error}</Alert>}
+        {loadError && !sessionEnd && <Alert tone="error">{loadError}</Alert>}
+        {error && !sessionEnd && <Alert tone="error">{error}</Alert>}
         <div className="drive-toolbar">
           {selection.length ? (
             <>
@@ -1311,6 +1300,7 @@ export function DriveWorkspace({
                   <Button
                     key={label}
                     variant="ghost"
+                    aria-label={label}
                     disabled={blocked}
                     onClick={() =>
                       label === 'Download'
@@ -1325,19 +1315,9 @@ export function DriveWorkspace({
                     ) : (
                       <FolderInput aria-hidden="true" />
                     )}
-                    {label}
+                    <span>{label}</span>
                   </Button>
                 ))}
-                {selection.every(isSyncFolder) && (
-                  <Button
-                    variant="ghost"
-                    disabled={blocked}
-                    onClick={() => show('copy-cloud', selection)}
-                  >
-                    <CloudUpload aria-hidden="true" />
-                    Copy to cloud
-                  </Button>
-                )}
                 {canTrashSelection && (
                   <Button
                     variant="ghost"
@@ -1345,7 +1325,7 @@ export function DriveWorkspace({
                     onClick={() => show('trash', selection)}
                   >
                     <Trash2 aria-hidden="true" />
-                    Move to trash
+                    <span>Move to trash</span>
                   </Button>
                 )}
                 <ActionsMenu label="More selection actions" className="drive-selection-menu">
@@ -1387,7 +1367,7 @@ export function DriveWorkspace({
               <span className="drive-item-count">
                 {loading
                   ? 'Loading…'
-                  : `${files.length}${nextCursor ? '+' : ''} ${files.length === 1 ? 'item' : 'items'}`}
+                  : `${files.length}${nextCursor ? '+' : ''} ${files.length === 1 ? 'item' : 'items'}${folderTotal ? ` · ${folderTotal} in total` : ''}`}
               </span>
               <div className="drive-filters">
                 <Select
@@ -1563,14 +1543,14 @@ export function DriveWorkspace({
             </Button>
           </form>
         )}
-        <TabPanel ref={collection} value={activeTab} className="drive-content" id="drive-files">
+        <div ref={collection} className="drive-content tab-panel" id="drive-files">
           {loading ? (
             <div className="drive-collection">
               <FileCollectionSkeleton compact grid={grid} />
             </div>
           ) : (loadError || (activeTab === 'Sync' && syncFoldersError)) && !files.length ? (
             <FileLoadError onRetry={() => setRevision((value) => value + 1)} />
-          ) : files.length === 0 ? (
+          ) : files.length === 0 && !pinnedHere.length ? (
             <EmptyState
               icon={<Folder />}
               title={
@@ -1641,7 +1621,7 @@ export function DriveWorkspace({
           {nextCursor && !loading && (
             <LoadMoreFiles loading={refreshing} error={!!loadError} onLoad={loadMore} />
           )}
-        </TabPanel>
+        </div>
         {onUploadFolder && canWriteHere && (
           <Button variant="link" className="drive-folder-upload" onClick={onUploadFolder}>
             Upload a folder
@@ -1718,30 +1698,26 @@ export function DriveWorkspace({
           title={
             modal?.mode === 'disconnect-backup'
               ? 'Disconnect backup?'
-              : modal?.mode === 'copy-cloud'
-                ? 'Copy to cloud?'
-                : modal?.mode === 'remove-sync'
-                  ? `Remove “${modal.items[0].name}” from sync?`
-                  : modal?.mode === 'trash'
-                    ? `Move ${modal.items.length === 1 ? modal.items[0].name : `${modal.items.length} items`} to trash?`
-                    : modal?.mode === 'versions'
-                      ? 'Version history'
-                      : `${modal?.mode ? modal.mode[0].toUpperCase() + modal.mode.slice(1) : ''} ${modal?.items.length === 1 ? modal.items[0].name : `${modal?.items.length ?? 0} items`}`
+              : modal?.mode === 'remove-sync'
+                ? `Remove “${modal.items[0].name}” from sync?`
+                : modal?.mode === 'trash'
+                  ? `Move ${modal.items.length === 1 ? modal.items[0].name : `${modal.items.length} items`} to trash?`
+                  : modal?.mode === 'versions'
+                    ? 'Version history'
+                    : `${modal?.mode ? modal.mode[0].toUpperCase() + modal.mode.slice(1) : ''} ${modal?.items.length === 1 ? modal.items[0].name : `${modal?.items.length ?? 0} items`}`
           }
           description={
             modal?.mode === 'disconnect-backup'
               ? 'Stop backing up this folder. All archived files and versions will remain in Cloud and become editable. Local files stay where they are.'
-              : modal?.mode === 'copy-cloud'
-                ? 'Choose how this folder is copied to Cloud files in My Drive. Both options use your cloud storage. Keep a linked device online to provide files.'
-                : modal?.mode === 'remove-sync'
-                  ? 'Stop syncing on all linked devices and remove this folder from the app. Local folders and files will stay where they are. Offline devices will stop syncing when they reconnect.'
-                  : modal?.mode === 'trash'
-                    ? `You can restore ${modal.items.length === 1 ? 'this item' : 'these items'} from Trash.`
-                    : modal?.mode === 'send'
-                      ? 'Send a copy to a person. They must sign in to receive it.'
-                      : modal?.mode === 'share'
-                        ? 'Give a registered person access to the original files.'
-                        : undefined
+              : modal?.mode === 'remove-sync'
+                ? 'Stop syncing on all linked devices and remove this folder from the app. Local folders and files will stay where they are. Offline devices will stop syncing when they reconnect.'
+                : modal?.mode === 'trash'
+                  ? `You can restore ${modal.items.length === 1 ? 'this item' : 'these items'} from Trash.`
+                  : modal?.mode === 'send'
+                    ? 'Send a copy to a person. They sign in to harbor0 to receive it.'
+                    : modal?.mode === 'share'
+                      ? 'Give a registered person access to the original files.'
+                      : undefined
           }
         >
           {modal?.mode === 'versions' ? (
@@ -1765,7 +1741,7 @@ export function DriveWorkspace({
                       <strong>Version {version.versionNumber}</strong>
                       <small>
                         {fileDate(version.createdAt).full} · {fileSize(version.sizeBytes)}
-                        {version.cloudState === 'RELEASED' ? ' · Cloud copy removed' : ''}
+                        {version.cloudState === 'RELEASED' ? ' · Not stored in the cloud' : ''}
                       </small>
                     </span>
                     {(!modal.items[0].backupRootId || !canOpenDeviceCopy) && (
@@ -1780,7 +1756,7 @@ export function DriveWorkspace({
                         Download
                       </Button>
                     )}
-                    {modal.items[0].backupRootId && (
+                    {modal.items[0].backupRootId && canOpenDeviceCopy && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -1837,31 +1813,6 @@ export function DriveWorkspace({
                 );
               }}
             >
-              {modal?.mode === 'copy-cloud' && (
-                <fieldset className="choice-list cloud-copy-options">
-                  <legend>Copy options</legend>
-                  <label className="choice">
-                    <Radio name="copyMode" value="SNAPSHOT" defaultChecked />
-                    <span>
-                      <strong>One-time snapshot</strong>
-                      <small>
-                        Copy the current contents once. Future sync changes will not affect the
-                        copy.
-                      </small>
-                    </span>
-                  </label>
-                  <label className="choice">
-                    <Radio name="copyMode" value="SYNC" />
-                    <span>
-                      <strong>Keep synced</strong>
-                      <small>
-                        Local additions, edits, renames, and deletions update the cloud copy. Cloud
-                        edits do not change the local folder.
-                      </small>
-                    </span>
-                  </label>
-                </fieldset>
-              )}
               {modal?.mode === 'rename' && (
                 <Field label="Name">
                   <Input
@@ -1880,9 +1831,11 @@ export function DriveWorkspace({
                 </Field>
               )}
               {['send', 'share'].includes(modal?.mode ?? '') && (
-                <Field label="To">
-                  <Input name="recipient" placeholder="@username or email" required />
-                </Field>
+                <RecipientPicker
+                  search={(path) => request(path)}
+                  allowInvite={modal?.mode === 'send'}
+                  onKindChange={setRecipientKind}
+                />
               )}
               {modal?.mode === 'share' && (
                 <Field label="Permission">
@@ -1950,19 +1903,19 @@ export function DriveWorkspace({
                     ? 'Working…'
                     : modal?.mode === 'disconnect-backup'
                       ? 'Disconnect backup'
-                      : modal?.mode === 'copy-cloud'
-                        ? 'Copy to cloud'
-                        : modal?.mode === 'remove-sync'
-                          ? 'Remove from sync'
-                          : modal?.mode === 'trash'
-                            ? 'Move to trash'
-                            : modal?.mode === 'move'
-                              ? 'Move here'
-                              : modal?.mode === 'send'
-                                ? 'Send'
-                                : modal?.mode === 'share'
-                                  ? 'Share'
-                                  : 'Save'}
+                      : modal?.mode === 'remove-sync'
+                        ? 'Remove from sync'
+                        : modal?.mode === 'trash'
+                          ? 'Move to trash'
+                          : modal?.mode === 'move'
+                            ? 'Move here'
+                            : modal?.mode === 'send'
+                              ? recipientKind === 'invite'
+                                ? 'Send invite'
+                                : 'Send'
+                              : modal?.mode === 'share'
+                                ? 'Share'
+                                : 'Save'}
                 </Button>
               </DialogActions>
             </form>
@@ -2002,7 +1955,7 @@ export function DriveWorkspace({
             </Button>
           </DialogActions>
         </Dialog>
-      </Tabs>
+      </div>
     </section>
   );
 }

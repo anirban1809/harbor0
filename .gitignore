@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 .next/
 apps/landing/out/
+apps/admin/out/
 dist/
 release/
 cdk.out/

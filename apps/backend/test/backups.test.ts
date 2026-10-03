@@ -159,7 +159,7 @@ it('accepts a new sign-in on the same installation and rejects a different compu
   ).toBe('new-session');
   await expect(
     backups.start('alice', root.id, 'mac', { id: 'revoked', trigger: 'AUTOMATIC' }),
-  ).rejects.toMatchObject({ code: 'DEVICE_REVOKED' });
+  ).rejects.toMatchObject({ code: 'AUTH_INVALID' });
 });
 it('supports folders with identical display names without cloud name collisions', async () => {
   const other = await service.backupRoot('alice', {

@@ -10,7 +10,7 @@ declare global {
       login: (input: { email: string; password: string }) => Promise<any>;
       request: (input: { path: string; method?: string; body?: unknown }) => Promise<any>;
       disconnectBackup: (input: { id: string }) => Promise<{ disconnected: boolean }>;
-      backupNow: (input: { id: string }) => Promise<{ queued: boolean }>;
+      backupNow: (input: { id: string }) => Promise<{ queued: boolean; changes: number }>;
       archiveBackup: (input: { id: string; archived: boolean }) => Promise<{ queued: boolean }>;
       chooseRoot: (input: { mode: 'sync' | 'backup' }) => Promise<any>;
       rootSettings: (input: { id: string; paused: boolean; excluded: string[] }) => Promise<any>;

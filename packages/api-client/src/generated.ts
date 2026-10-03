@@ -152,6 +152,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/session/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a challenge for this session to sign with its device key */
+        post: operations["post__v1_auth_session_challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/session": {
         parameters: {
             query?: never;
@@ -187,6 +204,23 @@ export interface paths {
         patch: operations["patch__v1_users_me"];
         trace?: never;
     };
+    "/v1/storage/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List every stored file version counted toward storage */
+        get: operations["get__v1_storage_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/users/me/delete": {
         parameters: {
             query?: never;
@@ -198,6 +232,40 @@ export interface paths {
         put?: never;
         /** Delete the account; its data is purged 30 days later */
         post: operations["post__v1_users_me_delete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Find recipients by username prefix or exact email */
+        get: operations["get__v1_users_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/contacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** People this account exchanges files with most */
+        get: operations["get__v1_users_contacts"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -291,40 +359,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/drive/folders/{id}/copy-to-cloud": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a snapshot or ongoing cloud copy of a sync folder */
-        post: operations["post__v1_drive_folders__id_copy_to_cloud"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/drive/cloud-copies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List cloud copy progress */
-        get: operations["get__v1_drive_cloud_copies"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/drive/items/{id}/restore": {
         parameters: {
             query?: never;
@@ -368,7 +402,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Permanently delete a page of trash without moving file content */
+        /** Empty the trash at once; content is deleted in the background (cursor is ignored, nextCursor is always null) */
         post: operations["post__v1_drive_trash_empty"];
         delete?: never;
         options?: never;
@@ -777,7 +811,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List devices */
+        /** List connected devices */
         get: operations["get__v1_devices"];
         put?: never;
         post?: never;
@@ -804,6 +838,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/devices/current/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Register this device for change wake-ups (iOS Files extension) */
+        put: operations["put__v1_devices_current_push"];
+        post?: never;
+        /** Stop change wake-ups for this device */
+        delete: operations["delete__v1_devices_current_push"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/devices/{id}": {
         parameters: {
             query?: never;
@@ -814,8 +866,25 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke a device */
+        /** Revoke a device: stop its sync and archive its backups in the cloud */
         delete: operations["delete__v1_devices__id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/devices/{id}/sign-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign a device out; its sync and backups pause until it signs in again */
+        post: operations["post__v1_devices__id_sign_out"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -920,6 +989,23 @@ export interface paths {
         post?: never;
         /** Remove a folder from sync on all linked devices, preserving local files */
         delete: operations["delete__v1_sync_folders__id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/drive/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the storage used by folders, every stored version included */
+        get: operations["get__v1_drive_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2081,9 +2167,13 @@ export interface operations {
                             platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                             appVersion: string | null;
                             devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
                             lastSeenAt: string | null;
                             createdAt: string;
                             revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
                         };
                     };
                 };
@@ -2928,6 +3018,174 @@ export interface operations {
             };
         };
     };
+    post__v1_auth_session_challenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        challenge: string;
+                        userId: string;
+                        expiresAt: string;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
     post__v1_auth_session: {
         parameters: {
             query?: never;
@@ -2943,6 +3201,11 @@ export interface operations {
                     platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                     devicePublicId?: string;
                     appVersion?: string;
+                    proof?: {
+                        publicKey: string;
+                        challenge: string;
+                        signature: string;
+                    };
                 };
             };
         };
@@ -2962,9 +3225,13 @@ export interface operations {
                             platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                             appVersion: string | null;
                             devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
                             lastSeenAt: string | null;
                             createdAt: string;
                             revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
                         };
                     };
                 };
@@ -3552,6 +3819,197 @@ export interface operations {
             };
         };
     };
+    get__v1_storage_audit: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: {
+                            itemId: string;
+                            versionId: string;
+                            path: string;
+                            /** @enum {string} */
+                            location: "MY_DRIVE" | "BACKUP" | "SYNC" | "TRASH" | "DELETING";
+                            locationDetail: string | null;
+                            /** @enum {string} */
+                            state: "CURRENT" | "PREVIOUS_VERSION" | "RETAINED_FOR_TRANSFER" | "ON_DEVICES_ONLY";
+                            versionNumber: number;
+                            sizeBytes: number;
+                            countedBytes: number;
+                            contentHash: string;
+                            uploadedAt: string;
+                            uploadedFrom: string | null;
+                        }[];
+                        storage: {
+                            quotaBytes: number;
+                            usedBytes: number;
+                            reservedBytes: number;
+                            availableBytes: number;
+                        };
+                        nextCursor: string | null;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
     post__v1_users_me_delete: {
         parameters: {
             query?: never;
@@ -3579,6 +4037,350 @@ export interface operations {
                     "application/json": {
                         deletedAt: string;
                         purgeAt: string;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    get__v1_users_search: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        users: {
+                            id: string;
+                            username: string;
+                            displayName: string;
+                            avatarUrl?: string | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    get__v1_users_contacts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        users: {
+                            id: string;
+                            username: string;
+                            displayName: string;
+                            avatarUrl?: string | null;
+                            exchangeCount: number;
+                            lastExchangedAt: string;
+                        }[];
                     };
                 };
             };
@@ -4918,390 +5720,6 @@ export interface operations {
                             updatedAt: string;
                             deletedAt: string | null;
                         };
-                    };
-                };
-            };
-            /** @description Error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-        };
-    };
-    post__v1_drive_folders__id_copy_to_cloud: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** Format: uuid */
-                    operationId: string;
-                    baseRevision: number;
-                    /**
-                     * @default SNAPSHOT
-                     * @enum {string}
-                     */
-                    mode?: "SNAPSHOT" | "SYNC";
-                };
-            };
-        };
-        responses: {
-            /** @description Success */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        copy: {
-                            id: string;
-                            name: string;
-                            rootId: string;
-                            /** @enum {string} */
-                            state: "SAVING" | "COMPLETED" | "FAILED";
-                            waiting: boolean;
-                            error?: string;
-                            createdAt: string;
-                            /**
-                             * @default SNAPSHOT
-                             * @enum {string}
-                             */
-                            mode: "SNAPSHOT" | "SYNC";
-                            /** @enum {string} */
-                            syncStatus?: "SYNCING" | "SYNCED" | "WAITING" | "ERROR" | "STOPPED";
-                            updatedAt?: string;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-            /** @description Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        error: {
-                            code: string;
-                            message: string;
-                            requestId: string;
-                            details?: unknown;
-                        };
-                    };
-                };
-            };
-        };
-    };
-    get__v1_drive_cloud_copies: {
-        parameters: {
-            query?: {
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Success */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        items: {
-                            id: string;
-                            name: string;
-                            rootId: string;
-                            /** @enum {string} */
-                            state: "SAVING" | "COMPLETED" | "FAILED";
-                            waiting: boolean;
-                            error?: string;
-                            createdAt: string;
-                            /**
-                             * @default SNAPSHOT
-                             * @enum {string}
-                             */
-                            mode: "SNAPSHOT" | "SYNC";
-                            /** @enum {string} */
-                            syncStatus?: "SYNCING" | "SYNCED" | "WAITING" | "ERROR" | "STOPPED";
-                            updatedAt?: string;
-                        }[];
-                        nextCursor: string | null;
                     };
                 };
             };
@@ -11074,9 +11492,13 @@ export interface operations {
                             platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                             appVersion: string | null;
                             devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
                             lastSeenAt: string | null;
                             createdAt: string;
                             revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
                         }[];
                     };
                 };
@@ -11242,6 +11664,11 @@ export interface operations {
                     platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                     devicePublicId?: string;
                     appVersion?: string;
+                    proof?: {
+                        publicKey: string;
+                        challenge: string;
+                        signature: string;
+                    };
                 };
             };
         };
@@ -11261,10 +11688,357 @@ export interface operations {
                             platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                             appVersion: string | null;
                             devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
                             lastSeenAt: string | null;
                             createdAt: string;
                             revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
                         };
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    put__v1_devices_current_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    token: string;
+                    /** @enum {string} */
+                    environment: "sandbox" | "production";
+                    /** @constant */
+                    kind: "FILE_PROVIDER";
+                    domain: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        registered: boolean;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    delete__v1_devices_current_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: boolean;
                     };
                 };
             };
@@ -11440,9 +12214,197 @@ export interface operations {
                             platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
                             appVersion: string | null;
                             devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
                             lastSeenAt: string | null;
                             createdAt: string;
                             revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
+                        };
+                        archivedBackups: number;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    post__v1_devices__id_sign_out: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        device: {
+                            id: string;
+                            userId: string;
+                            name: string;
+                            /** @enum {string} */
+                            platform: "WEB" | "MACOS" | "WINDOWS" | "LINUX" | "IOS" | "ANDROID";
+                            appVersion: string | null;
+                            devicePublicId: string | null;
+                            /** @default null */
+                            keyFingerprint: string | null;
+                            lastSeenAt: string | null;
+                            createdAt: string;
+                            revokedAt: string | null;
+                            /** @enum {string} */
+                            status?: "ACTIVE" | "SIGNED_OUT" | "REVOKED";
                         };
                     };
                 };
@@ -12910,6 +13872,179 @@ export interface operations {
                 content: {
                     "application/json": {
                         ok: boolean;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    get__v1_drive_usage: {
+        parameters: {
+            query?: {
+                ids?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            itemId: string;
+                            bytes: number;
+                            files: number;
+                            complete: boolean;
+                        }[];
                     };
                 };
             };
@@ -14563,6 +15698,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */
@@ -14749,6 +15885,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */
@@ -14928,6 +16065,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */
@@ -15107,6 +16245,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */
@@ -15454,6 +16593,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */
@@ -15633,6 +16773,7 @@ export interface operations {
                             userId: string;
                             deviceId: string;
                             deviceName?: string;
+                            devicePublicId?: string | null;
                             localPathDisplayName: string;
                             remoteRootDriveItemId: string;
                             /** @enum {string} */

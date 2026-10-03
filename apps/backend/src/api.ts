@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import * as c from '@harbor/contracts';
 import { ArchiveWorkflows } from './archives';
-import { CloudCopies } from './cloud-copies';
 import { Backups } from './backups';
 import {
   backupEntrySchema,
@@ -16,12 +15,15 @@ import {
 } from '../../../packages/contracts/src/backups';
 import { SyncRelay } from './sync-relay';
 import { SyncSharing } from './sync-sharing';
+import { UsageService } from './usage';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
 import { transact } from './repository';
 import type { AuthProvider } from './auth';
 import type { Realtime } from './realtime';
+import { PushRegistrations } from './push';
 import { responseSchema, queryParameters } from './responses';
+import { storageAudit } from './storage-audit';
 type Env = {
   Variables: { identity: c.Identity; requestId: string; timing?: Record<string, number> };
 };
@@ -50,6 +52,7 @@ const folderBody = z
   .object({ operationId: c.operationId, parentId: c.id.nullable().default(null), name: c.filename })
   .strict();
 const deleteAccountPath = '/v1/users/me/delete';
+const sessionChallengePath = '/v1/auth/session/challenge';
 const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
@@ -60,6 +63,10 @@ export function createApp(
   wakeArchives?: () => Promise<void>,
   realtime?: Pick<Realtime, 'ticket'>,
 ) {
+  // A scheduled invocation also resumes background work if an immediate wake-up fails.
+  const wakeWorker = async () => {
+    await wakeArchives?.().catch(() => console.error('Background worker wake-up failed'));
+  };
   const app = new Hono<Env>();
   const definitions: Definition[] = [];
   app.use('*', async (ctx, next) => {
@@ -125,6 +132,12 @@ export function createApp(
         TooManyRequestsException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         LimitExceededException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         InvalidPasswordException: ['VALIDATION_ERROR', 'Use a stronger password.', 400],
+        // Support reset the password from the management console and emailed a code.
+        PasswordResetRequiredException: [
+          'PASSWORD_RESET_REQUIRED',
+          'Your password was reset. Use "Forgot password" with the code we emailed you.',
+          403,
+        ],
       };
       const mapped = known[name];
       e = mapped
@@ -193,15 +206,16 @@ export function createApp(
         const identity = await timed('auth', auth.identity(token));
         assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
         ctx.set('identity', identity);
-        if (d.path !== '/v1/auth/session')
+        // Registration (and its key challenge) is how a session becomes a checked device.
+        const registering = d.path === '/v1/auth/session' || d.path === sessionChallengePath;
+        if (!registering)
           assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
         // These checks are independent reads, so they run together rather than adding a
         // database round trip each to every request. Failures report in their usual order.
         const checks = await Promise.allSettled([
           // A retried deletion must get past its own tombstone to finish removing the sign-in.
           timed('profile', service.ensureUser(identity, d.path === deleteAccountPath)),
-          d.path !== '/v1/auth/session' &&
-            timed('device', service.checkDevice(identity.id, identity.deviceId!)),
+          !registering && timed('device', service.checkDevice(identity.id, identity.deviceId!)),
           timed('rate', rateLimit(`user:${identity.id}`, 600)),
         ]);
         for (const check of checks) if (check.status === 'rejected') throw check.reason;
@@ -380,8 +394,21 @@ export function createApp(
       platform: c.platform,
       devicePublicId: z.string().max(128).optional(),
       appVersion: z.string().max(32).optional(),
+      proof: c.deviceProofSchema.optional(),
     })
     .strict();
+  add(
+    'post',
+    sessionChallengePath,
+    'Issue a challenge for this session to sign with its device key',
+    undefined,
+    z.object({ challenge: z.string(), userId: z.string(), expiresAt: z.string() }),
+    async (ctx) => {
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      return service.deviceChallenge(userId(ctx), deviceId);
+    },
+  );
   add(
     'post',
     '/v1/auth/session',
@@ -397,6 +424,17 @@ export function createApp(
     undefined,
     z.object({ user: c.userSchema, storage: c.storageSchema }),
     async (ctx) => service.me(userId(ctx)),
+  );
+  add(
+    'get',
+    '/v1/storage/audit',
+    'List every stored file version counted toward storage',
+    undefined,
+    c.storageAuditPageSchema,
+    async (ctx) => {
+      const q = pageQuery.parse(ctx.req.query());
+      return storageAudit(service, userId(ctx), q.limit, q.cursor);
+    },
   );
   add(
     'patch',
@@ -424,6 +462,39 @@ export function createApp(
       await auth.deleteUser(bearer(ctx)!);
       return result;
     },
+  );
+  const publicUser = z.object({
+    id: z.string(),
+    username: z.string(),
+    displayName: z.string(),
+    avatarUrl: z.string().nullable().optional(),
+  });
+  add(
+    'get',
+    '/v1/users/search',
+    'Find recipients by username prefix or exact email',
+    undefined,
+    z.object({ users: z.array(publicUser) }),
+    async (ctx) => {
+      await rateLimit(`search:${userId(ctx)}`, 120);
+      return service.searchUsers(
+        userId(ctx),
+        z
+          .string()
+          .max(254)
+          .parse(ctx.req.query('q') ?? ''),
+      );
+    },
+  );
+  add(
+    'get',
+    '/v1/users/contacts',
+    'People this account exchanges files with most',
+    undefined,
+    z.object({
+      users: z.array(publicUser.extend({ exchangeCount: z.number(), lastExchangedAt: z.string() })),
+    }),
+    async (ctx) => service.contacts(userId(ctx)),
   );
   add('get', '/v1/users/lookup', 'Look up an exact username', undefined, anyObject, async (ctx) => {
     await rateLimit(`lookup:${userId(ctx)}`, 30);
@@ -475,33 +546,17 @@ export function createApp(
     async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), i),
   );
   add(
-    'post',
-    '/v1/drive/folders/:id/copy-to-cloud',
-    'Create a snapshot or ongoing cloud copy of a sync folder',
-    c.mutation.extend({ mode: z.enum(['SNAPSHOT', 'SYNC']).default('SNAPSHOT') }).strict(),
-    z.object({ copy: c.cloudCopySchema }),
-    async (ctx, i) => {
-      const result = await new CloudCopies(service).create(userId(ctx), p(ctx, 'id'), i);
-      await wakeArchives?.().catch(() => console.error('Cloud copy worker wake-up failed'));
-      return result;
-    },
-  );
-  add(
-    'get',
-    '/v1/drive/cloud-copies',
-    'List cloud copy progress',
-    undefined,
-    z.object({ items: z.array(c.cloudCopySchema), nextCursor: z.string().nullable() }),
-    async (ctx) =>
-      new CloudCopies(service).list(userId(ctx), pageQuery.parse(ctx.req.query()).cursor),
-  );
-  add(
     'delete',
     '/v1/drive/items/:id',
     'Move to trash',
     c.mutation.strict(),
     z.object({ item: c.itemSchema }),
-    async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), { ...i, action: 'trash' }),
+    async (ctx, i) => {
+      const result = await service.mutate(userId(ctx), p(ctx, 'id'), { ...i, action: 'trash' });
+      // Folders are measured in the background so deleting them later frees space at once.
+      if (result.item.type === 'FOLDER') await wakeWorker();
+      return result;
+    },
   );
   add(
     'post',
@@ -517,15 +572,23 @@ export function createApp(
     'Permanently delete a trashed item',
     c.mutation.strict(),
     anyObject,
-    async (ctx, i) => service.permanentDelete(userId(ctx), p(ctx, 'id'), i),
+    async (ctx, i) => {
+      const result = await service.permanentDelete(userId(ctx), p(ctx, 'id'), i);
+      await wakeWorker();
+      return result;
+    },
   );
   add(
     'post',
     '/v1/drive/trash/empty',
-    'Permanently delete a page of trash without moving file content',
+    'Empty the trash at once; content is deleted in the background (cursor is ignored, nextCursor is always null)',
     z.object({ operationId: c.operationId, cursor: z.string().optional() }).strict(),
     z.object({ count: z.number().int().nonnegative(), nextCursor: z.string().nullable() }),
-    async (ctx, i) => service.emptyTrash(userId(ctx), i),
+    async (ctx, i) => {
+      const result = await service.emptyTrash(userId(ctx), i);
+      await wakeWorker();
+      return result;
+    },
   );
   for (const method of ['put', 'delete'])
     add(
@@ -616,8 +679,7 @@ export function createApp(
         input.driveItemId,
         input.operationId,
       );
-      // A scheduled invocation also resumes work if this immediate wake-up fails.
-      await wakeArchives?.().catch(() => console.error('Archive worker wake-up failed'));
+      await wakeWorker();
       return archives.status(userId(ctx), result.id);
     },
   );
@@ -753,10 +815,16 @@ export function createApp(
   add(
     'get',
     '/v1/devices',
-    'List devices',
+    'List connected devices',
     undefined,
     z.object({ items: z.array(c.deviceSchema) }),
-    async (ctx) => service.devices(userId(ctx)),
+    // Revoked devices are kept for revocation checks but are no longer connected; signed-out
+    // ones stay listed because they resume when someone signs in on them again.
+    async (ctx) => ({
+      items: (await service.devices(userId(ctx))).items.filter(
+        (device) => device.status !== 'REVOKED',
+      ),
+    }),
   );
   add(
     'post',
@@ -766,13 +834,55 @@ export function createApp(
     z.object({ device: c.deviceSchema }),
     async (ctx, i) => service.registerDevice(userId(ctx), i, ctx.get('identity').deviceId),
   );
+  const pushRegistrations = new PushRegistrations(service.repo);
+  const currentDevice = (ctx: Context<Env>) => {
+    const id = ctx.get('identity').deviceId;
+    assert(id, 'FORBIDDEN', 'A registered device is required.', 403);
+    return id;
+  };
+  add(
+    'put',
+    '/v1/devices/current/push',
+    'Register this device for change wake-ups (iOS Files extension)',
+    z
+      .object({
+        token: z.string().regex(/^[0-9a-f]{16,200}$/i),
+        environment: z.enum(['sandbox', 'production']),
+        kind: z.literal('FILE_PROVIDER'),
+        domain: z.string().min(1).max(200),
+      })
+      .strict(),
+    z.object({ registered: z.boolean() }),
+    async (ctx, i) =>
+      pushRegistrations.register(userId(ctx), {
+        ...i,
+        token: i.token.toLowerCase(),
+        deviceId: currentDevice(ctx),
+      }),
+  );
+  add(
+    'delete',
+    '/v1/devices/current/push',
+    'Stop change wake-ups for this device',
+    undefined,
+    z.object({ removed: z.boolean() }),
+    async (ctx) => pushRegistrations.remove(userId(ctx), currentDevice(ctx)),
+  );
   add(
     'delete',
     '/v1/devices/:id',
-    'Revoke a device',
+    'Revoke a device: stop its sync and archive its backups in the cloud',
+    undefined,
+    z.object({ device: c.deviceSchema, archivedBackups: z.number().int().min(0) }),
+    async (ctx) => service.revokeDevice(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'post',
+    '/v1/devices/:id/sign-out',
+    'Sign a device out; its sync and backups pause until it signs in again',
     undefined,
     z.object({ device: c.deviceSchema }),
-    async (ctx) => service.revokeDevice(userId(ctx), p(ctx, 'id')),
+    async (ctx) => service.signOutDevice(userId(ctx), p(ctx, 'id')),
   );
   const syncSharing = new SyncSharing(service);
   add(
@@ -859,6 +969,22 @@ export function createApp(
   );
   add(
     'get',
+    '/v1/drive/usage',
+    'Read the storage used by folders, every stored version included',
+    undefined,
+    z.object({ items: z.array(c.folderUsageSchema) }),
+    async (ctx) =>
+      new UsageService(service).usage(
+        userId(ctx),
+        z
+          .array(c.id)
+          .min(1)
+          .max(50)
+          .parse((ctx.req.query('ids') ?? '').split(',')),
+      ),
+  );
+  add(
+    'get',
     '/v1/sync/status',
     'Read file and folder delivery status',
     undefined,
@@ -914,11 +1040,15 @@ export function createApp(
     undefined,
     z.object({ changes: z.array(c.changeSchema), nextCursor: z.number(), hasMore: z.boolean() }),
     async (ctx) =>
-      service.changes(
-        userId(ctx),
-        z.coerce.number().int().min(0).default(0).parse(ctx.req.query('cursor')),
-        z.coerce.number().int().min(1).max(500).default(100).parse(ctx.req.query('limit')),
-      ),
+      // `cursor=latest` returns the current position without changes, for clients that start
+      // from now (e.g. the iOS Files extension) rather than replaying the whole feed.
+      ctx.req.query('cursor') === 'latest'
+        ? service.latestChanges(userId(ctx))
+        : service.changes(
+            userId(ctx),
+            z.coerce.number().int().min(0).default(0).parse(ctx.req.query('cursor')),
+            z.coerce.number().int().min(1).max(500).default(100).parse(ctx.req.query('limit')),
+          ),
   );
   add(
     'post',

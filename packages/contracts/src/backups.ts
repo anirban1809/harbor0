@@ -4,6 +4,8 @@ export const backupRootSchema = z.object({
   userId: z.string(),
   deviceId: z.string(),
   deviceName: z.string().optional(),
+  // Installation of the source device, so a backup still belongs to it after it signs in again.
+  devicePublicId: z.string().nullable().optional(),
   localPathDisplayName: z.string(),
   remoteRootDriveItemId: z.string(),
   state: z.enum(['ACTIVE', 'PAUSED', 'ERROR', 'ARCHIVED', 'REMOVED']),

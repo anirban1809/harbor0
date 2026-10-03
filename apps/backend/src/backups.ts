@@ -16,10 +16,11 @@ export class Backups {
     assert(root, 'ITEM_NOT_FOUND', 'Backup folder was not found.', 404);
     if (deviceId !== undefined) {
       const device = await this.service.checkDevice(userId, deviceId);
-      const original = await tx.get<Device>(userPK(userId), `DEVICE#${root.deviceId}`);
+      const owner =
+        root.devicePublicId ??
+        (await tx.get<Device>(userPK(userId), `DEVICE#${root.deviceId}`))?.devicePublicId;
       assert(
-        root.deviceId === deviceId ||
-          (device.devicePublicId && device.devicePublicId === original?.devicePublicId),
+        root.deviceId === deviceId || (device.devicePublicId && device.devicePublicId === owner),
         'FORBIDDEN',
         'Use the computer that owns this backup folder.',
         403,

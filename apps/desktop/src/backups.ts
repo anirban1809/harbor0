@@ -10,7 +10,14 @@ export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
 }
-type PendingRun = { id: string; trigger: 'MANUAL' | 'AUTOMATIC'; jobs: string[]; error?: string };
+type PendingRun = {
+  id: string;
+  trigger: 'MANUAL' | 'AUTOMATIC';
+  jobs: string[];
+  // Files in the run when it started; `jobs` shrinks as each one is saved.
+  total?: number;
+  error?: string;
+};
 const ARCHIVE_ATTEMPTS = 3;
 // A request the server will keep refusing; retrying every pass would stall all other folders.
 function refused(error: unknown) {
@@ -32,18 +39,31 @@ export class FolderBackups {
     private api: ApiClient,
     private journal: Journal,
   ) {}
+  /** Files saved and files in the backup run under way, if one is. */
+  run(rootId: string) {
+    const run = this.journal.get<PendingRun | null>(`backup-run:${rootId}`);
+    if (!run) return null;
+    const total = Math.max(run.total ?? 0, run.jobs.length);
+    return { done: total - run.jobs.length, total };
+  }
   private ignored(root: Root, relative: string) {
     return (
       internalPath(relative) ||
       root.excluded.some((p) => relative === p || relative.startsWith(p + '/'))
     );
   }
+  /**
+   * Back up now: rescan the folder and save every changed file without waiting out the quiet
+   * hour. Returns how many files will be saved; with none, no backup is recorded.
+   */
   async request(root: Root) {
     if (root.paused) throw new Error('Resume this backup folder before backing up now.');
     if (this.journal.get(`backup-run:${root.id}`))
       throw new Error('A backup is already running for this folder.');
-    // Persist intent before scanning; an interrupted scan is repeated by the next tick.
-    this.journal.set(`backup-now:${root.id}`, true);
+    await this.scan(root);
+    const changed = (await this.changed(root, true)).length;
+    if (changed) this.journal.set(`backup-now:${root.id}`, true);
+    return changed;
   }
   private async scan(root: Root, relative = '') {
     const directory = contained(root.localPath, relative);
@@ -56,6 +76,54 @@ export class FolderBackups {
       if (entry.isDirectory()) await this.scan(root, name);
       else if (entry.isFile()) this.journal.enqueue(root.id, name, 'upsert');
     }
+  }
+  /**
+   * Settle this folder's queue: drop entries with nothing to save (missing, excluded, or content
+   * identical to the last saved version) and return the jobs due for a backup now.
+   */
+  private async changed(root: Root, manual: boolean) {
+    const ready: string[] = [];
+    for (const job of this.journal.jobs().filter((j) => j.rootId === root.id)) {
+      if (this.ignored(root, job.relativePath)) {
+        this.journal.finish(job.id);
+        continue;
+      }
+      if (!manual && Date.now() < (job.payload.retryAfter ?? 0)) continue;
+      const filename = contained(root.localPath, job.relativePath);
+      let info;
+      try {
+        await safeParents(root.localPath, job.relativePath, false);
+        info = await lstat(filename);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        this.journal.finish(job.id);
+        continue;
+      }
+      if (!info.isFile() || info.isSymbolicLink()) {
+        this.journal.finish(job.id);
+        continue;
+      }
+      if (job.kind === 'delete') {
+        this.journal.finish(job.id);
+        this.journal.enqueue(root.id, job.relativePath, 'upsert');
+        continue;
+      }
+      if (!manual && !backupReady(info.mtimeMs, job.payload.observedAt ?? 0)) continue;
+      // Startup rescans and touched-but-identical files queue entries too; they are already saved.
+      const known = this.journal.file(root.id, job.relativePath);
+      if (
+        known?.type === 'FILE' &&
+        known.hash &&
+        !job.payload.upload?.uploadId &&
+        !job.payload.backupEntry &&
+        (await hashFile(filename)) === known.hash
+      ) {
+        this.journal.finish(job.id);
+        continue;
+      }
+      ready.push(job.id);
+    }
+    return ready;
   }
   async process(
     root: Root,
@@ -81,37 +149,17 @@ export class FolderBackups {
     let run = this.journal.get<PendingRun | null>(key);
     if (!run) {
       const manual = !!this.journal.get(`backup-now:${root.id}`);
-      if (manual) await this.scan(root);
-      const ready: string[] = [];
-      for (const job of this.journal.jobs().filter((j) => j.rootId === root.id)) {
-        if (this.ignored(root, job.relativePath)) {
-          this.journal.finish(job.id);
-          continue;
-        }
-        if (!manual && Date.now() < (job.payload.retryAfter ?? 0)) continue;
-        const filename = contained(root.localPath, job.relativePath);
-        let info;
-        try {
-          await safeParents(root.localPath, job.relativePath, false);
-          info = await lstat(filename);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-          this.journal.finish(job.id);
-          continue;
-        }
-        if (!info.isFile() || info.isSymbolicLink()) {
-          this.journal.finish(job.id);
-          continue;
-        }
-        if (job.kind === 'delete') {
-          this.journal.finish(job.id);
-          this.journal.enqueue(root.id, job.relativePath, 'upsert');
-          continue;
-        }
-        if (manual || backupReady(info.mtimeMs, job.payload.observedAt ?? 0)) ready.push(job.id);
+      const ready = await this.changed(root, manual);
+      if (!ready.length) {
+        if (manual) this.journal.set(`backup-now:${root.id}`, false);
+        return;
       }
-      if (!ready.length && !manual) return;
-      run = { id: crypto.randomUUID(), trigger: manual ? 'MANUAL' : 'AUTOMATIC', jobs: ready };
+      run = {
+        id: crypto.randomUUID(),
+        trigger: manual ? 'MANUAL' : 'AUTOMATIC',
+        jobs: ready,
+        total: ready.length,
+      };
       this.journal.set(key, run);
       this.journal.set(`backup-now:${root.id}`, false);
     }

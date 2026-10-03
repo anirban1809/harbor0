@@ -129,16 +129,30 @@ actor FileTransfers {
     }
 
     func download(_ item: DriveItem, progress: @escaping @MainActor @Sendable (String, Double?) -> Void) async throws -> URL {
-        let name = try Self.safeName(item.name)
+        try await download(["driveItemId": item.id], name: item.name, progress: progress)
+    }
+
+    /// Downloads any authorized content: a file, a file version (`versionId`) or a transfer entry (`transferId`, `entryId`).
+    func download(_ body: [String: String], name rawName: String, progress: @escaping @MainActor @Sendable (String, Double?) -> Void) async throws -> URL {
+        let name = try Self.safeName(rawName)
         await progress("Downloading \(name)…", nil)
-        let authorization: DownloadResponse = try await api.request("/v1/downloads", method: "POST", body: ["driveItemId": item.id])
-        try Self.validateStorageURL(authorization.downloadUrl, apiURL: api.baseURL)
-        let (temporary, response) = try await storage.download(from: authorization.downloadUrl)
+        let authorization: DownloadResponse = try await api.request("/v1/downloads", method: "POST", body: body)
+        return try await fetch(authorization.downloadUrl, name: name, size: authorization.sizeBytes, hash: authorization.contentHash, progress: progress)
+    }
+
+    /// Fetches a signed storage URL to a temporary file, verifying its size and SHA-256 when known.
+    func fetch(_ url: URL, name rawName: String, size: Int64?, hash: String?, progress: @escaping @MainActor @Sendable (String, Double?) -> Void) async throws -> URL {
+        let name = try Self.safeName(rawName)
+        try Self.validateStorageURL(url, apiURL: api.baseURL)
+        let (temporary, response) = try await storage.download(from: url)
         defer { try? FileManager.default.removeItem(at: temporary) }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
         await progress("Checking \(name)…", nil)
         let fingerprint = try Self.digest(temporary)
-        guard fingerprint.hash == authorization.contentHash, fingerprint.size == authorization.sizeBytes else {
+        if let hash, fingerprint.hash != hash {
+            throw APIError(status: 0, message: "The downloaded file failed its integrity check. Try downloading it again.")
+        }
+        if let size, fingerprint.size != size {
             throw APIError(status: 0, message: "The downloaded file failed its integrity check. Try downloading it again.")
         }
         let directory = try workspace()

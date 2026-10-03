@@ -23,6 +23,7 @@ const env = {
   NODE_ENV: 'development',
   DEV_AUTH: 'true',
   PORT: '18990',
+  REALTIME_PORT: '18991',
   AWS_REGION: 'us-east-1',
   AWS_ACCESS_KEY_ID: 'local',
   AWS_SECRET_ACCESS_KEY: 'local',

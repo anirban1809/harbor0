@@ -93,31 +93,42 @@ class FileTransfers(private val api: HarborApi, private val storage: OkHttpClien
             throw e
         }
     }
-    suspend fun download(item: DriveItem, previewDirectory: File, progress: (String, Float?) -> Unit): File = withContext(Dispatchers.IO) {
-        val name = safeName(item.name)
-        val authorization = harborJson.decodeFromJsonElement<Download>(api.request("/v1/downloads", "POST", buildJsonObject { put("driveItemId", item.id) }))
-        validateUrl(authorization.downloadUrl, api.baseUrl, allowLocal)
+    suspend fun download(item: DriveItem, previewDirectory: File, progress: (String, Float?) -> Unit): File =
+        download(item.name, buildJsonObject { put("driveItemId", item.id) }, previewDirectory, progress)
+    /** Downloads through `/v1/downloads`: a file, an earlier version, or a file received in a transfer. */
+    suspend fun download(name: String, body: JsonObject, previewDirectory: File, progress: (String, Float?) -> Unit): File = withContext(Dispatchers.IO) {
+        safeName(name)
+        val authorization = harborJson.decodeFromJsonElement<Download>(api.request("/v1/downloads", "POST", body))
+        fetch(authorization.downloadUrl, name, authorization.sizeBytes, authorization.contentHash, previewDirectory, progress)
+    }
+    /** Streams a signed storage URL to a private file, checking its size and SHA-256 when they are known. */
+    suspend fun fetch(url: String, fileName: String, sizeBytes: Long?, contentHash: String?, previewDirectory: File,
+        progress: (String, Float?) -> Unit): File = withContext(Dispatchers.IO) {
+        val name = safeName(fileName)
+        validateUrl(url, api.baseUrl, allowLocal)
         val folder = File(previewDirectory, UUID.randomUUID().toString()).apply { check(mkdirs()) }
         val file = File(folder, name)
         try {
             progress("Downloading $name…", null)
-            storage.newCall(Request.Builder().url(authorization.downloadUrl).build()).awaitResponse().use { response ->
+            storage.newCall(Request.Builder().url(url).build()).awaitResponse().use { response ->
                 check(response.isSuccessful) { "Download failed (${response.code}). Try again." }
                 val body = checkNotNull(response.body)
+                val total = sizeBytes ?: body.contentLength().takeIf { it >= 0 }
                 body.byteStream().use { input -> file.outputStream().use { output ->
                     val buffer = ByteArray(256 * 1024)
                     var received = 0L
                     while (true) {
                         ensureActive(); val n = input.read(buffer); if (n < 0) break
                         received += n
-                        check(received <= authorization.sizeBytes) { "The downloaded file failed its integrity check." }
+                        check(sizeBytes == null || received <= sizeBytes) { "The downloaded file failed its integrity check." }
                         output.write(buffer, 0, n)
-                        progress("Downloading $name…", if (authorization.sizeBytes == 0L) 1f else received.toFloat() / authorization.sizeBytes)
+                        progress("Downloading $name…", total?.let { if (it == 0L) 1f else received.toFloat() / it })
                     }
                 } }
             }
             progress("Checking $name…", null)
-            check(file.length() == authorization.sizeBytes && digest(file).equals(authorization.contentHash, ignoreCase = true)) { "The downloaded file failed its integrity check. Try downloading it again." }
+            check(sizeBytes == null || file.length() == sizeBytes) { "The downloaded file failed its integrity check. Try downloading it again." }
+            check(contentHash == null || digest(file).equals(contentHash, ignoreCase = true)) { "The downloaded file failed its integrity check. Try downloading it again." }
             file
         } catch (e: Exception) { folder.deleteRecursively(); throw e }
     }

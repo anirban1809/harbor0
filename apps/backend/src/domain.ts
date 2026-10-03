@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   FREE_QUOTA,
   PART_SIZE,
@@ -13,6 +13,7 @@ import {
   type DriveItem,
   type FileVersion,
   type Device,
+  type DeviceProof,
   type UploadInput,
   type CompletedPart,
   type SyncChange,
@@ -21,7 +22,8 @@ import {
   type ShareGrant,
 } from '@harbor/contracts';
 import { assert, DomainError } from './errors';
-import { transact, Transaction, type Repository } from './repository';
+import { DEVICE_CHALLENGE_SECONDS, verifyDeviceProof } from './device-identity';
+import { rowCursor, transact, Transaction, type Repository } from './repository';
 import type { ObjectStorage } from './storage';
 import {
   backupForItem,
@@ -31,10 +33,13 @@ import {
 } from './backup-policy';
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { ArchiveWorkflows } from './archives';
-import { CloudCopies } from './cloud-copies';
+import { abandonCloudCopy } from './cloud-copies';
 import { DeletionWorkflows } from './deletion';
-import { SyncRelay, syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
+import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
 import { TransferWorkflows, type StagedItem, type Save } from './workflows';
+
+// Upper bound on item rows one search request reads before returning a partial page.
+const SEARCH_SCAN_LIMIT = 5000;
 const now = () => new Date().toISOString();
 const uid = () => randomUUID();
 export const userPK = (id: string) => `USER#${id}`;
@@ -48,13 +53,58 @@ export type Account = User & {
   minCursor: number;
   deletedAt?: string;
   purgeAt?: string;
+  /** Measured bytes of items in trash; emptying moves them out of `storageUsedBytes` at once. */
+  trashBytes?: number;
+  /** Bytes already removed from `storageUsedBytes` whose versions the purge has yet to delete. */
+  purgingBytes?: number;
+  /** Trashed items deleted at or before this instant were emptied and are gone for the user. */
+  trashEmptiedAt?: string;
+  /** Set by staff in the management console; a suspended account cannot use the API. */
+  suspendedAt?: string;
+  suspendedReason?: string;
 };
+/** Whether `item` was in the trash when it was last emptied. */
+export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
+  !!item.deletedAt && !!account.trashEmptiedAt && item.deletedAt <= account.trashEmptiedAt;
 // A deleted account keeps its data this long before the purge job removes it.
 export const ACCOUNT_PURGE_DELAY_MS = 30 * 86400_000;
 // Device rows identify token sessions; devicePublicId identifies an installation.
-type DeviceSession = Device & { revocationVersion?: number };
+// `revokedAt` ends a session (sign-out); `revoked` marks a device the user revoked.
+type DeviceSession = Device & { revocationVersion?: number; revoked?: boolean };
 type DeviceRevocation = { version: number; revokedAt: string };
 const deviceRevocationKey = (publicId: string) => `DEVICE_REVOCATION#${digest(publicId)}`;
+// The first key to prove possession of a devicePublicId is pinned to it; later claims need that key.
+type DeviceKey = { fingerprint: string; publicKey: string; boundAt: string };
+type DeviceChallenge = { challenge: string; expiresAt: number };
+const deviceKeyKey = (publicId: string) => `DEVICE_KEY#${digest(publicId)}`;
+/** Groups sign-in sessions into devices: sessions sharing a key fingerprint or installation ID. */
+function deviceGroups<T extends Pick<Device, 'id' | 'keyFingerprint' | 'devicePublicId'>>(
+  sessions: T[],
+) {
+  const parent = new Map<string, string>();
+  const find = (key: string): string => {
+    const next = parent.get(key) ?? key;
+    if (next === key) return key;
+    const root = find(next);
+    parent.set(key, root);
+    return root;
+  };
+  for (const session of sessions) {
+    const [first, ...rest] = [
+      `session:${session.id}`,
+      ...(session.keyFingerprint ? [`key:${session.keyFingerprint}`] : []),
+      ...(session.devicePublicId ? [`installation:${session.devicePublicId}`] : []),
+    ].map(find);
+    for (const other of rest) if (other !== first) parent.set(other, first);
+  }
+  const groups = new Map<string, T[]>();
+  for (const session of sessions) {
+    const key = find(`session:${session.id}`);
+    groups.set(key, [...(groups.get(key) ?? []), session]);
+  }
+  return [...groups.values()];
+}
+const deviceChallengeKey = (sessionId: string) => `DEVICE_CHALLENGE#${sessionId}`;
 export type StoredObject = {
   id: string;
   key: string;
@@ -95,6 +145,7 @@ export type Upload = {
 export type Job = {
   id: string;
   type:
+    // Legacy: only drained (see runJobs).
     | 'CLOUD_COPY'
     | 'CLOUD_MIRROR'
     | 'SYNC_RELEASE'
@@ -108,6 +159,8 @@ export type Job = {
     | 'TRANSFER_RELEASE'
     | 'TRANSFER_EXPIRE'
     | 'PERMANENT_DELETE'
+    | 'TRASH_MEASURE'
+    | 'TRASH_EMPTY'
     | 'ACCOUNT_DELETE';
   userId?: string;
   entityId?: string;
@@ -136,6 +189,12 @@ export class StorageService {
           allowDeleted || !existing.deletedAt,
           'ACCOUNT_DELETED',
           'This account was deleted.',
+          403,
+        );
+        assert(
+          !existing.suspendedAt,
+          'ACCOUNT_SUSPENDED',
+          'This account is suspended. Contact support.',
           403,
         );
         assert(
@@ -326,6 +385,13 @@ export class StorageService {
       'This item is being permanently deleted.',
       409,
     );
+    if (item.deletedAt)
+      assert(
+        !emptied(item, await this.account(tx, userId)),
+        'ITEM_DELETING',
+        'This item is being permanently deleted.',
+        409,
+      );
     if (!includeTrash) {
       assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'The item is in trash.', 404);
       await this.parent(tx, userId, item.parentId);
@@ -483,10 +549,16 @@ export class StorageService {
       if (input.action === 'trash') {
         assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'Item is already in trash.', 404);
         await this.parent(tx, ownerId, item.parentId);
+        // Stay after the last emptying even if this server's clock lags another's.
+        const emptiedAt = (await this.account(tx, ownerId)).trashEmptiedAt;
         item.deletedAt = now();
+        if (emptiedAt && item.deletedAt <= emptiedAt)
+          item.deletedAt = new Date(Date.parse(emptiedAt) + 1).toISOString();
+        await new DeletionWorkflows(this).trashed(tx, ownerId, item);
         type = 'FILE_DELETED';
       } else if (input.action === 'restore') {
         assert(item.deletedAt, 'INVALID_STATE', 'Item is not in trash.', 409);
+        await new DeletionWorkflows(this).forget(tx, ownerId, item);
         item.deletedAt = null;
         try {
           await this.parent(tx, ownerId, item.parentId);
@@ -543,41 +615,60 @@ export class StorageService {
     limit = 100,
     cursor?: string,
   ) {
-    const page = await this.repo.query(userPK(userId), 'ITEM#', limit, cursor);
     const tx = new Transaction(this.repo);
+    const account = await this.account(tx, userId);
     const items: DriveItem[] = [];
-    for (const row of page.rows) {
-      const i = row.data as StagedItem;
-      if (i.stagingId && (await tx.get<Save>(`SAVE#${i.stagingId}`, 'META'))?.state !== 'COMPLETED')
-        continue;
-      if ((i as DriveItem & { purging?: boolean }).purging || i.syncRemovedAt) continue;
-      if (filter.trash === 'true' ? !i.deletedAt : !!i.deletedAt) continue;
-      if (filter.favorite === 'true' && !i.favorite) continue;
-      if (filter.q && !i.normalizedName.includes(normalizeName(filter.q))) continue;
-      if (filter.type && i.type !== filter.type.toUpperCase()) continue;
-      if (filter.mimeType && i.mimeType !== filter.mimeType) continue;
-      if (filter.extension && !i.normalizedName.endsWith('.' + filter.extension.toLowerCase()))
-        continue;
-      if (filter.parentId && i.parentId !== (filter.parentId === 'root' ? null : filter.parentId))
-        continue;
-      if (
-        (filter.createdAfter && i.createdAt < filter.createdAfter) ||
-        (filter.createdBefore && i.createdAt > filter.createdBefore) ||
-        (filter.updatedAfter && i.updatedAt < filter.updatedAfter) ||
-        (filter.updatedBefore && i.updatedAt > filter.updatedBefore)
-      )
-        continue;
-      if (!i.deletedAt) {
-        try {
-          await this.parent(tx, userId, i.parentId);
-        } catch {
-          continue;
+    // Filters are applied after the query, so keep reading until the page is full; a single
+    // query page can be entirely non-matching (e.g. trash when most items are live).
+    let next: string | null = cursor ?? null;
+    let scanned = 0;
+    let nextCursor: string | null = null;
+    scan: do {
+      const page = await this.repo.query(userPK(userId), 'ITEM#', limit, next ?? undefined);
+      next = page.cursor;
+      for (const [index, row] of page.rows.entries()) {
+        scanned++;
+        if (items.length >= limit) {
+          nextCursor = rowCursor(page.rows[index - 1]);
+          break scan;
         }
+        const i = row.data as StagedItem;
+        if (
+          i.stagingId &&
+          (await tx.get<Save>(`SAVE#${i.stagingId}`, 'META'))?.state !== 'COMPLETED'
+        )
+          continue;
+        if ((i as DriveItem & { purging?: boolean }).purging || i.syncRemovedAt) continue;
+        if (emptied(i, account)) continue;
+        if (filter.trash === 'true' ? !i.deletedAt : !!i.deletedAt) continue;
+        if (filter.favorite === 'true' && !i.favorite) continue;
+        if (filter.q && !i.normalizedName.includes(normalizeName(filter.q))) continue;
+        if (filter.type && i.type !== filter.type.toUpperCase()) continue;
+        if (filter.mimeType && i.mimeType !== filter.mimeType) continue;
+        if (filter.extension && !i.normalizedName.endsWith('.' + filter.extension.toLowerCase()))
+          continue;
+        if (filter.parentId && i.parentId !== (filter.parentId === 'root' ? null : filter.parentId))
+          continue;
+        if (
+          (filter.createdAfter && i.createdAt < filter.createdAfter) ||
+          (filter.createdBefore && i.createdAt > filter.createdBefore) ||
+          (filter.updatedAfter && i.updatedAt < filter.updatedAfter) ||
+          (filter.updatedBefore && i.updatedAt > filter.updatedBefore)
+        )
+          continue;
+        if (!i.deletedAt) {
+          try {
+            await this.parent(tx, userId, i.parentId);
+          } catch {
+            continue;
+          }
+        }
+        items.push({ ...i, backupRootId: (await backupForItem(tx, userId, i.id))?.id });
       }
-      items.push({ ...i, backupRootId: (await backupForItem(tx, userId, i.id))?.id });
-    }
+      nextCursor = next;
+    } while (next && items.length < limit && scanned < SEARCH_SCAN_LIMIT);
     if (filter.recent === 'true') items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return { items, nextCursor: page.cursor };
+    return { items, nextCursor };
   }
   async createUpload(
     userId: string,
@@ -1148,22 +1239,28 @@ export class StorageService {
     // Only detach the item here; version/reference cleanup runs in durable batches.
     return new DeletionWorkflows(this).start(userId, itemId, input);
   }
+  /**
+   * Empties the whole trash in one bounded transaction: emptied items disappear and their measured
+   * bytes leave the storage ledger at once, while the purge detaches and deletes them in the
+   * background. `cursor` is accepted from older clients and ignored.
+   */
   async emptyTrash(userId: string, input: { operationId: string; cursor?: string }) {
     return this.operation(
       userId,
       input.operationId,
       { action: 'empty-trash', ...input },
       async (tx) => {
-        // Bound each request and transaction, regardless of the size of the drive.
-        const page = await this.repo.query(userPK(userId), 'ITEM#', 10, input.cursor);
-        let count = 0;
-        for (const row of page.rows) {
-          const item = await tx.get<DriveItem & { purging?: boolean }>(row.pk, row.sk);
-          if (!item?.deletedAt || item.purging) continue;
-          await new DeletionWorkflows(this).detach(tx, userId, item);
-          count++;
-        }
-        return { count, nextCursor: page.cursor };
+        const account = await this.account(tx, userId);
+        const at = now();
+        if (!account.trashEmptiedAt || at > account.trashEmptiedAt) account.trashEmptiedAt = at;
+        const bytes = account.trashBytes ?? 0;
+        account.storageUsedBytes -= bytes;
+        account.purgingBytes = (account.purgingBytes ?? 0) + bytes;
+        account.trashBytes = 0;
+        await tx.put(userPK(userId), 'PROFILE', account);
+        await new DeletionWorkflows(this).scheduleEmpty(tx, userId);
+        await this.record(tx, userId, 'PROFILE_UPDATED', userId);
+        return { count: 0, nextCursor: null };
       },
     );
   }
@@ -1185,6 +1282,67 @@ export class StorageService {
         },
       ],
     };
+  }
+  /** Public profile fields another account may see, or null for a deleted account. */
+  private async publicProfile(userId: string) {
+    const account = await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' });
+    const u = account?.data as Account | undefined;
+    if (!u || u.deletedAt) return null;
+    return { id: u.id, username: u.username, displayName: u.displayName, avatarUrl: u.avatarUrl };
+  }
+  /**
+   * Recipient search for the send dialog: username prefixes, or an exact email address.
+   * Emails never match by prefix so addresses cannot be enumerated.
+   */
+  async searchUsers(userId: string, value: string) {
+    const q = value.trim().toLowerCase();
+    if (q.includes('@') && !q.startsWith('@')) {
+      const email = normalizeEmail(q);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { users: [] };
+      const row = await this.repo.get({ pk: 'EMAIL', sk: email });
+      const id = (row?.data as { userId?: string } | undefined)?.userId;
+      const user = id && id !== userId ? await this.publicProfile(id) : null;
+      return { users: user ? [user] : [] };
+    }
+    const prefix = q.replace(/^@/, '');
+    if (prefix.length < 2 || !/^[a-z0-9_.]+$/.test(prefix)) return { users: [] };
+    const page = await this.repo.query('USERNAME', prefix, 9);
+    const ids = page.rows
+      .map((row) => (row.data as { userId?: string }).userId)
+      .filter((id): id is string => !!id && id !== userId);
+    const users = await Promise.all(ids.slice(0, 8).map((id) => this.publicProfile(id)));
+    return { users: users.filter((u) => u !== null) };
+  }
+  /** Counts a file exchange between two accounts, on both sides, for the send dialog. */
+  async recordContact(tx: Transaction, a: string, b: string) {
+    if (a === b) return;
+    const at = now();
+    for (const [owner, other] of [
+      [a, b],
+      [b, a],
+    ]) {
+      const key = `CONTACT#${other}`;
+      const row = await tx.get<{ userId: string; count: number; lastAt: string }>(
+        userPK(owner),
+        key,
+      );
+      await tx.put(userPK(owner), key, { userId: other, count: (row?.count ?? 0) + 1, lastAt: at });
+    }
+  }
+  /** The people this account exchanges files with most, most frequent first. */
+  async contacts(userId: string, limit = 6) {
+    const page = await this.repo.query(userPK(userId), 'CONTACT#', 100);
+    const rows = page.rows
+      .map((row) => row.data as { userId: string; count: number; lastAt: string })
+      .sort((x, y) => y.count - x.count || y.lastAt.localeCompare(x.lastAt))
+      .slice(0, limit);
+    const users = await Promise.all(
+      rows.map(async (row) => {
+        const user = await this.publicProfile(row.userId);
+        return user && { ...user, exchangeCount: row.count, lastExchangedAt: row.lastAt };
+      }),
+    );
+    return { users: users.filter((u) => u !== null) };
   }
   async resolveRecipient(
     tx: Transaction,
@@ -1318,6 +1476,7 @@ export class StorageService {
         if (t.recipientUserId) {
           await tx.put(userPK(t.recipientUserId), `RECEIVED#${t.id}`, { id: t.id });
           await this.notification(tx, t.recipientUserId, 'TRANSFER_RECEIVED', { transferId: t.id });
+          await this.recordContact(tx, userId, t.recipientUserId);
           await this.record(tx, t.recipientUserId, 'TRANSFER_CREATED', t.id);
         } else {
           await tx.put(`PENDING#${t.recipientEmail}`, t.id, { id: t.id });
@@ -1364,6 +1523,7 @@ export class StorageService {
           await tx.delete(`PENDING#${account.email}`, t.id);
           await tx.put(userPK(userId), `RECEIVED#${t.id}`, { id: t.id });
           await this.notification(tx, userId, 'TRANSFER_RECEIVED', { transferId: t.id });
+          await this.recordContact(tx, t.senderUserId, userId);
           await this.record(tx, userId, 'TRANSFER_CREATED', t.id);
         });
       cursor = page.cursor ?? undefined;
@@ -1670,6 +1830,7 @@ export class StorageService {
       platform: Device['platform'];
       devicePublicId?: string;
       appVersion?: string;
+      proof?: DeviceProof;
     },
     sessionId?: string,
   ) {
@@ -1691,6 +1852,47 @@ export class StorageService {
         'A registered session cannot change its device identity.',
       );
       const devicePublicId = existing?.devicePublicId ?? (input.devicePublicId || null);
+      let keyFingerprint = existing?.keyFingerprint ?? null;
+      if (input.proof) {
+        assert(
+          devicePublicId && sessionId,
+          'VALIDATION_ERROR',
+          'A device proof needs a device ID.',
+        );
+        const challengeKey = deviceChallengeKey(sessionId);
+        const challenge = await tx.get<DeviceChallenge>(userPK(userId), challengeKey);
+        assert(
+          challenge?.challenge === input.proof.challenge &&
+            challenge.expiresAt > Math.floor(Date.now() / 1000),
+          'DEVICE_PROOF_INVALID',
+          'The device challenge expired. Try again.',
+          401,
+        );
+        await tx.delete(userPK(userId), challengeKey);
+        const verified = verifyDeviceProof(input.proof, userId, devicePublicId);
+        const binding = await tx.get<DeviceKey>(userPK(userId), deviceKeyKey(devicePublicId));
+        assert(
+          !binding || binding.fingerprint === verified.fingerprint,
+          'DEVICE_KEY_MISMATCH',
+          'Another device already uses this identity.',
+          403,
+        );
+        if (!binding)
+          await tx.put(userPK(userId), deviceKeyKey(devicePublicId), {
+            ...verified,
+            boundAt: now(),
+          } satisfies DeviceKey);
+        keyFingerprint = verified.fingerprint;
+      } else if (devicePublicId) {
+        // Unsigned clients may keep an identity only until a key has been pinned to it.
+        const binding = await tx.get<DeviceKey>(userPK(userId), deviceKeyKey(devicePublicId));
+        assert(
+          !binding || binding.fingerprint === keyFingerprint,
+          'DEVICE_PROOF_REQUIRED',
+          'This device must prove its identity. Update harbor0 and sign in again.',
+          401,
+        );
+      }
       const revocation = devicePublicId
         ? await tx.get<DeviceRevocation>(userPK(userId), deviceRevocationKey(devicePublicId))
         : undefined;
@@ -1701,6 +1903,7 @@ export class StorageService {
         platform: input.platform,
         appVersion: input.appVersion ?? null,
         devicePublicId,
+        keyFingerprint,
         lastSeenAt: now(),
         createdAt: existing?.createdAt ?? now(),
         revokedAt: null,
@@ -1713,25 +1916,121 @@ export class StorageService {
       return { device };
     });
   }
-  async revokeDevice(userId: string, id: string) {
-    return transact(this.repo, async (tx) => {
-      const d = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
-      assert(d, 'DEVICE_NOT_FOUND', 'Device was not found.', 404);
-      d.revokedAt = now();
-      if (d.devicePublicId) {
-        const key = deviceRevocationKey(d.devicePublicId);
-        const prior = await tx.get<DeviceRevocation>(userPK(userId), key);
-        await tx.put(userPK(userId), key, {
-          version: (prior?.version ?? 0) + 1,
-          revokedAt: d.revokedAt,
-        });
-      }
-      await tx.put(userPK(userId), `DEVICE#${id}`, d);
-      await tx.delete(userPK(userId), `SYNCFOLDERS#${digest(syncDeviceKey(d))}`);
-      await syncMembershipChanged(tx, userId);
-      await this.record(tx, userId, 'DEVICE_REVOKED', id);
-      return { device: await this.deviceStatus(tx, d) };
+  /** A single-use challenge for this session to sign with its device key. */
+  async deviceChallenge(userId: string, sessionId: string) {
+    const challenge = randomBytes(32).toString('base64url');
+    const expiresAt = Math.floor(Date.now() / 1000) + DEVICE_CHALLENGE_SECONDS;
+    await transact(this.repo, async (tx) => {
+      await tx.get(userPK(userId), deviceChallengeKey(sessionId));
+      await tx.put(
+        userPK(userId),
+        deviceChallengeKey(sessionId),
+        { challenge, expiresAt } satisfies DeviceChallenge,
+        { expiresAt },
+      );
     });
+    // userId is part of the signed message, so mobile clients need not look it up first.
+    return { challenge, userId, expiresAt: new Date(expiresAt * 1000).toISOString() };
+  }
+  /** Every session of the device that `id` belongs to: the same key or installation. */
+  private async deviceSessions(tx: Transaction, userId: string, id: string) {
+    const sessions = await tx.list<DeviceSession>(userPK(userId), 'DEVICE#');
+    const groups = deviceGroups(sessions);
+    const group = groups.find((members) => members.some((session) => session.id === id));
+    assert(group, 'DEVICE_NOT_FOUND', 'Device was not found.', 404);
+    return group;
+  }
+  /**
+   * Revoking removes a device: its sessions end for good, it leaves every sync folder, and its
+   * backups are archived in the cloud (read-only, versions kept). Files on the device itself are
+   * untouched. If it signs in again later, it is registered as a new connection.
+   */
+  async revokeDevice(userId: string, id: string) {
+    // Listed outside the transaction so each row isn't a condition check (100-item limit).
+    const sessions = await this.deviceSessions(new Transaction(this.repo), userId, id);
+    const result = await transact(this.repo, async (tx) => {
+      const lookup = new Transaction(this.repo);
+      const at = now();
+      const publicIds = new Set(
+        sessions.flatMap((s) => (s.devicePublicId ? [s.devicePublicId] : [])),
+      );
+      const sessionIds = new Set(sessions.map((s) => s.id));
+      for (const publicId of publicIds) {
+        const key = deviceRevocationKey(publicId);
+        const prior = await tx.get<DeviceRevocation>(userPK(userId), key);
+        await tx.put(userPK(userId), key, { version: (prior?.version ?? 0) + 1, revokedAt: at });
+      }
+      for (const key of new Set(sessions.map(syncDeviceKey)))
+        await tx.delete(userPK(userId), `SYNCFOLDERS#${digest(key)}`);
+      await syncMembershipChanged(tx, userId);
+      const archived: string[] = [];
+      for (const listed of await lookup.list<BackupRoot>(userPK(userId), 'BACKUP#')) {
+        const owned =
+          sessionIds.has(listed.deviceId) ||
+          (!!listed.devicePublicId && publicIds.has(listed.devicePublicId));
+        if (!owned) continue;
+        const root = await tx.get<BackupRoot>(userPK(userId), `BACKUP#${listed.id}`);
+        if (!root || root.state === 'REMOVED' || root.state === 'ARCHIVED') continue;
+        await tx.put(userPK(userId), `BACKUP#${root.id}`, {
+          ...root,
+          state: 'ARCHIVED',
+          updatedAt: at,
+        });
+        archived.push(root.id);
+      }
+      await this.record(tx, userId, 'DEVICE_REVOKED', id);
+      return { archived, at };
+    });
+    // Mark each session in small batches: a device can have many sign-ins.
+    await this.endSessions(userId, sessions, result.at, true);
+    const tx = new Transaction(this.repo);
+    const session = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
+    return {
+      device: await this.deviceStatus(tx, session!),
+      archivedBackups: result.archived.length,
+    };
+  }
+  /**
+   * Signs a device out of the account. Its sync folders and backups stay set up and pause until
+   * someone signs in on it again.
+   */
+  async signOutDevice(userId: string, id: string) {
+    const sessions = await this.deviceSessions(new Transaction(this.repo), userId, id);
+    await this.endSessions(userId, sessions, now(), false);
+    const tx = new Transaction(this.repo);
+    const session = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
+    return { device: await this.deviceStatus(tx, session!) };
+  }
+  /** Ends every sign-in session of the account; devices keep their setup, as with sign-out. */
+  async signOutAll(userId: string) {
+    const sessions = await new Transaction(this.repo).list<DeviceSession>(
+      userPK(userId),
+      'DEVICE#',
+    );
+    const active = sessions.filter((session) => !session.revokedAt);
+    await this.endSessions(userId, active, now(), false);
+    return active.length;
+  }
+  private async endSessions(
+    userId: string,
+    sessions: DeviceSession[],
+    at: string,
+    revoked: boolean,
+  ) {
+    for (let i = 0; i < sessions.length; i += 25)
+      await transact(this.repo, async (tx) => {
+        for (const { id } of sessions.slice(i, i + 25)) {
+          const session = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
+          if (!session) continue;
+          await tx.put(userPK(userId), `DEVICE#${id}`, {
+            ...session,
+            revokedAt: session.revokedAt ?? at,
+            ...(revoked ? { revoked: true } : {}),
+          });
+          // An ended session must stop receiving wake-ups for this account.
+          await tx.delete(userPK(userId), `PUSH#${id}`);
+        }
+      });
   }
   async revokeSession(userId: string, id: string) {
     return transact(this.repo, async (tx) => {
@@ -1739,55 +2038,70 @@ export class StorageService {
       assert(d, 'DEVICE_NOT_FOUND', 'Device was not found.', 404);
       d.revokedAt = now();
       await tx.put(userPK(userId), `DEVICE#${id}`, d);
+      // A signed-out device must stop receiving wake-ups for this account.
+      await tx.delete(userPK(userId), `PUSH#${id}`);
       await this.record(tx, userId, 'DEVICE_REVOKED', id);
       return { device: await this.deviceStatus(tx, d) };
     });
   }
   private async deviceStatus(tx: Transaction, session: DeviceSession): Promise<Device> {
-    const { revocationVersion = 0, ...device } = session;
+    const { revocationVersion = 0, revoked = false, ...stored } = session;
+    const device: Device = { ...stored, keyFingerprint: stored.keyFingerprint ?? null };
+    let removed = revoked;
     if (device.devicePublicId) {
       const revocation = await tx.get<DeviceRevocation>(
         userPK(device.userId),
         deviceRevocationKey(device.devicePublicId),
       );
-      if (revocation && revocationVersion < revocation.version)
+      if (revocation && revocationVersion < revocation.version) {
         device.revokedAt ??= revocation.revokedAt;
+        removed = true;
+      }
     }
+    device.status = removed ? 'REVOKED' : device.revokedAt ? 'SIGNED_OUT' : 'ACTIVE';
     return device;
   }
   async checkDevice(userId: string, id: string) {
     const tx = new Transaction(this.repo);
     const session = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
     const d = session ? await this.deviceStatus(tx, session) : undefined;
-    assert(d && !d.revokedAt, 'DEVICE_REVOKED', 'This device is revoked. Sign in again.', 403);
+    assert(
+      d && d.status !== 'REVOKED',
+      'DEVICE_REVOKED',
+      'This device is revoked. Sign in again.',
+      403,
+    );
+    // A signed-out device keeps its setup and resumes once someone signs in on it again.
+    assert(!d.revokedAt, 'AUTH_INVALID', 'This device was signed out. Sign in again.', 401);
     return d;
   }
   async devices(userId: string) {
     const tx = new Transaction(this.repo);
-    const sessions = await tx.list<DeviceSession>(userPK(userId), 'DEVICE#');
-    const installations = new Map<string, Device>();
-    for (const session of sessions) {
-      const device = await this.deviceStatus(tx, session);
-      const key = device.devicePublicId
-        ? `installation:${device.devicePublicId}`
-        : `session:${device.id}`;
-      const prior = installations.get(key);
-      // Prefer an active session, then the most recently seen session, for display/revocation.
-      if (!prior) installations.set(key, device);
-      else {
-        const latest =
-          (Boolean(prior.revokedAt) && !device.revokedAt) ||
-          (Boolean(prior.revokedAt) === Boolean(device.revokedAt) &&
-            (device.lastSeenAt ?? '') > (prior.lastSeenAt ?? ''))
-            ? device
-            : prior;
-        installations.set(key, {
+    const sessions = await Promise.all(
+      (await tx.list<DeviceSession>(userPK(userId), 'DEVICE#')).map((session) =>
+        this.deviceStatus(tx, session),
+      ),
+    );
+    // Every sign-in is a session; sessions sharing a key fingerprint or installation ID are the
+    // same device, so the list shows each device once however often it signs in.
+    return {
+      items: deviceGroups(sessions).map((group) => {
+        // Prefer an active session, then the most recently seen one, for display and actions.
+        const latest = [...group].sort(
+          (a, b) =>
+            Number(!!a.revokedAt) - Number(!!b.revokedAt) ||
+            (b.lastSeenAt ?? '').localeCompare(a.lastSeenAt ?? '') ||
+            b.createdAt.localeCompare(a.createdAt),
+        )[0];
+        return {
           ...latest,
-          createdAt: prior.createdAt < device.createdAt ? prior.createdAt : device.createdAt,
-        });
-      }
-    }
-    return { items: [...installations.values()] };
+          createdAt: group.reduce(
+            (first, session) => (session.createdAt < first ? session.createdAt : first),
+            latest.createdAt,
+          ),
+        };
+      }),
+    };
   }
   async setSyncFolders(userId: string, deviceId: string, folderIds: string[]) {
     const device = await this.checkDevice(userId, deviceId);
@@ -1886,7 +2200,10 @@ export class StorageService {
       'SYNCFOLDERS#',
     );
     const ids = new Set(mappings.flatMap((mapping) => mapping.folderIds));
-    const devices = (await this.devices(userId)).items.filter((device) => !device.revokedAt);
+    // Signed-out devices are still members of their folders; only revoked ones have left.
+    const devices = (await this.devices(userId)).items.filter(
+      (device) => device.status !== 'REVOKED',
+    );
     const byKey = new Map(
       devices.map((device) => [
         device.devicePublicId ? `installation:${device.devicePublicId}` : `session:${device.id}`,
@@ -1946,6 +2263,10 @@ export class StorageService {
       nextCursor: changes.at(-1)?.sequence ?? cursor,
       hasMore: page.cursor !== null,
     };
+  }
+  async latestChanges(userId: string) {
+    const u = await this.account(new Transaction(this.repo), userId);
+    return { changes: [] as SyncChange[], nextCursor: u.sequence, hasMore: false };
   }
   async checkpoint(userId: string, deviceId: string, cursor: number) {
     await this.checkDevice(userId, deviceId);
@@ -2085,7 +2406,7 @@ export class StorageService {
     return false;
   }
   async backupRoot(userId: string, input: { operationId: string; deviceId: string; name: string }) {
-    await this.checkDevice(userId, input.deviceId);
+    const device = await this.checkDevice(userId, input.deviceId);
     return this.operation(userId, input.operationId, { action: 'backup', ...input }, async (tx) => {
       const backupId = uid();
       const item = this.newItem(
@@ -2099,6 +2420,10 @@ export class StorageService {
         id: backupId,
         userId,
         deviceId: input.deviceId,
+        // The installation owns the backup, so it keeps working when the device signs in again.
+        ...(device.devicePublicId
+          ? { devicePublicId: device.devicePublicId, deviceName: device.name }
+          : {}),
         localPathDisplayName: input.name,
         remoteRootDriveItemId: item.id,
         state: 'ACTIVE',
@@ -2115,12 +2440,16 @@ export class StorageService {
     const roots = await tx.list<BackupRoot>(userPK(userId), 'BACKUP#');
     return {
       items: await Promise.all(
-        roots.map(async (root) => ({
-          ...root,
-          deviceName:
-            (await tx.get<Device>(userPK(userId), `DEVICE#${root.deviceId}`))?.name ??
-            'Source computer',
-        })),
+        roots.map(async (root) => {
+          const device = await tx.get<Device>(userPK(userId), `DEVICE#${root.deviceId}`);
+          // Signing in again creates a new session for the same installation, so clients match
+          // backups to devices by installation rather than by the session that created them.
+          return {
+            ...root,
+            deviceName: device?.name ?? root.deviceName ?? 'Source computer',
+            devicePublicId: root.devicePublicId ?? device?.devicePublicId ?? null,
+          };
+        }),
       ),
     };
   }
@@ -2133,11 +2462,9 @@ export class StorageService {
       try {
         const workflows = new TransferWorkflows(this);
         let complete = true;
-        if (job.type === 'CLOUD_COPY') complete = await new CloudCopies(this).step(job.entityId!);
-        if (job.type === 'CLOUD_MIRROR')
-          complete = await new CloudCopies(this).mirror(job.entityId!);
-        if (job.type === 'SYNC_RELEASE')
-          complete = await new SyncRelay(this).release(job.userId!, job.entityId!);
+        // CLOUD_MIRROR and SYNC_RELEASE jobs left from before synced files stayed in the cloud
+        // simply complete.
+        if (job.type === 'CLOUD_COPY') complete = await abandonCloudCopy(this, job.entityId!);
         if (job.type === 'ARCHIVE_BUILD')
           complete = await new ArchiveWorkflows(this).step(
             job.entityId!,
@@ -2149,7 +2476,23 @@ export class StorageService {
             Math.min(deadline, Date.now() + 30_000),
           );
         if (job.type === 'PERMANENT_DELETE')
-          complete = await new DeletionWorkflows(this).step(job.userId!, job.entityId!);
+          complete = await new DeletionWorkflows(this).step(
+            job.userId!,
+            job.entityId!,
+            Math.min(deadline, Date.now() + 30_000),
+          );
+        if (job.type === 'TRASH_MEASURE')
+          complete = await new DeletionWorkflows(this).measure(
+            job.userId!,
+            job.entityId!,
+            job.key!,
+            Math.min(deadline, Date.now() + 30_000),
+          );
+        if (job.type === 'TRASH_EMPTY')
+          complete = await new DeletionWorkflows(this).empty(
+            job.userId!,
+            Math.min(deadline, Date.now() + 30_000),
+          );
         if (job.type === 'ACCOUNT_DELETE') complete = await this.purgeAccount(job.userId!);
         if (job.type === 'TRANSFER_BUILD') complete = await workflows.build(job.entityId!);
         if (job.type === 'TRANSFER_SAVE') complete = await workflows.saveBatch(job.entityId!);
@@ -2159,9 +2502,7 @@ export class StorageService {
           await transact(this.repo, (tx) =>
             this.job(tx, {
               ...job,
-              dueAt: new Date(
-                Date.now() + (['SYNC_RELEASE', 'CLOUD_MIRROR'].includes(job.type) ? 60000 : 1000),
-              ).toISOString(),
+              dueAt: new Date(Date.now() + 1000).toISOString(),
             }),
           );
           continue;
@@ -2193,7 +2534,11 @@ export class StorageService {
           );
           await sendEmail(job.to!, job.sender!);
         }
-        await transact(this.repo, (tx) => tx.delete('JOB', job.id));
+        await transact(this.repo, async (tx) => {
+          // A job scheduled again while this run was under way (e.g. the trash emptied again) stays.
+          if ((await tx.get<Job>('JOB', job.id))?.dueAt === job.dueAt)
+            await tx.delete('JOB', job.id);
+        });
       } catch {
         await transact(this.repo, async (tx) => {
           const current = await tx.get<Job>('JOB', job.id);

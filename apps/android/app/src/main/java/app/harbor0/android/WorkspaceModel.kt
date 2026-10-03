@@ -1,9 +1,13 @@
 package app.harbor0.android
 
 import android.app.Application
+import android.content.ContentValues
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Build
-import android.provider.OpenableColumns
+import android.provider.MediaStore
 import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,62 +16,132 @@ import kotlinx.serialization.json.*
 import java.io.File
 import java.util.UUID
 
-enum class Tab(val label: String) { Drive("Drive"), Sync("Sync"), Backups("Backups"), Trash("Trash"), Settings("Settings") }
-data class Listing(val items: List<DriveItem> = emptyList(), val runs: List<BackupRun> = emptyList(), val cursor: String? = null,
-    val loading: Boolean = false, val loaded: Boolean = false, val error: String? = null)
+/** Pages of the phone layout. Drive, Shared, Backups and Trash are tabs; the rest open from More, the bell or the account menu. */
+enum class Section(val title: String) {
+    Drive("My Drive"), Shared("Shared"), Backups("Backups"), Trash("Trash"),
+    Sync("Sync"), Devices("Devices"), Storage("Storage"), Settings("Settings"), Notifications("Notifications");
+    val inMore get() = this in listOf(Sync, Devices, Storage, Settings, Notifications)
+}
+enum class AuthMode { Login, Signup, Confirm, Forgot, Reset }
+data class Confirmation(val title: String, val description: String, val label: String, val done: String? = null,
+    val danger: Boolean = true, val cancel: String = "Go back", val note: String? = null, val run: suspend () -> Unit)
+data class ActivityEntry(val id: String, val message: String, val status: String, val time: Long, val read: Boolean = false)
 data class TransferProgress(val label: String, val fraction: Float?)
-data class Preview(val file: File, val mime: String)
+data class Preview(val file: File, val mime: String, val item: DriveItem? = null)
+data class ZipProgress(val name: String, val phase: String, val files: Int = 0, val bytes: Long = 0, val currentFile: String? = null,
+    val totalBytes: Long? = null, val fraction: Float? = null)
+data class Loadable<T>(val data: T? = null, val loading: Boolean = false, val error: String? = null)
+
+/** Sheets and dialogs. One is shown at a time; Back closes it. */
+sealed interface Overlay {
+    data object More : Overlay
+    data object Activity : Overlay
+    data object NewFolder : Overlay
+    data object SelectionMenu : Overlay
+    data object DeleteAccount : Overlay
+    data class ItemMenu(val item: DriveItem) : Overlay
+    data class TrashMenu(val item: DriveItem) : Overlay
+    data class Details(val item: DriveItem) : Overlay
+    data class Versions(val item: DriveItem) : Overlay
+    data class Rename(val item: DriveItem) : Overlay
+    data class Move(val items: List<DriveItem>) : Overlay
+    data class Send(val items: List<DriveItem>) : Overlay
+    data class ShareAccess(val item: DriveItem) : Overlay
+    data class BackupFile(val item: DriveItem) : Overlay
+    data class SyncSetupSheet(val kind: SyncSetup) : Overlay
+    data class SyncFolderMenu(val root: SyncRoot) : Overlay
+    data class SyncExclusions(val root: SyncRoot) : Overlay
+    data class SyncShare(val root: SyncRoot) : Overlay
+    data class SyncIssues(val root: SyncRoot?) : Overlay
+    data class Confirm(val confirmation: Confirmation) : Overlay
+}
 
 class WorkspaceModel(application: Application): AndroidViewModel(application) {
-    val api = HarborApi(BuildConfig.API_URL, KeystoreCredentials(application))
-    private val transfers = FileTransfers(api)
+    // Shared with background sync, which runs without this screen.
+    val api = Harbor.api(application)
+    val syncController = Harbor.sync(application)
+    val transfers = FileTransfers(api)
+    val drive = DriveState(this)
+    val trash = TrashState(this)
+    val shared = SharedState(this)
+    val backups = BackupsState(this)
+    val search = SearchState(this)
+    val uploads = UploadQueue(this)
+    val sync = SyncState(this)
     var signedIn by mutableStateOf(false); private set
     var restoring by mutableStateOf(true); private set
     var busy by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null)
-    var message by mutableStateOf<String?>(null)
-    var tab by mutableStateOf(Tab.Drive); private set
-    var stacks by mutableStateOf<Map<Tab, List<DriveItem>>>(emptyMap()); private set
-    var listings by mutableStateOf<Map<Tab, Listing>>(emptyMap()); private set
-    var backups by mutableStateOf<List<BackupRoot>>(emptyList()); private set
-    var statuses by mutableStateOf<Map<String, SyncStatus>>(emptyMap()); private set
-    var history by mutableStateOf(false); private set
+    var toast by mutableStateOf<String?>(null)
+    var online by mutableStateOf(true); private set
+    var section by mutableStateOf(Section.Drive); private set
+    var query by mutableStateOf("")
+    var overlay by mutableStateOf<Overlay?>(null)
     var account by mutableStateOf<Account?>(null); private set
-    var appearance by mutableStateOf(Appearance())
+    var appearance by mutableStateOf(Appearance()); private set
     var savedAppearance by mutableStateOf(Appearance()); private set
+    /** idle, saving, saved or error, as the web appearance footer. */
+    var appearanceStatus by mutableStateOf("idle"); private set
     var transfer by mutableStateOf<TransferProgress?>(null); private set
+    var zip by mutableStateOf<ZipProgress?>(null); private set
     var preview by mutableStateOf<Preview?>(null)
-    private var loadJob: Job? = null
+    var activity by mutableStateOf<List<ActivityEntry>>(emptyList()); private set
+    var devices by mutableStateOf(Loadable<List<Device>>()); private set
+    var notices by mutableStateOf(Loadable<List<Notice>>()); private set
+    // Sign-in, sign-up, confirmation and password reset.
+    var authMode by mutableStateOf(AuthMode.Login); private set
+    var authEmail by mutableStateOf("")
+    var authNotice by mutableStateOf<Pair<AuthMode, String>?>(null); private set
+    var authError by mutableStateOf<Pair<String, Boolean>?>(null)
+    var cooldown by mutableIntStateOf(0); private set
     private var actionJob: Job? = null
     private var transferJob: Job? = null
-    private var generation = 0
+    private var zipJob: Job? = null
+    private var appearanceJob: Job? = null
+    private var pollJob: Job? = null
+    private var cooldownJob: Job? = null
+    private var syncStartJob: Job? = null
     private var accountGeneration = 0
-    val path get() = stacks[tab].orEmpty()
-    val folder get() = path.lastOrNull()
-    val listing get() = listings[tab] ?: Listing()
-    val readOnly get() = tab == Tab.Backups || folder?.backupRootId != null
-    val canWrite get() = (tab == Tab.Drive || tab == Tab.Sync && folder != null) && !readOnly
-    val title get() = if (history) "Backup history" else folder?.name ?: if (tab == Tab.Drive) "My Drive" else tab.label
-    val currentBackup get() = backups.firstOrNull { it.remoteRootDriveItemId == path.firstOrNull()?.id }
+    val context: Context get() = getApplication()
+    val user get() = account?.user
+    val storage get() = account?.storage
+    val unread get() = activity.count { !it.read }
+
     init {
         // Foreground transfers do not survive process death. Remove previous temporary snapshots.
         viewModelScope.launch(Dispatchers.IO) {
             File(application.cacheDir, "transfers").deleteRecursively()
             File(application.cacheDir, "previews").deleteRecursively()
         }
+        drive.grid = preferences.getBoolean("drive-grid", false)
         viewModelScope.launch {
             api.signedIn.collect { active ->
                 signedIn = active
                 if (!active) {
-                    generation++; loadJob?.cancel(); transferJob?.cancel()
-                    account = null; appearance = Appearance(); savedAppearance = Appearance()
-                    stacks = emptyMap(); listings = emptyMap(); backups = emptyList(); statuses = emptyMap()
-                    tab = Tab.Drive; history = false; preview = null
+                    transferJob?.cancel(); zipJob?.cancel(); uploads.clear(); pollJob?.cancel(); syncStartJob?.cancel()
+                    launch { runCatching { syncController.disconnect() } }
+                    sync.reset()
+                    account = null; appearance = Appearance(); savedAppearance = Appearance(); appearanceStatus = "idle"
+                    section = Section.Drive; overlay = null; preview = null; query = ""; activity = emptyList()
+                    drive.reset(); trash.reset(); shared.reset(); backups.reset(); search.reset()
+                    devices = Loadable(); notices = Loadable()
                 }
             }
         }
+        val connectivity = application.getSystemService(ConnectivityManager::class.java)
+        online = connectivity?.activeNetwork != null
+        runCatching {
+            connectivity?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) { viewModelScope.launch { online = true } }
+                override fun onLost(network: Network) { viewModelScope.launch { online = false } }
+            })
+        }
         restore()
     }
+    private val preferences get() = context.getSharedPreferences("workspace", Context.MODE_PRIVATE)
+    fun setGrid(value: Boolean) { drive.grid = value; preferences.edit().putBoolean("drive-grid", value).apply() }
+
+    // Session ---------------------------------------------------------------
     fun restore() {
         if (busy) return
         actionJob = viewModelScope.launch {
@@ -77,132 +151,261 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
             finally { busy = false; restoring = false }
         }
     }
-    fun login(email: String, password: String) = action {
-        api.login(email, password, "${Build.MANUFACTURER} ${Build.MODEL}")
-        opened()
-    }
     private suspend fun opened() {
         signedIn = true
         // A profile/network failure must leave a retryable signed-in workspace.
         try { loadAccount() } catch (e: Exception) { report(e) }
-        refresh()
+        section = Section.Drive
+        drive.refresh()
+        startPolling()
+        startSync()
     }
-    fun logout() {
-        if (transfer != null) { error = "Finish or cancel the transfer before signing out."; return }
-        action { api.logout() }
-    }
-    fun forget() = action { api.forget() }
-    private fun report(e: Exception) {
-        if (e is CancellationException) throw e
-        error = if (e is java.io.IOException) "Could not connect. Check your connection and try again." else e.message ?: "This action could not be completed. Try again."
-    }
-    private fun action(block: suspend () -> Unit) {
-        if (busy) return
-        actionJob = viewModelScope.launch {
-            busy = true; error = null; message = null
-            try { block() } catch (e: Exception) { report(e) } finally { busy = false }
-        }
-    }
-    fun select(next: Tab) { if (tab == next) return; tab = next; history = false; refresh(reset = true) }
-    fun enter(item: DriveItem) { stacks = stacks + (tab to (path + item)); history = false; refresh(reset = true) }
-    fun openPath(depth: Int) { stacks = stacks + (tab to path.take(depth)); history = false; refresh(reset = true) }
-    fun back() {
-        if (history) history = false else if (path.isNotEmpty()) stacks = stacks + (tab to path.dropLast(1))
-        refresh(reset = true)
-    }
-    fun showHistory() { history = true; refresh(reset = true) }
-    private suspend fun loadAccount() {
-        val stamp = generation
-        val accountStamp = accountGeneration
-        val result = api.get<Account>("/v1/users/me")
-        if (stamp != generation || accountStamp != accountGeneration) return
-        if (appearance == savedAppearance) { appearance = result.user.appearance; savedAppearance = appearance }
-        account = result
-    }
-    /** Reloads the current location. Navigation passes `reset`; otherwise the items already shown stay visible while loading. */
-    fun refresh(more: Boolean = false, reset: Boolean = false) {
-        loadJob?.cancel()
-        val destination = tab
-        val parent = folder?.id
-        val showRuns = history
-        val backup = currentBackup
-        val previous = listings[destination] ?: Listing()
-        val cursor = if (more) previous.cursor else null
-        val shown = if (reset) Listing() else previous
-        loadJob = viewModelScope.launch {
-            listings = listings + (destination to shown.copy(loading = true, error = null))
-            try {
-                var page = DrivePage(emptyList())
-                var runs = RunPage(emptyList())
-                when {
-                    destination == Tab.Settings -> loadAccount()
-                    showRuns && backup != null -> runs = api.get(HarborApi.pagePath("/v1/backups/${HarborApi.segment(backup.id)}/runs", cursor))
-                    destination == Tab.Trash -> page = api.get(HarborApi.pagePath("/v1/search?trash=true", cursor))
-                    parent != null -> page = api.list(parent, cursor)
-                    destination == Tab.Sync -> {
-                        page = api.get("/v1/sync/folders")
-                        val found = mutableMapOf<String, SyncStatus>()
-                        for (batch in page.items.chunked(50)) {
-                            val ids = HarborApi.segment(batch.joinToString(",") { it.id })
-                            val result = api.get<StatusPage>("/v1/sync/status?ids=$ids&recursive=true")
-                            result.items.forEach { found[it.itemId] = it }
-                        }
-                        statuses = found
-                    }
-                    destination == Tab.Backups -> {
-                        backups = api.get<Backups>("/v1/backups").items.filter { it.state != "REMOVED" }
-                        page = DrivePage(backups.map { it.folder })
-                    }
-                    else -> {
-                        val synced = api.get<DrivePage>("/v1/sync/folders").items.map { it.id }.toSet()
-                        val roots = api.get<Backups>("/v1/backups").items.map { it.remoteRootDriveItemId }.toSet()
-                        page = api.list(null, cursor).let { it.copy(items = it.items.filter { item -> item.id !in synced && item.id !in roots && item.backupRootId == null }) }
-                    }
-                }
-                ensureActive()
-                val nextCursor = if (showRuns) runs.nextCursor else page.nextCursor
-                check(nextCursor == null || nextCursor != cursor) { "The server repeated this page. Refresh and try again." }
-                listings = listings + (destination to Listing(
-                    items = ((if (more) previous.items else emptyList()) + page.items).distinctBy { it.id },
-                    runs = ((if (more) previous.runs else emptyList()) + runs.items).distinctBy { it.id },
-                    cursor = nextCursor, loaded = true))
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                listings = listings + (destination to shown.copy(loading = false, error = e.message ?: "Could not load this page. Try again."))
+    /** Starts this account's sync engine, retrying while offline. */
+    private fun startSync() {
+        syncStartJob?.cancel()
+        syncStartJob = viewModelScope.launch {
+            while (isActive && signedIn) {
+                try {
+                    val id = user?.id ?: api.get<Account>("/v1/users/me").user.id
+                    syncController.connect(id); sync.refresh(); break
+                } catch (e: CancellationException) { throw e } catch (e: ApiException) {
+                    if (e.status == 401 || e.code == "DEVICE_REVOKED") break
+                } catch (_: Exception) {}
+                delay(30_000)
             }
         }
     }
-    fun createFolder(name: String) { if (!canWrite) return; val parent = folder?.id; action { api.createFolder(name, parent); refresh() } }
-    fun mutate(item: DriveItem, action: String) {
-        if (readOnly) return
-        action { api.trash(item, action); refresh() }
-    }
-    fun emptyTrash() = action { api.emptyTrash(); refresh() }
-    fun saveAppearance() {
-        if (account == null) return
-        if (busy) return
-        val snapshot = appearance
-        accountGeneration++
+    fun logout() {
+        if (transfer != null || uploads.active) { error = "Finish or cancel the transfer before signing out."; return }
         action {
+            syncController.disconnect()
+            try { api.logout() } catch (e: Exception) { startSync(); throw e }
+        }
+    }
+    fun forget() = action { api.forget() }
+    fun report(e: Throwable) {
+        if (e is CancellationException) throw e
+        error = message(e)
+    }
+    fun message(e: Throwable) = if (e is java.io.IOException) "Could not connect. Check your connection and try again." else e.message ?: "This action could not be completed. Try again."
+    /** Runs one action at a time. A failure shows the error banner (or the open sheet's alert) and keeps the sheet open. */
+    fun action(done: String? = null, close: Boolean = false, block: suspend () -> Unit) {
+        if (busy) return
+        actionJob = viewModelScope.launch {
+            busy = true; error = null
+            try { block(); if (close) overlay = null; done?.let(::notify) } catch (e: Exception) { report(e) } finally { busy = false }
+        }
+    }
+    fun confirm(confirmation: Confirmation) { error = null; overlay = Overlay.Confirm(confirmation) }
+    fun runConfirmation(confirmation: Confirmation) = action(confirmation.done, close = true) { confirmation.run() }
+    /** A toast that also lands in the activity feed, as drive notices do on the web. */
+    fun notify(text: String, status: String = "info") {
+        toast = text
+        publish(UUID.randomUUID().toString(), text, status)
+    }
+    fun publish(id: String, message: String, status: String) {
+        val current = activity.firstOrNull { it.id == id }
+        if (current?.message == message && current.status == status) return
+        activity = (listOf(ActivityEntry(id, message, status, System.currentTimeMillis())) + activity.filter { it.id != id }).take(100)
+    }
+    fun markActivityRead() { if (activity.any { !it.read }) activity = activity.map { it.copy(read = true) } }
+
+    // Auth ------------------------------------------------------------------
+    fun authGo(mode: AuthMode, notice: String? = null) {
+        authNotice = notice?.let { mode to it }; authError = null; authMode = mode
+    }
+    private fun startCooldown() {
+        cooldownJob?.cancel(); cooldown = 30
+        cooldownJob = viewModelScope.launch { while (cooldown > 0) { delay(1000); cooldown-- } }
+    }
+    private fun authAction(block: suspend () -> Unit) {
+        if (busy) return
+        actionJob = viewModelScope.launch {
+            busy = true; authError = null; authNotice = null; error = null
+            try { block() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { authError = message(e) to (e is ApiException && e.code == "EMAIL_NOT_VERIFIED") }
+            finally { busy = false }
+        }
+    }
+    fun login(email: String, password: String) = authAction {
+        authEmail = email.trim()
+        api.login(email, password, "${Build.MANUFACTURER} ${Build.MODEL}")
+        opened()
+    }
+    fun signup(email: String, displayName: String, username: String, password: String) = authAction {
+        authEmail = email.trim()
+        api.anonymous("/v1/auth/signup", buildJsonObject {
+            put("email", email.trim()); put("password", password); put("username", username); put("displayName", displayName.trim())
+        })
+        startCooldown(); authGo(AuthMode.Confirm, "We sent a verification code to ${email.trim()}.")
+    }
+    fun confirmEmail(email: String, code: String) = authAction {
+        api.anonymous("/v1/auth/confirm", buildJsonObject { put("email", email.trim()); put("code", code.trim()) })
+        authGo(AuthMode.Login, "Email verified. Sign in to continue.")
+    }
+    fun forgot(email: String) = authAction {
+        authEmail = email.trim()
+        api.anonymous("/v1/auth/forgot", buildJsonObject { put("email", email.trim()) })
+        startCooldown(); authGo(AuthMode.Reset, "If ${email.trim()} has an account, a reset code is on its way.")
+    }
+    fun resetPassword(email: String, code: String, password: String) = authAction {
+        api.anonymous("/v1/auth/reset", buildJsonObject { put("email", email.trim()); put("code", code.trim()); put("password", password) })
+        authGo(AuthMode.Login, "Password updated. Sign in with your new password.")
+    }
+    fun resend(goConfirm: Boolean = false) {
+        if (authEmail.isBlank()) { authError = "Enter your email to get a new code." to false; return }
+        authAction {
+            api.anonymous("/v1/auth/resend", buildJsonObject { put("email", authEmail.trim()) })
+            startCooldown()
+            if (goConfirm) authMode = AuthMode.Confirm
+            authNotice = AuthMode.Confirm to "A new code is on its way to ${authEmail.trim()}."
+        }
+    }
+
+    // Navigation ------------------------------------------------------------
+    /** Bumped on every navigation so pages start scrolled to the top. */
+    var epoch by mutableIntStateOf(0); private set
+    fun navigate(next: Section) {
+        epoch++
+        overlay = null; query = ""; error = null; search.reset()
+        drive.selected = emptySet(); trash.selected = emptySet()
+        if (next == Section.Drive) {
+            // Coming from another page opens My Drive fresh on Cloud, as the web remounts it.
+            drive.location = Location.Cloud
+            if (section != Section.Drive) drive.filters = DriveFilters()
+            drive.trail = emptyList(); drive.scope = "all"; drive.leavePlace()
+        }
+        if (next == Section.Backups) backups.close()
+        section = next
+        refreshSection()
+    }
+    /** Opens a search result: folders open in My Drive, files in the preview. */
+    fun openResult(item: DriveItem) {
+        if (!item.isFolder) return drive.open(item)
+        navigate(Section.Drive)
+        drive.location = if (item.backupRootId != null) Location.Backup else Location.Cloud
+        drive.enter(item)
+    }
+    fun clearSearch() { query = ""; search.reset(); refreshSection() }
+    fun refreshSection() {
+        if (query.isNotBlank() && section != Section.Drive && section != Section.Trash) return search.refresh()
+        when (section) {
+            Section.Drive -> drive.refresh()
+            Section.Trash -> trash.refresh()
+            Section.Shared -> shared.refresh()
+            Section.Backups -> backups.refresh()
+            Section.Sync -> sync.refresh()
+            Section.Devices -> loadDevices()
+            Section.Notifications -> loadNotices()
+            Section.Storage, Section.Settings -> refreshAccount()
+        }
+    }
+    /** Called when the app returns to the foreground, as the web refreshes on focus. */
+    fun resumed() { if (signedIn) { refreshAccount(); refreshSection() } }
+    private fun startPolling() {
+        pollJob?.cancel()
+        // Changes from other devices stay current without flashing a loading state.
+        pollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(15_000)
+                if (!foreground || overlay != null || busy) continue
+                when (section) { Section.Drive -> if (!drive.loading) drive.refresh(); Section.Shared -> shared.refresh(); Section.Sync -> sync.refresh(wake = false); else -> {} }
+            }
+        }
+    }
+    var foreground = true
+        set(value) { field = value; syncController.foreground = value }
+    /** System Back: closes sheets, clears selection or search, then goes up a level. */
+    fun back(): Boolean {
+        when {
+            overlay != null -> overlay = null
+            section == Section.Drive && drive.selected.isNotEmpty() -> drive.selected = emptySet()
+            section == Section.Trash && trash.selected.isNotEmpty() -> trash.selected = emptySet()
+            query.isNotEmpty() -> clearSearch()
+            section == Section.Drive && drive.canGoUp -> drive.up()
+            section == Section.Backups && backups.canGoBack -> backups.back()
+            section != Section.Drive -> navigate(Section.Drive)
+            else -> return false
+        }
+        return true
+    }
+    val canGoBack get() = overlay != null || query.isNotEmpty() || section != Section.Drive || drive.canGoUp || drive.selected.isNotEmpty()
+
+    // Account and appearance ---------------------------------------------------
+    suspend fun loadAccount() {
+        val stamp = accountGeneration
+        val result = api.get<Account>("/v1/users/me")
+        if (stamp != accountGeneration) return
+        if (appearanceStatus != "saving" && appearance == savedAppearance) { appearance = result.user.appearance; savedAppearance = appearance }
+        account = result
+    }
+    fun refreshAccount() { viewModelScope.launch { try { loadAccount() } catch (e: CancellationException) { throw e } catch (_: Exception) {} } }
+    /** Applies a theme change at once and saves it to the account shortly after, as the web settings do. */
+    fun updateAppearance(next: Appearance) {
+        appearance = next
+        if (account == null) return
+        accountGeneration++
+        appearanceJob?.cancel()
+        appearanceStatus = "saving"
+        appearanceJob = viewModelScope.launch {
+            delay(400)
+            try {
+                api.request("/v1/users/me", "PATCH", buildJsonObject {
+                    operation().forEach { (k, v) -> put(k, v) }; put("appearance", harborJson.encodeToJsonElement(next))
+                })
+                savedAppearance = next; appearanceStatus = "saved"
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { appearanceStatus = "error" }
+        }
+    }
+    fun retryAppearance() = updateAppearance(appearance)
+    /** Theme toggles in More and on the sign-in screen switch between light and dark. */
+    fun toggleTheme(dark: Boolean) = updateAppearance(appearance.copy(preference = if (dark) "light" else "dark"))
+    fun saveProfile(displayName: String, username: String) {
+        val current = user ?: return
+        action("Profile updated.") {
             api.request("/v1/users/me", "PATCH", buildJsonObject {
-                operation().forEach { (k, v) -> put(k, v) }; put("appearance", harborJson.encodeToJsonElement(snapshot))
+                operation().forEach { (k, v) -> put(k, v) }
+                // Only changed fields are sent, so an unchanged username never counts as a rename.
+                if (displayName.trim() != current.displayName) put("displayName", displayName.trim())
+                if (username != current.username) put("username", username)
             })
-            savedAppearance = snapshot; message = "Appearance saved to your account."
+            loadAccount()
         }
     }
-    fun openFile(item: DriveItem) {
-        if (item.cloudState == "REQUESTED") return
-        if (item.cloudState == "RELEASED") {
-            action { api.request("/v1/sync/items/${HarborApi.segment(item.id)}/request-content", "POST"); message = "Copy requested. Refresh after your computer uploads it."; refresh() }; return
-        }
-        startTransfer {
-            val file = transfers.download(item, File(getApplication<Application>().cacheDir, "previews"), ::progress)
-            preview = Preview(file, item.mimeType ?: "application/octet-stream")
+    fun deleteAccount(email: String) = action(close = true) {
+        api.request("/v1/users/me/delete", "POST", buildJsonObject { operation().forEach { (k, v) -> put(k, v) }; put("email", email.trim()) })
+        api.forget()
+    }
+
+    // Devices and notifications --------------------------------------------
+    fun loadDevices() {
+        devices = devices.copy(loading = true, error = null)
+        viewModelScope.launch {
+            devices = try { Loadable(api.get<Page<Device>>("/v1/devices").items) }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { devices.copy(loading = false, error = message(e)) }
         }
     }
+    fun revoke(device: Device) = confirm(Confirmation("Revoke access for ${device.name}?",
+        "This device will be signed out and will stop syncing. If it is the browser you are using now, you will need to sign in again.",
+        "Revoke access", "Device access removed.") {
+        api.request("/v1/devices/${HarborApi.segment(device.id)}", "DELETE"); loadDevices()
+    })
+    fun loadNotices() {
+        notices = notices.copy(loading = true, error = null)
+        viewModelScope.launch {
+            notices = try { Loadable(api.get<Page<Notice>>("/v1/notifications").items) }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { notices.copy(loading = false, error = message(e)) }
+        }
+    }
+    fun markRead(notice: Notice) = action {
+        api.request("/v1/notifications/${HarborApi.segment(notice.id)}/read", "POST"); loadNotices()
+    }
+
+    // Files on this device ------------------------------------------------------
     private fun progress(label: String, fraction: Float?) { viewModelScope.launch { transfer = TransferProgress(label, fraction) } }
-    private fun startTransfer(block: suspend () -> Unit) {
-        if (transferJob?.isActive == true) return
+    fun startTransfer(block: suspend () -> Unit) {
+        if (transferJob?.isActive == true) { error = "Wait for the current download to finish."; return }
         transferJob = viewModelScope.launch {
             transfer = TransferProgress("Preparing file…", null); error = null
             try { block() } catch (e: Exception) { if (e !is CancellationException) report(e) }
@@ -210,36 +413,82 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
         }
     }
     fun cancelTransfer() { transferJob?.cancel() }
-    fun upload(uri: Uri) {
-        if (!canWrite) return
-        val parent = folder?.id
-        startTransfer {
-            val context = getApplication<Application>()
-            val scratch = File(context.cacheDir, "transfers/${UUID.randomUUID()}")
-            try {
-                val (name, mime) = withContext(Dispatchers.IO) {
-                    val resolver = context.contentResolver
-                    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                        if (cursor.moveToFirst()) cursor.getString(0) else null
-                    } ?: "Upload"
-                    safeName(name)
-                    check(scratch.parentFile!!.mkdirs() || scratch.parentFile!!.isDirectory)
-                    resolver.openInputStream(uri)?.use { input -> scratch.outputStream().use { output ->
-                        val buffer = ByteArray(256 * 1024)
-                        while (true) { ensureActive(); val n = input.read(buffer); if (n < 0) break; output.write(buffer, 0, n) }
-                    } } ?: error("The selected file could not be opened. Select it again.")
-                    name to (resolver.getType(uri) ?: "application/octet-stream")
-                }
-                transfers.upload(scratch, name, mime, parent, ::progress)
-                message = "$name uploaded."; refresh()
-            } finally { withContext(Dispatchers.IO) { scratch.delete() } }
-        }
+    private val previews get() = File(context.cacheDir, "previews")
+    /** Downloads, checks and shows a file; the preview offers opening in another app, sharing and saving. */
+    fun openFile(item: DriveItem) = startTransfer {
+        val file = transfers.download(item, previews, ::progress)
+        preview = Preview(file, item.mimeType ?: "application/octet-stream", item)
     }
-    fun saveDownload(uri: Uri, file: File) = action {
+    /** Saves a verified copy to the public Downloads folder. Android 9 and earlier choose a location instead. */
+    fun downloadToDevice(name: String, body: JsonObject, mime: String?) = startTransfer { fetchAndSave(name, body, mime) }
+    suspend fun fetchAndSave(name: String, body: JsonObject, mime: String?) {
+        val file = transfers.download(name, body, previews, ::progress)
+        save(file, mime ?: "application/octet-stream")
+    }
+    private suspend fun save(file: File, mime: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            withContext(Dispatchers.IO) {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, file.name); put(MediaStore.Downloads.MIME_TYPE, mime); put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Could not save this file. Try again.")
+                try {
+                    resolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } } ?: error("Could not save this file. Try again.")
+                    resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                } catch (e: Exception) { resolver.delete(uri, null, null); throw e }
+                file.parentFile?.deleteRecursively()
+            }
+            notify("Saved “${file.name}” to Downloads.", "success")
+        } else preview = Preview(file, mime)
+    }
+    fun saveDownload(uri: Uri, file: File) = action("File saved.") {
         withContext(Dispatchers.IO) {
-            getApplication<Application>().contentResolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
+            context.contentResolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
                 ?: error("Could not save this file. Choose another location.")
         }
-        message = "File saved."
     }
+    fun savePreview() {
+        val current = preview ?: return
+        action { save(current.file.copyTo(File(previews, UUID.randomUUID().toString() + "/" + current.file.name)), current.mime) }
+    }
+    /** Folder ZIPs are built by the backend; this polls its progress, then downloads and saves the archive. */
+    fun downloadFolder(item: DriveItem) {
+        if (zipJob?.isActive == true) return
+        zipJob = viewModelScope.launch {
+            zip = ZipProgress(item.name, "queued"); error = null
+            var job: FolderDownload? = null
+            try {
+                job = harborJson.decodeFromJsonElement<FolderDownload>(api.request("/v1/folder-downloads", "POST", buildJsonObject {
+                    put("driveItemId", item.id); put("operationId", UUID.randomUUID().toString())
+                }))
+                while (true) {
+                    val current = job!!
+                    if (current.state == "READY") break
+                    if (current.state in listOf("FAILED", "CANCELLED", "EXPIRED")) error(current.error ?: "ZIP preparation ended. Please try again.")
+                    zip = ZipProgress(item.name, current.state.lowercase(), current.files, current.bytes, current.currentFile, current.totalBytes,
+                        current.totalBytes?.let { if (it == 0L) 1f else current.bytes.toFloat() / it })
+                    delay(1500)
+                    job = api.get<FolderDownload>("/v1/folder-downloads/${HarborApi.segment(current.id)}")
+                }
+                val ready = job!!
+                val url = ready.downloadUrl ?: error("The ZIP download is unavailable. Please try again.")
+                val file = transfers.fetch(url, "${safeName(item.name)}.zip", ready.sizeBytes, ready.contentHash, previews) { _, fraction ->
+                    viewModelScope.launch { zip = zip?.copy(phase = "downloading", fraction = fraction, bytes = ((fraction ?: 0f) * (ready.sizeBytes ?: 0)).toLong()) }
+                }
+                save(file, "application/zip")
+            } catch (e: CancellationException) {
+                job?.takeIf { it.state !in listOf("FAILED", "CANCELLED", "EXPIRED", "READY") }?.let {
+                    withContext(NonCancellable) { runCatching { api.request("/v1/folder-downloads/${HarborApi.segment(it.id)}", "DELETE") } }
+                }
+                throw e
+            } catch (e: Exception) { report(e) }
+            finally { zip = null }
+        }
+    }
+    fun cancelZip() { zipJob?.cancel() }
+
+    // Uploads (used by the Drive FAB and tests) ----------------------------------
+    fun upload(uri: Uri) = uploads.addUris(listOf(uri))
+    override fun onCleared() { uploads.clear(); super.onCleared() }
 }

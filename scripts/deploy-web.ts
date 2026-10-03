@@ -24,6 +24,30 @@ await run('npm', ['run', 'build:web-static']);
 await access('.cloud/web-export/out/index.html');
 await run('npm', ['run', 'test:web-styles']);
 const assetsOnly = process.argv.includes('--assets-only');
+if (!assetsOnly && process.env.WEB_CERT_ARN) {
+  const status = (
+    await run(
+      'aws',
+      [
+        'acm',
+        'describe-certificate',
+        '--region',
+        'us-east-1',
+        '--certificate-arn',
+        process.env.WEB_CERT_ARN,
+        '--query',
+        'Certificate.Status',
+        '--output',
+        'text',
+      ],
+      true,
+    )
+  ).trim();
+  if (status !== 'ISSUED')
+    throw new Error(
+      `app.harbor0.com certificate is ${status}; add its DNS validation record first.`,
+    );
+}
 if (!assetsOnly) {
   await run('npx', [
     'cdk',

@@ -98,7 +98,13 @@ try {
       .getByRole('link', { name: 'Favorites', exact: true }),
   ).toHaveCount(0);
   expect([403, 404]).toContain((await page.request.get(new URL('/favorites', url).href)).status());
-  await expect(page.locator('.file-entry-row')).toHaveCount(1);
+  await expect(page.locator('.file-entry-row:not(.file-entry-pinned)')).toHaveCount(1);
+  // Synced Folders, Backups and Archives are permanent places at the top of My Drive.
+  await expect(page.locator('.file-entry-pinned strong')).toHaveText([
+    'Synced Folders',
+    'Backups',
+    'Archives',
+  ]);
   const upload = page.locator('.upload-button');
   await expect(upload).toHaveCSS('display', 'flex');
   await expect(upload).toHaveCSS('border-radius', '8px');
@@ -138,18 +144,16 @@ try {
   await expect(table.locator('th').first()).toHaveCSS('padding', '0px 12px');
   await expect(table.locator('tbody td').first()).toHaveCSS('padding', '8px 12px');
   await expect(table.locator('tbody td').first()).toHaveCSS('border-bottom-width', '1px');
-  await expect(table.locator('.file-entry-icon')).toHaveCSS('width', '28px');
-  await expect(table.locator('.file-entry-label small')).toHaveCount(0);
-  for (const [tab, title] of [
-    ['Backup', 'No backup folders'],
-    ['Sync', 'No synced folders'],
-  ]) {
-    await page.getByRole('tab', { name: tab, exact: true }).click();
-    await expect(page.locator('.empty-state').getByRole('heading', { name: title })).toBeVisible();
-    await expect(page.getByRole('combobox', { name: 'Filter by type', exact: true })).toBeVisible();
-    await expect(page.getByText('Backup files are read-only', { exact: false })).toHaveCount(0);
-  }
-  await page.getByRole('tab', { name: 'Cloud', exact: true }).click();
+  const fileRow = table.locator('.file-entry-row:not(.file-entry-pinned)');
+  await expect(fileRow.locator('.file-entry-icon')).toHaveCSS('width', '28px');
+  await expect(fileRow.locator('.file-entry-label small')).toHaveCount(0);
+  await expect(table.locator('.file-entry-pinned .file-entry-icon').first()).toHaveCSS(
+    'width',
+    '28px',
+  );
+  // My Drive shows only cloud items; backups and sync folders have their own pages.
+  await expect(page.getByRole('tab')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Filter by type', exact: true })).toBeVisible();
   await expect(table).toBeVisible();
   await page.getByRole('button', { name: 'New folder', exact: true }).click();
   const folderName = page.getByRole('textbox', { name: 'Folder name', exact: true });
@@ -183,16 +187,25 @@ try {
   await page.screenshot({ path: `test-results/web-styles/${prefix}-dark.png`, fullPage: true });
   for (const width of [1024, 768, 390]) {
     await page.setViewportSize({ width, height: 844 });
-    for (let index = 0; index < 4; index++)
-      await expect(table.getByRole('columnheader').nth(index)).toBeVisible();
-    if (width === 390)
-      expect(await tableScroll.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    if (width === 390) {
+      // Phones show name rows with size and date underneath instead of extra columns.
+      await expect(table.getByRole('columnheader').first()).toBeVisible();
+      await expect(table.getByRole('columnheader', { name: 'Size' })).toBeHidden();
+      await expect(table.locator('.file-entry-mobile-meta').first()).toBeVisible();
+      await expect(page.getByRole('navigation', { name: 'Tab bar' })).toBeVisible();
+      // Allow a pixel of sub-pixel rounding.
+      expect(await tableScroll.evaluate((el) => el.scrollWidth - el.clientWidth <= 1)).toBe(true);
+    } else
+      for (let index = 0; index < 4; index++)
+        await expect(table.getByRole('columnheader').nth(index)).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
   }
   // Exercise clean URLs against the actual static export, including refreshes.
-  for (const [name, route] of Object.entries(workspaceRoutes)) {
+  for (const [section, route] of Object.entries(workspaceRoutes)) {
+    // /sync is the Synced Folders place inside My Drive.
+    const name = section === 'Sync' ? 'Synced Folders' : section;
     await page.goto(new URL(route, url).href);
     await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
     await page.reload();

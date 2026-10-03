@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createApp } from './api';
 import { CognitoAuth, DevelopmentAuth } from './auth';
 import { DynamoRepository, type Key, type Write } from './repository';
 import { Realtime } from './realtime';
+import { ApnsSender, PushDelivery, PushRegistrations } from './push';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
+import { createAdminApp } from './admin/api';
+import { DevelopmentDirectory } from './admin/directory';
+import { DevelopmentStaffAuth } from './admin/staff-auth';
 if (process.env.NODE_ENV === 'production')
   throw new Error('The local server must not run in production. Use the Lambda entrypoint.');
 // DynamoDB Local has no stream trigger; report committed keys the way the stream would.
@@ -30,14 +35,33 @@ const storage = new R2Storage(
 const service = new StorageService(repo, storage);
 const realtimePort = Number(process.env.REALTIME_PORT ?? 8788);
 const sockets = new Map<string, WebSocket>();
-const realtime = new Realtime(repo, `ws://127.0.0.1:${realtimePort}`, {
-  async send(connectionId, message) {
-    const socket = sockets.get(connectionId);
-    if (!socket || socket.readyState !== socket.OPEN) return false;
-    socket.send(JSON.stringify(message));
-    return true;
+// Optional: APNS_KEY_PATH (.p8), APNS_KEY_ID and APNS_TEAM_ID send File Provider pushes from local dev.
+const push = process.env.APNS_KEY_PATH
+  ? new PushDelivery(
+      new PushRegistrations(repo),
+      new ApnsSender(
+        {
+          keyId: process.env.APNS_KEY_ID ?? '',
+          teamId: process.env.APNS_TEAM_ID ?? '',
+          privateKey: readFileSync(process.env.APNS_KEY_PATH, 'utf8'),
+        },
+        process.env.APNS_BUNDLE_ID ?? 'app.harbor0.ios',
+      ),
+    )
+  : undefined;
+const realtime = new Realtime(
+  repo,
+  `ws://127.0.0.1:${realtimePort}`,
+  {
+    async send(connectionId, message) {
+      const socket = sockets.get(connectionId);
+      if (!socket || socket.readyState !== socket.OPEN) return false;
+      socket.send(JSON.stringify(message));
+      return true;
+    },
   },
-});
+  push,
+);
 repo.onCommit = (keys) =>
   void realtime.publish(keys).catch(() => console.error('Local realtime publish failed'));
 new WebSocketServer({ host: '127.0.0.1', port: realtimePort }).on(
@@ -87,6 +111,19 @@ const { app } = createApp(
 serve({ fetch: app.fetch, hostname: '127.0.0.1', port: Number(process.env.PORT ?? 8787) }, () =>
   console.log('harbor0 API listening at http://127.0.0.1:8787'),
 );
+// The management console API runs as its own server, as it is its own Lambda in the cloud.
+if (auth instanceof DevelopmentAuth) {
+  const adminPort = Number(process.env.ADMIN_PORT ?? 8789);
+  const { app: adminApp } = createAdminApp(
+    service,
+    new DevelopmentDirectory(auth),
+    new DevelopmentStaffAuth(),
+    { origins: ['http://localhost:3300', 'http://127.0.0.1:3300'], secureCookies: false },
+  );
+  serve({ fetch: adminApp.fetch, hostname: '127.0.0.1', port: adminPort }, () =>
+    console.log(`harbor0 admin API listening at http://127.0.0.1:${adminPort}`),
+  );
+}
 const timer = setInterval(
   () =>
     void service

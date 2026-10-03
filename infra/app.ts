@@ -35,6 +35,11 @@ const emailFrom = new CfnParameter(stack, 'EmailFrom', {
   description:
     'Optional SES verified sender for file invitations; Cognito uses its AWS default sender',
 }).valueAsString;
+const adminOrigin = new CfnParameter(stack, 'AdminOrigin', {
+  type: 'String',
+  default: '',
+  description: 'HTTPS origin of the management console; empty refuses every console change',
+}).valueAsString;
 const table = new dynamodb.Table(stack, 'Metadata', {
   partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
   sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
@@ -195,9 +200,20 @@ const realtimeStream = new lambda.Function(stack, 'RealtimeStream', {
     TABLE_NAME: table.tableName,
     REALTIME_URL: socketStage.url,
     REALTIME_ENDPOINT: socketStage.callbackUrl,
+    // File Provider pushes for iOS; off until the `harbor0-apns` secret exists.
+    APNS_SECRET_ID: 'harbor0-apns',
+    APNS_BUNDLE_ID: 'app.harbor0.ios',
     NODE_ENV: 'production',
   },
 });
+realtimeStream.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: ['secretsmanager:GetSecretValue'],
+    resources: [
+      `arn:${stack.partition}:secretsmanager:${stack.region}:${stack.account}:secret:harbor0-apns-*`,
+    ],
+  }),
+);
 table.grantReadWriteData(realtimeStream);
 socketStage.grantManagementApiAccess(realtimeStream);
 // Only rows that can wake a client invoke the function.
@@ -215,6 +231,108 @@ realtimeStream.addEventSource(
     ),
   }),
 );
+// Management console: staff sign in to their own pool (admin-created, TOTP required), and the
+// console API runs in its own Lambda behind its own HTTP API with no R2 access.
+const staffPool = new cognito.UserPool(stack, 'Staff', {
+  selfSignUpEnabled: false,
+  signInAliases: { email: true },
+  signInCaseSensitive: false,
+  mfa: cognito.Mfa.REQUIRED,
+  mfaSecondFactor: { sms: false, otp: true },
+  passwordPolicy: {
+    minLength: 14,
+    requireDigits: true,
+    requireLowercase: true,
+    requireUppercase: true,
+    requireSymbols: true,
+    tempPasswordValidity: Duration.days(3),
+  },
+  // Staff passwords are reset by an administrator, never by email self-service.
+  accountRecovery: cognito.AccountRecovery.NONE,
+  userInvitation: {
+    emailSubject: 'Your harbor0 console account',
+    emailBody:
+      'An administrator added you to the harbor0 management console. Sign in with {username} and the temporary password {####}, then set a password and add an authenticator app.',
+  },
+  removalPolicy: RemovalPolicy.RETAIN,
+});
+for (const [id, groupName, description] of [
+  ['StaffAdmins', 'admin', 'Full console access: storage limits, suspension, deletion'],
+  ['StaffSupport', 'support', 'Read access, notes, password resets and sign-outs'],
+])
+  new cognito.CfnUserPoolGroup(stack, id, {
+    userPoolId: staffPool.userPoolId,
+    groupName,
+    description,
+  });
+const staffClient = new cognito.CfnUserPoolClient(stack, 'StaffClient', {
+  userPoolId: staffPool.userPoolId,
+  generateSecret: false,
+  explicitAuthFlows: ['ALLOW_USER_PASSWORD_AUTH'],
+  enableTokenRevocation: true,
+  preventUserExistenceErrors: 'ENABLED',
+  accessTokenValidity: 15,
+  idTokenValidity: 15,
+  refreshTokenValidity: 12,
+  tokenValidityUnits: { accessToken: 'minutes', idToken: 'minutes', refreshToken: 'hours' },
+  refreshTokenRotation: { feature: 'ENABLED', retryGracePeriodSeconds: 10 },
+  readAttributes: ['email', 'email_verified'],
+  writeAttributes: [],
+  supportedIdentityProviders: ['COGNITO'],
+});
+const adminLogs = new logs.LogGroup(stack, 'AdminLogs', {
+  retention: logs.RetentionDays.ONE_YEAR,
+  removalPolicy: RemovalPolicy.RETAIN,
+});
+const adminFunction = new lambda.Function(stack, 'Admin', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.admin',
+  code: lambda.Code.fromAsset('dist/backend'),
+  memorySize: 512,
+  timeout: Duration.seconds(29),
+  environment: {
+    TABLE_NAME: table.tableName,
+    COGNITO_USER_POOL_ID: pool.userPoolId,
+    COGNITO_CLIENT_ID: client.ref,
+    STAFF_USER_POOL_ID: staffPool.userPoolId,
+    STAFF_CLIENT_ID: staffClient.ref,
+    ADMIN_ORIGIN: adminOrigin,
+    NODE_ENV: 'production',
+  },
+  logGroup: adminLogs,
+});
+table.grantReadWriteData(adminFunction);
+adminFunction.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: [
+      'cognito-idp:ListUsers',
+      'cognito-idp:DescribeUserPool',
+      'cognito-idp:AdminResetUserPassword',
+      'cognito-idp:AdminConfirmSignUp',
+      'cognito-idp:AdminUpdateUserAttributes',
+      'cognito-idp:AdminDisableUser',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminUserGlobalSignOut',
+      'cognito-idp:AdminDeleteUser',
+    ],
+    resources: [pool.userPoolArn],
+  }),
+);
+const adminApi = new apigw.HttpApi(stack, 'AdminHttpApi', {
+  description: 'harbor0 management console API (reached through the console distribution)',
+});
+adminApi.addRoutes({
+  path: '/{proxy+}',
+  methods: [apigw.HttpMethod.ANY],
+  integration: new integrations.HttpLambdaIntegration('AdminIntegration', adminFunction),
+});
+const adminStage = adminApi.defaultStage!.node.defaultChild as apigw.CfnStage;
+adminStage.defaultRouteSettings = { throttlingBurstLimit: 20, throttlingRateLimit: 10 };
+new cloudwatch.Alarm(stack, 'AdminErrors', {
+  metric: adminFunction.metricErrors(),
+  threshold: 1,
+  evaluationPeriods: 1,
+});
 const api = new apigw.HttpApi(stack, 'HttpApi', {
   corsPreflight: {
     allowOrigins: [webOrigin],
@@ -263,5 +381,8 @@ for (const [key, value] of Object.entries({
   ApiFunctionName: apiFunction.functionName,
   MaintenanceFunctionName: jobsFunction.functionName,
   RegistrationFunctionName: registration.functionName,
+  AdminApiUrl: adminApi.apiEndpoint,
+  StaffUserPoolId: staffPool.userPoolId,
+  StaffClientId: staffClient.ref,
 }))
   new CfnOutput(stack, key, { value });

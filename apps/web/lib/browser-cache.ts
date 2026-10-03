@@ -55,6 +55,13 @@ export class BrowserCache<T> {
     this.pending.delete(key);
   }
 
+  /** Drop every entry except those `keep` matches, e.g. to refetch listings but not catalogs. */
+  prune(keep: (key: string) => boolean) {
+    this.generation++;
+    for (const key of [...this.entries.keys()]) if (!keep(key)) this.entries.delete(key);
+    for (const key of [...this.pending.keys()]) if (!keep(key)) this.pending.delete(key);
+  }
+
   clear() {
     this.generation++;
     this.entries.clear();

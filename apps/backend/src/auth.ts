@@ -189,6 +189,8 @@ export class CognitoAuth implements AuthProvider {
 export class DevelopmentAuth implements AuthProvider {
   users = new Map<string, Identity>();
   sessions = new Map<string, Identity>();
+  /** Accounts disabled from the management console; they cannot sign in. */
+  disabled = new Set<string>();
   constructor() {
     for (const name of ['alice', 'bob'])
       this.users.set(`${name}@example.test`, {
@@ -203,7 +205,12 @@ export class DevelopmentAuth implements AuthProvider {
   async identity(token: string) {
     const user =
       this.sessions.get(token) ?? [...this.users.values()].find((u) => `dev-${u.id}` === token);
-    assert(user, 'AUTH_INVALID', 'Invalid development session.', 401);
+    assert(
+      user && !this.disabled.has(user.id),
+      'AUTH_INVALID',
+      'Invalid development session.',
+      401,
+    );
     return user;
   }
   async signup(input: { email: string; username: string; displayName: string }) {
@@ -237,6 +244,7 @@ export class DevelopmentAuth implements AuthProvider {
       401,
     );
     assert(u.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email.', 403);
+    assert(!this.disabled.has(u.id), 'AUTH_INVALID', 'User is disabled.', 401);
     const sessionId = crypto.randomUUID();
     const token = `dev-${u.id}-${sessionId}`;
     this.sessions.set(token, { ...u, deviceId: sessionId, sessionId });

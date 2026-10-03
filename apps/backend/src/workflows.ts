@@ -260,6 +260,7 @@ export class TransferWorkflows {
       if (t.recipientUserId) {
         await tx.put(userPK(t.recipientUserId), `RECEIVED#${id}`, { id });
         await s.notification(tx, t.recipientUserId, 'TRANSFER_RECEIVED', { transferId: id });
+        await s.recordContact(tx, t.senderUserId, t.recipientUserId);
         await s.record(tx, t.recipientUserId, 'TRANSFER_CREATED', id);
       } else {
         await tx.put(`PENDING#${t.recipientEmail}`, id, { id });

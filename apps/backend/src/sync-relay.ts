@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Device, DriveItem, FileVersion, SyncItemStatus, ShareGrant } from '@harbor/contracts';
-import { StorageService, userPK, type StoredObject } from './domain';
+import { StorageService, userPK } from './domain';
 import { Transaction, transact } from './repository';
-import { assert, DomainError } from './errors';
-import type { CloudMirrorLinks, CopyWait } from './cloud-copies';
+import { assert } from './errors';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const syncDeviceKey = (device: Pick<Device, 'id' | 'devicePublicId'>) =>
@@ -15,12 +14,8 @@ export type SyncMapping = {
   shareIds?: Record<string, string>;
 };
 type Receipt = { epoch: string; at: string };
-type Delivery = {
-  version: string;
-  receipts: Record<string, Receipt>;
-  cleanupCursor?: string;
-  retained?: boolean;
-};
+// Receipts only report sync progress: synced files always keep their bytes in the cloud.
+type Delivery = { version: string; receipts: Record<string, Receipt> };
 const versionKey = (item: DriveItem) =>
   item.type === 'FILE' ? item.currentVersionId! : `folder:${item.revision}`;
 
@@ -162,20 +157,6 @@ export class SyncRelay {
       );
       await tx.put(userPK(owner), `SYNCSTATE#${item.id}`, delivery);
       const counts = this.counts(item, required, delivery);
-      if (
-        item.type === 'FILE' &&
-        counts.requiredDevices > 0 &&
-        counts.confirmedDevices === counts.requiredDevices
-      ) {
-        await this.service.job(tx, {
-          id: `sync-release-${item.id}`,
-          type: 'SYNC_RELEASE',
-          userId: owner,
-          entityId: item.id,
-          dueAt: new Date().toISOString(),
-          attempts: 0,
-        });
-      }
       return { ok: true, ...counts };
     });
   }
@@ -186,12 +167,16 @@ export class SyncRelay {
       const { item, owner } = await this.service.authorized(tx, userId, itemId, true);
       const mappings = await this.mappings(tx, owner);
       const required = await this.participants(tx, owner, item, mappings);
-      assert(
-        required[
+      const linked =
+        !!required[
           digest(
             owner === userId ? syncDeviceKey(device) : `account:${userId}:${syncDeviceKey(device)}`,
           )
-        ],
+        ];
+      // The owner's other app devices (e.g. a phone opening the file on demand) may ask for a
+      // legacy released file too; shared-folder members still need to be linked to the folder.
+      assert(
+        linked || owner === userId,
         'FORBIDDEN',
         'This device is not linked to this folder.',
         403,
@@ -205,121 +190,32 @@ export class SyncRelay {
       return { item };
     });
   }
-  // Metadata is retained. Releasing bytes must never produce a FILE_DELETED event.
-  async release(userId: string, itemId: string): Promise<boolean> {
-    return transact(this.service.repo, async (tx) => {
-      const wait = await tx.get<CopyWait>(userPK(userId), `CLOUDCOPYWAIT#${itemId}`);
-      if (
-        wait &&
-        Object.values(wait.copies).some((expiresAt) => expiresAt > new Date().toISOString())
-      )
-        return false;
-      const mappings = await this.mappings(tx, userId);
-      const item = await tx.get<DriveItem & { purging?: boolean }>(
-        userPK(userId),
-        `ITEM#${itemId}`,
-      );
-      if (
-        !item ||
-        item.deletedAt ||
-        item.purging ||
-        item.type !== 'FILE' ||
-        item.cloudState === 'REQUESTED'
-      )
-        return true;
-      let required: Record<string, string>;
-      try {
-        required = await this.participants(tx, userId, item, mappings);
-      } catch (error) {
-        if (error instanceof DomainError && error.code === 'SYNC_REMOVED') return true;
-        throw error;
-      }
-      const delivery = await tx.get<Delivery>(userPK(userId), `SYNCSTATE#${item.id}`);
-      const counts = this.counts(item, required, delivery);
-      if (!counts.requiredDevices || counts.confirmedDevices !== counts.requiredDevices)
-        return true;
-      // A backup remains durable even if someone also maps its folder for sync.
-      let parent: DriveItem | undefined = item;
-      const path = new Set<string>();
-      while (parent) {
-        path.add(parent.id);
-        const mirrors = await tx.get<CloudMirrorLinks>(userPK(userId), `CLOUDMIRROR#${parent.id}`);
-        if (mirrors?.copies.length) return true;
-        parent = parent.parentId
-          ? await tx.get<DriveItem>(userPK(userId), `ITEM#${parent.parentId}`)
-          : undefined;
-      }
-      const backups = await new Transaction(this.service.repo).list<{
-        remoteRootDriveItemId: string;
-      }>(userPK(userId), 'BACKUP#');
-      if (backups.some((backup) => path.has(backup.remoteRootDriveItemId))) return true;
-      const page = await this.service.repo.query(
-        userPK(userId),
-        `VERSION#${item.id}#`,
-        8,
-        delivery!.cleanupCursor,
-      );
-      // Multiple versions of this file can reference the same object (Restore).
-      // Count our live references so only references held by other features defer cleanup.
-      const ownReferences = new Map<string, number>();
-      let versionCursor: string | undefined;
-      do {
-        const versions = await this.service.repo.query(
-          userPK(userId),
-          `VERSION#${item.id}#`,
-          100,
-          versionCursor,
-        );
-        for (const row of versions.rows) {
-          const version = row.data as FileVersion;
-          if (version.cloudState !== 'RELEASED')
-            ownReferences.set(
-              version.storageObjectId,
-              (ownReferences.get(version.storageObjectId) ?? 0) + 1,
-            );
-        }
-        versionCursor = versions.cursor ?? undefined;
-      } while (versionCursor);
-      let retained = delivery!.retained ?? false;
-      let releasedBytes = 0;
+  /**
+   * Files released before synced folders kept their bytes in the cloud are asked back from the
+   * devices that hold them. A device uploads the content again, which makes it AVAILABLE.
+   */
+  async rehydrate(userId: string, apply: boolean) {
+    let cursor: string | undefined;
+    let requested = 0;
+    do {
+      const page = await this.service.repo.query(userPK(userId), 'ITEM#', 100, cursor);
       for (const row of page.rows) {
-        const version = await tx.get<FileVersion>(row.pk, row.sk);
-        if (!version || version.cloudState === 'RELEASED') continue;
-        const object = await tx.get<StoredObject>('OBJECT', version.storageObjectId);
-        // Sent copies, saved copies, and archives keep their existing references.
-        if (!object || object.references !== ownReferences.get(version.storageObjectId)) {
-          retained = true;
+        const listed = row.data as DriveItem;
+        if (listed.type !== 'FILE' || listed.deletedAt || listed.cloudState !== 'RELEASED')
           continue;
-        }
-        const released = await this.service.reference(tx, version.storageObjectId, -1);
-        ownReferences.set(version.storageObjectId, ownReferences.get(version.storageObjectId)! - 1);
-        if (released.references === 0)
-          await this.service.job(tx, {
-            id: `object-${released.id}`,
-            type: 'OBJECT_DELETE',
-            entityId: released.id,
-            key: released.key,
-            dueAt: new Date().toISOString(),
-            attempts: 0,
+        requested++;
+        if (apply)
+          await transact(this.service.repo, async (tx) => {
+            const item = await tx.get<DriveItem>(userPK(userId), `ITEM#${listed.id}`);
+            if (!item || item.deletedAt || item.cloudState !== 'RELEASED') return;
+            item.cloudState = 'REQUESTED';
+            await tx.put(userPK(userId), `ITEM#${item.id}`, item);
+            await this.service.record(tx, userId, 'SYNC_CONTENT_REQUESTED', item.id, item);
           });
-        await tx.put(row.pk, row.sk, { ...version, cloudState: 'RELEASED' });
-        releasedBytes += version.sizeBytes;
-        if (version.id === item.currentVersionId) {
-          item.cloudState = 'RELEASED';
-          await tx.put(userPK(userId), `ITEM#${item.id}`, item);
-          await this.service.record(tx, userId, 'SYNC_CONTENT_RELEASED', item.id, item);
-        }
       }
-      const account = await this.service.account(tx, userId);
-      account.storageUsedBytes = Math.max(0, account.storageUsedBytes - releasedBytes);
-      await tx.put(userPK(userId), 'PROFILE', account);
-      await tx.put(userPK(userId), `SYNCSTATE#${item.id}`, {
-        ...delivery!,
-        cleanupCursor: page.cursor ?? undefined,
-        retained: page.cursor ? retained : false,
-      });
-      return !page.cursor && !retained;
-    });
+      cursor = page.cursor ?? undefined;
+    } while (cursor);
+    return requested;
   }
   async statuses(userId: string, ids: string[], deviceId?: string, recursive = true) {
     const device = deviceId ? await this.service.checkDevice(userId, deviceId) : undefined;

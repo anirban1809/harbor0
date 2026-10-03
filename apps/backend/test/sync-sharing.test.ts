@@ -125,11 +125,10 @@ it('writes one owner tree, charges the owner, propagates revisions and preserves
   });
   expect((await service.list('alice', folder.id)).items.map((i) => i.id)).not.toContain(item.id);
 });
-it('waits for both accounts before releasing cloud bytes and supports rehydration', async () => {
+it('tracks both accounts’ confirmations while keeping the owner’s cloud bytes', async () => {
   await accept();
   const item = await complete('bob', (await startUpload()).id);
   await ack('alice', item);
-  await relay.release('alice', item.id);
   expect((await service.me('alice')).storage.usedBytes).toBe(5);
   expect((await relay.statuses('bob', [item.id], 'bob')).items[0]).toMatchObject({
     requiredDevices: 2,
@@ -137,11 +136,12 @@ it('waits for both accounts before releasing cloud bytes and supports rehydratio
     deviceConfirmed: false,
   });
   await ack('bob', item);
-  await relay.release('alice', item.id);
-  expect((await service.me('alice')).storage.usedBytes).toBe(0);
-  expect((await relay.requestContent('bob', 'bob', item.id)).item.cloudState).toBe('REQUESTED');
-  const replacement = await complete('alice', (await startUpload('alice', item)).id);
-  expect(replacement.revision).toBe(item.revision + 1);
+  await service.runJobs();
+  expect((await service.me('alice')).storage.usedBytes).toBe(5);
+  expect((await relay.statuses('bob', [item.id], 'bob')).items[0]).toMatchObject({
+    state: 'SYNCED',
+    cloudState: 'AVAILABLE',
+  });
 });
 it('revocation blocks outstanding uploads, mappings, receipts and new content access; refunds the owner', async () => {
   await accept();

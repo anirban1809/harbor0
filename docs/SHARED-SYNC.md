@@ -20,7 +20,7 @@ Only the owner can share or revoke access. The shared root itself cannot be rena
 - Pending or declined invitations grant no folder access. New upload part URLs and final publication recheck current editor access. Previously issued storage URLs retain their existing short expiry.
 - Recipient synchronization reads a revision for the accepted folder and reconciles only that subtree when it changes. It does not expose the owner’s account-wide event feed. Moving contents out of the shared subtree also changes its revision.
 - Delivery receipts include the account and installation, so identical device IDs in two accounts cannot confirm each other’s copies. Membership guards cover owner and recipient changes. Reinvitations receive a new identity and require fresh confirmations.
-- Temporary file bytes remain until every linked device confirms delivery. A device joining after bytes have been released requests a new temporary copy from an existing linked device; the first download may wait for that device to reconnect.
+- Synced files are always kept in the owner's cloud storage, and every linked device downloads changes from there. Delivery receipts only report sync progress. Files released from the cloud before this change are asked back from the devices that hold them (`scripts/rehydrate-sync.ts`); until a device uploads one again, opening it waits for that device.
 - Up to 20 active sync invitations per owner are supported in this version. Invitations are displayed in the app; this feature sends no external email. Invitations require an existing registered account.
 - Large shared folders currently use a full metadata reconciliation after a folder revision changes. A paginated per-folder delta feed is a future scalability improvement.
 

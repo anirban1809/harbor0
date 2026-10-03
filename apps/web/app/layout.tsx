@@ -1,9 +1,9 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { brandDescription, brandName } from '../lib/brand';
 import './globals.css';
 export const metadata: Metadata = {
   metadataBase: new URL(
-    process.env.WEB_ORIGIN ?? process.env.APP_ORIGIN ?? 'https://d1bpha1d51nhxy.cloudfront.net',
+    process.env.WEB_ORIGIN ?? process.env.APP_ORIGIN ?? 'https://app.harbor0.com',
   ),
   title: 'harbor0 — File storage and sync',
   applicationName: brandName,
@@ -20,6 +20,16 @@ export const metadata: Metadata = {
     title: 'harbor0 — File storage and sync',
     description: brandDescription,
   },
+};
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  // Lets the phone layout paint under the notch and home indicator; padding uses safe-area insets.
+  viewportFit: 'cover',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+    { media: '(prefers-color-scheme: dark)', color: '#141518' },
+  ],
 };
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (

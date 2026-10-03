@@ -112,6 +112,46 @@
   margin-top: auto;
   padding-top: 20px;
 }
+.folder-activity {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-xs);
+  text-align: left;
+  color: var(--text-2);
+  transition: background-color var(--ease);
+}
+.folder-activity:hover {
+  background: var(--fill-1);
+}
+.folder-activity-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.folder-activity-label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-activity-label > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.folder-activity[data-tone='ok'] svg {
+  color: var(--success-text);
+}
+.folder-activity[data-tone='busy'] svg {
+  color: var(--accent-text);
+}
+.folder-activity[data-tone='error'] {
+  color: var(--danger-text);
+}
 .drive-storage {
   display: grid;
   gap: 8px;
@@ -547,62 +587,7 @@
   }
 }
 @media (max-width: 760px) {
-  :root {
-    --sidebar-width: 56px;
-    --gutter: 14px;
-  }
-  .sidebar {
-    align-items: center;
-    padding: 12px 8px;
-  }
-  .sidebar > .brand {
-    justify-content: center;
-    padding: 0;
-  }
-  .sidebar .brand-wordmark,
-  .sidebar .upload-label,
-  .nav-item span,
-  .drive-storage {
-    display: none;
-  }
-  .upload-button {
-    width: var(--control);
-    padding: 0;
-  }
-  .nav-item {
-    justify-content: center;
-    width: 40px;
-    height: 38px;
-    padding: 0;
-  }
-  .nav-separated::before {
-    right: 6px;
-    left: 6px;
-  }
-  .main-shell {
-    margin: 0;
-    border-width: 0 0 0 1px;
-    border-radius: 0;
-  }
-  .topbar {
-    gap: 8px;
-  }
-  .search-box {
-    flex: 1;
-  }
-  .search-box kbd {
-    display: none;
-  }
-  .search-box:has(kbd) > .input {
-    padding-right: 10px;
-  }
-  .search-box > .input {
-    font-size: 16px;
-  }
-  .workspace {
-    padding-top: 18px;
-    padding-bottom: 28px;
-  }
+  /* The phone frame (top bar, tab bar, sheets) lives in mobile.css. */
   .auth-page {
     display: flex;
     flex-direction: column;

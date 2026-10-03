@@ -60,6 +60,21 @@ Verify signup, email verification, password reset, refresh rotation, revocation,
 
 `npm run cloud:validate` exercises the deployed API and maintenance Lambda with isolated Cognito fixtures. It suppresses fixture emails, explicitly verifies test identities through the admin API, tests the verification gate, and removes the identities afterward. This does not prove inbox delivery. `npm run cloud:validate-web` tests the configured web origin in Chromium against the same live stack. These scripts create and delete their own test files; unreferenced objects are reclaimed after the application's normal one-hour grace period.
 
+## iOS Files push (APNs)
+
+The iOS Files extension is woken by silent File Provider pushes when a user's change feed moves. The `RealtimeStream` Lambda sends them only once a Secrets Manager secret named `harbor0-apns` exists (until then pushes are skipped and Files catches up when the app opens):
+
+1. In the Apple Developer account, create an APNs authentication key (Keys → +, enable Apple Push Notifications service) and download the `.p8` file once.
+2. Enable Push Notifications, the `group.app.harbor0.ios` App Group and keychain sharing for `app.harbor0.ios` and `app.harbor0.ios.FileProvider` (Xcode's automatic signing does this when building with the team signed in).
+3. Store the key:
+
+   ```sh
+   aws secretsmanager create-secret --name harbor0-apns \
+     --secret-string "$(jq -n --arg keyId KEY_ID --arg teamId U23MZA3U6P --rawfile privateKey AuthKey_KEY_ID.p8 '{keyId:$keyId,teamId:$teamId,privateKey:$privateKey}')"
+   ```
+
+The function caches the key per container; after rotating it, redeploy or wait for new containers. Development builds register `sandbox` tokens and App Store/TestFlight builds `production` tokens; each push goes to the matching APNs host. Tokens APNs reports as unregistered are deleted, and signing out or revoking a device removes its token. Local dev can send real pushes with `APNS_KEY_PATH`, `APNS_KEY_ID` and `APNS_TEAM_ID` in `.env`.
+
 ## Web
 
 The web application uses a private S3 bucket behind CloudFront. The `HarborWeb` stack provisions the bucket, origin access control, HTTPS distribution, security headers, static caching policy and an uncached `/api/*` behavior pointing to the existing API Gateway. The same Lambda handles the browser cookie gateway and the native bearer-token API. S3 never stores user file contents.

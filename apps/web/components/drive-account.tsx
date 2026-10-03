@@ -1,9 +1,55 @@
 'use client';
 import type { StorageUsage } from '@harbor/contracts';
+import { AlertCircle, CheckCircle2, Pause, RefreshCw } from 'lucide-react';
 import { fileSize } from '../lib/file-metadata';
+import { FolderProgress } from './folder-progress';
 import { Button } from './ui/button';
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from './ui/menu';
 import { Progress } from './ui/progress';
+
+/** How sync and backups are doing overall, for the line above the storage meter. */
+export type FolderActivity = {
+  tone: 'ok' | 'busy' | 'paused' | 'error';
+  label: string;
+  percent?: number;
+};
+
+/** One line in the sidebar for sync and backups; it opens the folders it is about. */
+export function FolderActivityStatus({
+  activity,
+  onOpen,
+}: {
+  activity: FolderActivity | null;
+  onOpen: () => void;
+}) {
+  if (!activity) return null;
+  const Icon =
+    activity.tone === 'ok'
+      ? CheckCircle2
+      : activity.tone === 'busy'
+        ? RefreshCw
+        : activity.tone === 'paused'
+          ? Pause
+          : AlertCircle;
+  return (
+    <button
+      className="folder-activity"
+      data-tone={activity.tone}
+      onClick={onOpen}
+      title={activity.label}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="folder-activity-label">
+        <Icon aria-hidden="true" className={activity.tone === 'busy' ? 'spin' : undefined} />
+        <span>{activity.label}</span>
+      </span>
+      {activity.percent !== undefined && (
+        <FolderProgress percent={activity.percent} label={activity.label} showValue={false} />
+      )}
+    </button>
+  );
+}
 
 export function StorageIndicator({
   storage,

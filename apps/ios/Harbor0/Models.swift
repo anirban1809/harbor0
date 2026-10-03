@@ -9,6 +9,13 @@ struct Tokens: Codable, Sendable {
 struct SavedSession: Codable {
     let tokens: Tokens
     let expiresAt: Date
+    var deviceProven: Bool? = nil
+    var deviceName: String? = nil
+}
+
+struct DeviceChallenge: Decodable {
+    let challenge: String
+    let userId: String
 }
 
 struct DriveItem: Codable, Identifiable, Hashable, Sendable {
@@ -23,6 +30,12 @@ struct DriveItem: Codable, Identifiable, Hashable, Sendable {
     let cloudState: String?
     var revision: Int? = nil
     var deletedAt: String? = nil
+    var favorite: Bool? = nil
+    var createdAt: String? = nil
+    var currentVersionId: String? = nil
+    var ownerUserId: String? = nil
+    /// Sync folders only: the devices that keep this folder in sync.
+    var syncDevices: [SyncDeviceRef]? = nil
 
     var isFolder: Bool { type == "FOLDER" }
     var symbol: String {
@@ -36,11 +49,14 @@ struct DriveItem: Codable, Identifiable, Hashable, Sendable {
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file) }
 }
 
+struct SyncDeviceRef: Codable, Hashable, Sendable { let id: String; let name: String }
 struct DrivePage: Decodable { let items: [DriveItem]; let nextCursor: String? }
 struct ItemResponse: Decodable { let item: DriveItem }
 struct Account: Decodable {
-    struct User: Decodable { let id: String; let email: String; let displayName: String; var appearance: Appearance? = nil }
-    struct Storage: Decodable { let quotaBytes: Int64; let usedBytes: Int64; let reservedBytes: Int64 }
+    struct User: Decodable { let id: String; let email: String; let displayName: String; var appearance: Appearance? = nil
+        var username: String? = nil; var emailVerified: Bool? = nil }
+    struct Storage: Decodable { let quotaBytes: Int64; let usedBytes: Int64; let reservedBytes: Int64; var availableBytes: Int64? = nil
+        var available: Int64 { availableBytes ?? max(0, quotaBytes - usedBytes - reservedBytes) } }
     let user: User
     let storage: Storage
 }
@@ -50,6 +66,8 @@ struct BackupCatalog: Decodable { let items: [BackupRoot] }
 struct BackupRoot: Decodable, Identifiable, Hashable {
     let id: String
     let deviceName: String?
+    var deviceId: String? = nil
+    var devicePublicId: String? = nil
     let localPathDisplayName: String
     let remoteRootDriveItemId: String
     let state: String
@@ -60,11 +78,12 @@ struct BackupRoot: Decodable, Identifiable, Hashable {
     }
 }
 struct BackupRunPage: Decodable { let items: [BackupRun]; let nextCursor: String? }
-struct BackupRun: Decodable, Identifiable {
+struct BackupRun: Decodable, Identifiable, Equatable {
     let id: String
     let state: String
     let trigger: String
     let startedAt: String
+    var completedAt: String? = nil
     let fileCount: Int
     let sizeBytes: Int64
     let error: String?
@@ -76,6 +95,7 @@ struct SyncStatus: Decodable {
     let cloudState: String
     let requiredDevices: Int
     let confirmedDevices: Int
+    var pendingItems: Int? = nil
     var label: String {
         switch state {
         case "SYNCED": return "Up to date"
@@ -101,10 +121,13 @@ struct APIError: LocalizedError {
     let status: Int
     let message: String
     let code: String?
-    init(status: Int, message: String, code: String? = nil) {
+    /// `details.folderId` on SYNC_REMOVED: the synced folder that was removed.
+    var folderID: String? = nil
+    init(status: Int, message: String, code: String? = nil, folderID: String? = nil) {
         self.status = status
         self.message = message
         self.code = code
+        self.folderID = folderID
     }
     var errorDescription: String? { message }
 }

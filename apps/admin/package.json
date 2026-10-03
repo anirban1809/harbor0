@@ -1,0 +1,11 @@
+{
+  "name": "@harbor/admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3300",
+    "build": "next build",
+    "typecheck": "tsc --noEmit"
+  }
+}

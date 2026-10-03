@@ -7,8 +7,8 @@ import {
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
   AdminUpdateUserAttributesCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, ApiError, createTransport } from '@harbor/api-client';
 import type { Transfer } from '@harbor/contracts';
 import { DynamoRepository, transact } from '../apps/backend/src/repository';
@@ -50,7 +50,7 @@ const storage = new R2Storage(
 );
 const service = new StorageService(repo, storage);
 const checks: string[] = [];
-const created: string[] = [];
+const created: { email: string; password: string }[] = [];
 let passed = false;
 function check(condition: unknown, message: string) {
   if (!condition) throw new Error(message);
@@ -86,7 +86,7 @@ async function identity(label: string, verified: boolean) {
       ],
     }),
   );
-  created.push(email);
+  created.push({ email, password });
   await cognito.send(
     new AdminSetUserPasswordCommand({
       UserPoolId,
@@ -343,8 +343,13 @@ try {
   );
   passed = true;
 } finally {
-  for (const email of created)
-    await cognito.send(new AdminDeleteUserCommand({ UserPoolId, Username: email }));
+  for (const { email, password } of created)
+    await removeFixtureAccount(cognito, {
+      apiUrl: ApiUrl,
+      userPoolId: UserPoolId,
+      email,
+      password,
+    });
   await writeFile(
     '.cloud/live-validation.json',
     JSON.stringify(

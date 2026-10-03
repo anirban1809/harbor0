@@ -6,8 +6,8 @@ import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
-  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { removeFixtureAccount } from './fixture-accounts';
 
 // Exercise the published app using a disposable account, never an existing user's trash.
 const { HarborStorage: backend } = JSON.parse(await readFile('.cloud/outputs.json', 'utf8'));
@@ -103,9 +103,12 @@ try {
   passed = true;
 } finally {
   await browser.close();
-  await cognito.send(
-    new AdminDeleteUserCommand({ UserPoolId: backend.UserPoolId, Username: email }),
-  );
+  await removeFixtureAccount(cognito, {
+    apiUrl: backend.ApiUrl,
+    userPoolId: backend.UserPoolId,
+    email,
+    password,
+  });
   await writeFile(
     '.cloud/live-trash-validation.json',
     JSON.stringify(

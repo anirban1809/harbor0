@@ -1,0 +1,360 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>harbor0 motion</title>
+<style>
+@font-face { font-family: 'Geist'; src: url('../../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2') format('woff2'); font-weight: 100 900; }
+@font-face { font-family: 'Geist Mono'; src: url('../../../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2') format('woff2'); font-weight: 100 900; }
+:root { --bg: #0d0e10; --fg: #eceef1; --text-2: #9a9fab; --line: #2b2e34; --primary: #8793ff; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--fg); font-family: 'Geist', sans-serif; -webkit-font-smoothing: antialiased; }
+#stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+.layer { position: absolute; inset: 0; }
+.glow { position: absolute; width: 1600px; height: 1600px; border-radius: 50%; opacity: 0; }
+#grid { position: absolute; inset: -60px; background-image: radial-gradient(rgb(255 255 255 / 0.07) 1.2px, transparent 1.2px); background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, #000 20%, transparent 75%); }
+.center { display: flex; align-items: center; justify-content: center; flex-direction: column; }
+.mono { font-family: 'Geist Mono', monospace; text-transform: uppercase; letter-spacing: 0.14em; font-size: 22px; color: var(--text-2); }
+
+/* logo */
+.logo { display: flex; align-items: center; gap: 44px; }
+.logo svg { overflow: visible; }
+.wordmark { font-weight: 600; letter-spacing: -0.045em; line-height: 1; }
+
+/* headline */
+.headline { font-size: 152px; font-weight: 600; letter-spacing: -0.05em; line-height: 1.02; text-align: center; }
+.line { display: block; overflow: hidden; padding: 0 0.04em 0.08em; }
+.word { display: inline-block; margin: 0 0.12em; }
+.accent { color: var(--primary); }
+
+/* storage */
+.gauge { position: relative; width: 520px; height: 520px; }
+.gauge svg { position: absolute; inset: 0; }
+.gauge .num { position: absolute; inset: 0; display: flex; align-items: baseline; justify-content: center; padding-top: 196px; font-weight: 600; letter-spacing: -0.05em; }
+.gauge .num b { font-size: 150px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gauge .num span { font-size: 56px; margin-left: 10px; color: var(--text-2); }
+.chip { position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 14px; padding: 14px 22px 14px 14px; border-radius: 14px;
+  background: #1b1d21; border: 1px solid var(--line); font-size: 24px; font-weight: 500; white-space: nowrap; box-shadow: 0 20px 40px -12px rgb(0 0 0 / .6); }
+.chip i { width: 38px; height: 38px; border-radius: 9px; display: block; }
+
+/* features */
+.ftext { position: absolute; left: 130px; top: 0; bottom: 0; width: 660px; display: flex; flex-direction: column; justify-content: center; }
+.pill { display: inline-flex; align-items: center; gap: 12px; align-self: flex-start; padding: 10px 20px; border-radius: 999px; font-size: 24px; font-weight: 600;
+  border: 1px solid currentColor; }
+.pill .d { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.ftitle { margin-top: 36px; font-size: 84px; font-weight: 600; letter-spacing: -0.045em; line-height: 1.04; }
+.fbody { margin-top: 30px; font-size: 30px; line-height: 1.4; color: var(--text-2); max-width: 600px; }
+.shot { position: absolute; left: 860px; top: 150px; width: 1120px; height: 780px; perspective: 2200px; }
+.shot .card { width: 100%; height: 100%; border-radius: 22px; overflow: hidden; border: 1px solid #33363d; background: #141518;
+  box-shadow: 0 60px 120px -30px rgb(0 0 0 / .85), 0 0 0 1px rgb(255 255 255 / .03); transform-origin: left center; }
+.shot img { width: 100%; display: block; }
+.shot .card::after { content: ''; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 60%, #141518 100%); }
+#progress { position: absolute; left: 130px; bottom: 110px; display: flex; gap: 12px; }
+#progress div { width: 64px; height: 4px; border-radius: 2px; background: #2b2e34; overflow: hidden; }
+#progress div i { display: block; height: 100%; width: 0; }
+
+/* facts */
+.facts { display: grid; grid-template-columns: repeat(3, 560px); gap: 0; }
+.fact { padding: 0 56px; border-left: 2px solid transparent; position: relative; }
+.fact .rule { position: absolute; left: 0; top: 0; width: 2px; background: var(--line); }
+.fact b { display: block; white-space: nowrap; height: 150px; font-size: 128px; line-height: 150px; font-weight: 600; letter-spacing: -0.05em; line-height: 1; }
+.fact span { display: block; margin-top: 22px; font-size: 30px; color: var(--text-2); }
+
+/* end */
+.cta { margin-top: 56px; display: inline-flex; align-items: center; gap: 14px; padding: 22px 40px; border-radius: 999px; background: var(--primary); color: #0e1024;
+  font-size: 32px; font-weight: 600; }
+#fade { background: #000; opacity: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="layer" id="bgl">
+    <div id="grid"></div>
+    <div class="glow" id="g0"></div><div class="glow" id="g1"></div><div class="glow" id="g2"></div><div class="glow" id="g3"></div><div class="glow" id="g4"></div>
+  </div>
+
+  <!-- 1. logo -->
+  <div class="layer center" id="s1">
+    <div class="logo">
+      <svg id="s1mark" width="200" height="200" viewBox="0 0 48 48" fill="none">
+        <g id="s1rot"><circle id="s1ring" cx="24" cy="24" r="15" stroke="#eceef1" stroke-width="7" stroke-linecap="round" stroke-dasharray="0 999" transform="rotate(-10 24 24)" /></g>
+        <circle id="s1dot" cx="24" cy="24" r="5" fill="#8793ff" />
+      </svg>
+      <div class="wordmark" id="s1word" style="font-size:170px">harbor0</div>
+    </div>
+  </div>
+
+  <!-- 2. headline -->
+  <div class="layer center" id="s2">
+    <div class="mono" id="s2label" style="margin-bottom:48px">Drive · Sync · Backups · Share</div>
+    <div class="headline" id="s2head"></div>
+  </div>
+
+  <!-- 3. storage -->
+  <div class="layer" id="s3">
+    <div id="chips"></div>
+    <div class="layer center">
+      <div class="gauge" id="gauge">
+        <svg viewBox="0 0 48 48" fill="none">
+          <circle cx="24" cy="24" r="21" stroke="#22252b" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="101.2 30.7" transform="rotate(-10 24 24)" />
+          <circle id="garc" cx="24" cy="24" r="21" stroke="#8793ff" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="0 999" transform="rotate(-10 24 24)" />
+        </svg>
+        <div class="num"><b id="gnum">0</b><span>GB</span></div>
+      </div>
+      <div style="margin-top:40px; font-size:40px; font-weight:500; letter-spacing:-0.02em" id="s3cap">of private storage on every account.</div>
+      <div style="margin-top:14px; font-size:30px; color:var(--text-2)" id="s3sub">Free during the beta. More on request.</div>
+    </div>
+  </div>
+
+  <!-- 4. features -->
+  <div class="layer" id="s4"></div>
+
+  <!-- 5. facts -->
+  <div class="layer center" id="s5">
+    <div class="facts">
+      <div class="fact"><div class="rule"></div><b>100 GB</b><span>free on sign-up</span></div>
+      <div class="fact"><div class="rule"></div><b>$0</b><span>to pay during the beta</span></div>
+      <div class="fact"><div class="rule"></div><b style="font-size:230px; line-height:150px">∞</b><span>devices, no limit</span></div>
+    </div>
+  </div>
+
+  <!-- 6. end -->
+  <div class="layer center" id="s6">
+    <div class="logo" style="gap:30px">
+      <svg width="120" height="120" viewBox="0 0 48 48" fill="none">
+        <g id="s6rot"><circle id="s6ring" cx="24" cy="24" r="15" stroke="#eceef1" stroke-width="7" stroke-linecap="round" stroke-dasharray="0 999" transform="rotate(-10 24 24)" /></g>
+        <circle id="s6dot" cx="24" cy="24" r="5" fill="#8793ff" />
+      </svg>
+      <div class="wordmark" id="s6word" style="font-size:104px">harbor0</div>
+    </div>
+    <div id="s6tag" style="margin-top:40px; font-size:46px; color:var(--text-2); letter-spacing:-0.02em">A safe harbor for your files.</div>
+    <div class="cta" id="s6cta">Join the beta <span>→</span></div>
+  </div>
+
+  <div class="layer" id="fade"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const eo = (x) => 1 - Math.pow(1 - x, 3);
+const eo5 = (x) => 1 - Math.pow(1 - x, 5);
+const ei = (x) => x * x * x;
+const eio = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const eback = (x) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const lerp = (a, b, p) => a + (b - a) * p;
+const show = (el, on) => { el.style.display = on ? '' : 'none'; };
+const ARC = 72.25;
+
+window.DURATION = 34;
+
+const T = { s1: [0, 4], s2: [3.8, 8], s3: [7.9, 12.6], s4: [12.5, 25.6], s5: [25.5, 29.2], s6: [29, 34] };
+
+const features = [
+  { n: '01', name: 'Drive', tint: '#8793ff', img: 'drive', title: 'Every file in<br>one place.', body: 'Upload, organise, preview and find your files — with version history built in.' },
+  { n: '02', name: 'Sync', tint: '#52c987', img: 'sync', title: 'Set it up once.<br>Then forget it.', body: 'Pick a folder and it stays in step on all your computers.' },
+  { n: '03', name: 'Backups', tint: '#3cc6e0', img: 'backups', title: 'Pick a folder.<br>Backup done.', body: 'Every change is saved as a new version. Restore any of them later.' },
+  { n: '04', name: 'Share', tint: '#e5a949', img: 'shared', title: 'Send to people,<br>not to links.', body: 'Share by username or email. Only they can open it, signed in.' },
+];
+const F0 = 12.5, FD = 3.25;
+
+const chips = [
+  ['Weekend in the mountains.jpg', '#3fd0c0'], ['Brand guidelines.pdf', '#f26d6d'], ['Q4 budget.xlsx', '#52c987'], ['Meeting notes.md', '#9a9fab'],
+  ['Creative projects', '#8793ff'], ['thesis-final-v3.docx', '#8793ff'], ['IMG_2041.HEIC', '#3fd0c0'], ['Podcast ep 12.wav', '#e5a949'],
+  ['Work documents', '#8793ff'], ['passport-scan.png', '#3fd0c0'],
+];
+
+function init() {
+  // headline words
+  const lines = [['A', 'safe', 'harbor'], ['for', 'your', 'files.']];
+  $('s2head').innerHTML = lines.map((l) => `<span class="line">${l.map((w) => `<span class="word${w === 'files.' ? ' accent' : ''}">${w}</span>`).join('')}</span>`).join('');
+
+  // chips
+  $('chips').innerHTML = chips.map(([name, c]) => `<div class="chip"><i style="background:${c}33; border:2px solid ${c}"></i>${name}</div>`).join('');
+
+  // features
+  $('s4').innerHTML = features.map((f, k) => `
+    <div class="layer" id="f${k}">
+      <div class="ftext">
+        <div class="mono fnum" style="margin-bottom:28px">${f.n} / 04</div>
+        <div class="pill" style="color:${f.tint}"><span class="d"></span>${f.name}</div>
+        <div class="ftitle">${f.title}</div>
+        <div class="fbody">${f.body}</div>
+      </div>
+      <div class="shot"><div class="card"><img src="../../../apps/landing/app/shots/${f.img}-dark.png"></div></div>
+    </div>`).join('') + `<div id="progress">${features.map((f) => `<div><i style="background:${f.tint}"></i></div>`).join('')}</div>`;
+
+  // glows
+  const glowColors = ['#4353d9', ...features.map((f) => f.tint)];
+  glowColors.forEach((c, i) => { $('g' + i).style.background = `radial-gradient(circle, ${c}40 0%, ${c}10 35%, transparent 65%)`; });
+
+  // logo offset so the mark starts centered
+  const w = $('s1word').getBoundingClientRect().width;
+  window.__s1shift = (w + 44) / 2;
+}
+
+function logo(t, t0, ids, shift) {
+  const draw = eo5(seg(t, t0, t0 + 1.2));
+  $(ids.ring).setAttribute('stroke-dasharray', `${ARC * draw} 999`);
+  $(ids.rot).setAttribute('transform', `rotate(${lerp(-200, 0, draw)} 24 24)`);
+  const dp = seg(t, t0 + 0.55, t0 + 1.05);
+  $(ids.dot).setAttribute('r', String(5 * clamp(eback(dp), 0, 2)));
+  const wp = eo(seg(t, t0 + 0.9, t0 + 1.7));
+  const word = $(ids.word);
+  word.style.clipPath = `inset(-20% ${(1 - wp) * 100}% -20% 0)`;
+  word.style.transform = `translateX(${lerp(-40, 0, wp)}px)`;
+  word.style.opacity = wp;
+  return { wp };
+}
+
+function out(el, o, dy = 0, scale = 0) {
+  el.style.opacity = 1 - o;
+  el.style.filter = o > 0 ? `blur(${o * 12}px)` : 'none';
+  el.style.transform = `translateY(${-dy * o}px) scale(${1 - scale * o})`;
+}
+
+window.render = function (t) {
+  // ---------- background ----------
+  $('grid').style.transform = `translate(${(t * 6) % 40}px, ${(t * 4) % 40}px)`;
+  const glowSet = (i, op, x, y) => { const g = $('g' + i); g.style.opacity = op; g.style.left = x - 800 + 'px'; g.style.top = y - 800 + 'px'; };
+  const prim = Math.max(seg(t, 0.3, 2.5) * (1 - seg(t, 12, 13)), seg(t, 25.2, 26.5));
+  glowSet(0, prim * 0.9, 960 + Math.sin(t * 0.4) * 120, 540 + Math.cos(t * 0.3) * 60);
+  features.forEach((f, k) => {
+    const a = F0 + k * FD, b = a + FD;
+    const op = seg(t, a - 0.3, a + 0.6) * (1 - seg(t, b - 0.3, b + 0.5));
+    glowSet(k + 1, op, 1400 + Math.sin(t * 0.5) * 60, 560);
+  });
+
+  // ---------- 1. logo ----------
+  const s1 = $('s1');
+  show(s1, t >= T.s1[0] && t < T.s1[1]);
+  if (t < T.s1[1]) {
+    const { wp } = logo(t, 0.3, { ring: 's1ring', rot: 's1rot', dot: 's1dot', word: 's1word' });
+    $('s1mark').style.transform = `translateX(${window.__s1shift * (1 - eio(seg(t, 1.0, 1.9)))}px) scale(${lerp(0.85, 1, eo(seg(t, 0.3, 1.5)))})`;
+    const o = eio(seg(t, 3.3, 4.0));
+    out(s1.firstElementChild, o, 0, 0.08);
+    s1.firstElementChild.style.transform += ` scale(${1 + seg(t, 0, 4) * 0.04})`;
+  }
+
+  // ---------- 2. headline ----------
+  const s2 = $('s2');
+  show(s2, t >= T.s2[0] && t < T.s2[1]);
+  if (t >= T.s2[0] && t < T.s2[1]) {
+    const words = s2.querySelectorAll('.word');
+    words.forEach((w, i) => {
+      const p = eo5(seg(t, 4.0 + i * 0.09, 4.0 + i * 0.09 + 0.9));
+      w.style.transform = `translateY(${(1 - p) * 110}%) rotate(${(1 - p) * 6}deg)`;
+    });
+    const lp = eo(seg(t, 4.6, 5.3));
+    $('s2label').style.opacity = lp;
+    $('s2label').style.letterSpacing = `${lerp(0.4, 0.14, lp)}em`;
+    out(s2, eio(seg(t, 7.3, 8.0)), 60);
+  }
+
+  // ---------- 3. storage ----------
+  const s3 = $('s3');
+  show(s3, t >= T.s3[0] && t < T.s3[1]);
+  if (t >= T.s3[0] && t < T.s3[1]) {
+    const gp = eo(seg(t, 8.0, 8.8));
+    $('gauge').style.transform = `scale(${lerp(0.7, 1, eback(seg(t, 8.0, 8.8)))})`;
+    $('gauge').style.opacity = gp;
+    const fill = eio(seg(t, 8.4, 10.9));
+    $('garc').setAttribute('stroke-dasharray', `${101.2 * fill} 999`);
+    $('gnum').textContent = Math.round(100 * fill);
+    [['s3cap', 9.4], ['s3sub', 9.6]].forEach(([id, a]) => {
+      const p = eo(seg(t, a, a + 0.7));
+      $(id).style.opacity = p; $(id).style.transform = `translateY(${(1 - p) * 30}px)`;
+    });
+    // chips fly into the centre of the gauge
+    const chipsEls = $('chips').children;
+    for (let i = 0; i < chipsEls.length; i++) {
+      const el = chipsEls[i];
+      const st = 8.2 + i * 0.22, d = 1.25;
+      const p = seg(t, st, st + d);
+      const ang = (i / chipsEls.length) * Math.PI * 2 + 0.4;
+      const r = lerp(1150, 0, ei(p) * 0.4 + eio(p) * 0.6);
+      const x = 960 + Math.cos(ang) * r * 1.1, y = 410 + Math.sin(ang) * r * 0.62;
+      const sc = lerp(1, 0.2, ei(p));
+      el.style.opacity = p > 0 && p < 1 ? clamp(Math.min(p * 6, (1 - p) * 5)) : 0;
+      const bw = el.offsetWidth, bh = el.offsetHeight;
+      el.style.transform = `translate(${x - bw / 2}px, ${y - bh / 2}px) scale(${sc}) rotate(${(1 - p) * (i % 2 ? 8 : -8)}deg)`;
+    }
+    out(s3.lastElementChild, eio(seg(t, 11.9, 12.6)), 0, 0.1);
+  }
+
+  // ---------- 4. features ----------
+  const s4 = $('s4');
+  show(s4, t >= T.s4[0] && t < T.s4[1]);
+  if (t >= T.s4[0] && t < T.s4[1]) {
+    features.forEach((f, k) => {
+      const a = F0 + k * FD, b = a + FD;
+      const el = $('f' + k);
+      const on = t >= a - 0.1 && t < b + 0.4;
+      show(el, on);
+      const bar = $('progress').children[k].firstElementChild;
+      bar.style.width = `${seg(t, a, b) * 100}%`;
+      if (!on) return;
+      const text = el.querySelector('.ftext');
+      const items = [text.querySelector('.fnum'), text.querySelector('.pill'), text.querySelector('.ftitle'), text.querySelector('.fbody')];
+      const o = eio(seg(t, b - 0.4, b + 0.15));
+      items.forEach((it, i) => {
+        const p = eo5(seg(t, a + 0.05 + i * 0.09, a + 0.75 + i * 0.09));
+        it.style.opacity = p * (1 - o);
+        it.style.transform = `translateY(${(1 - p) * 50 - o * 40}px)`;
+        it.style.filter = o > 0 ? `blur(${o * 8}px)` : 'none';
+      });
+      const card = el.querySelector('.card');
+      const ip = eo5(seg(t, a, a + 1.0));
+      const drift = seg(t, a, b);
+      card.style.transform = `translateX(${(1 - ip) * 380 - o * 160}px) translateY(${lerp(16, -16, drift)}px) rotateY(${lerp(-26, -9, ip) + drift * 3}deg) rotateX(${lerp(4, 2, ip)}deg) scale(${lerp(0.92, 1, ip)})`;
+      card.style.opacity = ip * (1 - o);
+    });
+    const pp = eo(seg(t, 12.7, 13.3)) * (1 - eio(seg(t, 25.1, 25.6)));
+    $('progress').style.opacity = pp;
+  }
+
+  // ---------- 5. facts ----------
+  const s5 = $('s5');
+  show(s5, t >= T.s5[0] && t < T.s5[1]);
+  if (t >= T.s5[0] && t < T.s5[1]) {
+    s5.querySelectorAll('.fact').forEach((fe, i) => {
+      const a = 25.7 + i * 0.18;
+      const rp = eo(seg(t, a, a + 0.7));
+      fe.querySelector('.rule').style.height = `${rp * 100}%`;
+      [fe.querySelector('b'), fe.querySelector('span')].forEach((it, j) => {
+        const p = eo5(seg(t, a + 0.1 + j * 0.12, a + 0.9 + j * 0.12));
+        it.style.opacity = p; it.style.transform = `translateY(${(1 - p) * 60}px)`;
+      });
+    });
+    out(s5.firstElementChild, eio(seg(t, 28.6, 29.2)), 40);
+  }
+
+  // ---------- 6. end ----------
+  const s6 = $('s6');
+  show(s6, t >= T.s6[0]);
+  if (t >= T.s6[0]) {
+    logo(t, 29.2, { ring: 's6ring', rot: 's6rot', dot: 's6dot', word: 's6word' });
+    [['s6tag', 30.4], ['s6cta', 30.7]].forEach(([id, a]) => {
+      const p = eo5(seg(t, a, a + 0.8));
+      $(id).style.opacity = p;
+      $(id).style.transform = `translateY(${(1 - p) * 40}px) scale(${id === 's6cta' ? lerp(0.9, 1, eback(seg(t, a, a + 0.8))) : 1})`;
+    });
+    // gentle pulse on the CTA
+    const pulse = seg(t, 31.8, 32.8);
+    $('s6cta').style.boxShadow = `0 0 0 ${pulse * 26}px rgb(135 147 255 / ${0.35 * (1 - pulse)})`;
+  }
+  $('fade').style.opacity = eio(seg(t, 33.3, 34)) + (1 - eo(seg(t, 0, 0.4)));
+};
+
+window.__ready = false;
+document.fonts.ready.then(async () => {
+  init();
+  await Promise.all([...document.images].map((i) => i.decode().catch(() => {})));
+  window.render(Number(new URLSearchParams(location.search).get('t') || 0));
+  window.__ready = true;
+});
+</script>
+</body>
+</html>

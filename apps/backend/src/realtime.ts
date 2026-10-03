@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { ShareGrant } from '@harbor/contracts';
 import { Transaction, transact, type Key, type Repository } from './repository';
 import { assert } from './errors';
+import type { PushDelivery } from './push';
 
 // Live updates are hints only: a message tells a client to read its change feed or
 // notifications through the normal API, so ordering and authorization stay there.
@@ -42,6 +43,7 @@ export class Realtime {
     private repo: Repository,
     private url: string,
     private gateway?: RealtimeGateway,
+    private push?: PushDelivery,
   ) {}
   /** A single-use ticket, so browsers (which cannot send headers) can authenticate the socket. */
   async ticket(userId: string, deviceId: string) {
@@ -103,7 +105,12 @@ export class Realtime {
         )
           add(share.recipientUserId, 'changes');
     }
-    await Promise.all([...targets].map(([userId, types]) => this.deliver(userId, types)));
+    await Promise.all(
+      [...targets].flatMap(([userId, types]) => [
+        this.gateway ? this.deliver(userId, types) : Promise.resolve(),
+        this.push && types.has('changes') ? this.push.changed(userId) : Promise.resolve(),
+      ]),
+    );
     return targets.size;
   }
   private async deliver(userId: string, types: Set<RealtimeMessage['type']>) {

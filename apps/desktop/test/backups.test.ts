@@ -269,3 +269,26 @@ it('cancels instead of retrying forever when the server has no archive endpoint'
   expect(journal.roots()[0].archive).toBeUndefined();
   expect(journal.roots()[0].archiveError).toContain('does not support archiving');
 });
+it('records no backup when queued files match their saved version', async () => {
+  await file('same.txt', BACKUP_QUIET_MS + 5000);
+  await save(root, journal.jobs()[0]);
+  await process();
+  expect(journal.jobs()).toHaveLength(0);
+  await file('same.txt');
+  expect(await backups.request(root)).toBe(0);
+  await process();
+  expect(perform).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.url.endsWith('/runs'))).toBe(false);
+  expect(journal.get(`backup-now:${root.id}`)).toBeFalsy();
+});
+it('backs up the files waiting for the quiet hour right away on demand', async () => {
+  await file('waiting.txt');
+  await file('also-waiting.txt');
+  await process();
+  expect(perform).not.toHaveBeenCalled();
+  expect(await backups.request(root)).toBe(2);
+  await process();
+  expect(perform).toHaveBeenCalledTimes(2);
+  expect(journal.jobs()).toHaveLength(0);
+  expect(calls.find((c) => c.url.endsWith('/runs'))?.body.trigger).toBe('MANUAL');
+});

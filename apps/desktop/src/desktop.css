@@ -48,92 +48,11 @@
 }
 
 /* Sync */
-.sync-page {
-  display: grid;
-  gap: 16px;
-  min-width: 0;
-}
-.sync-page-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px 16px;
-  margin-bottom: 4px;
-}
-.sync-page-header > div:first-child {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-.sync-header-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.sync-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-}
-.sync-status-detail {
-  color: var(--text-2);
-  font-size: var(--text-xs);
-}
-.sync-folders-table {
-  --table-min-width: 760px;
-}
-.sync-folders-table th:nth-child(1) {
-  width: 28%;
-}
-.sync-folders-table th:nth-child(2) {
-  width: 28%;
-}
-.sync-folders-table th:nth-child(3) {
-  width: 12%;
-}
-.sync-folder-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.sync-folder-title > button:not(.btn) {
-  min-width: 0;
-  border-radius: 4px;
-  color: var(--text);
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.sync-folder-title > button:not(.btn):hover {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.sync-folder-title > .btn {
-  margin-left: auto;
-}
-.sync-folder-size {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.sync-content {
-  display: grid;
-  gap: 20px;
-  min-width: 0;
-}
-.sync-available h2 {
-  margin-bottom: 8px;
-  font-size: var(--text-sm);
-}
-.sync-available-table th:nth-child(1) {
-  width: 40%;
-}
-.sync-available-action {
-  text-align: right;
-}
-.sync-empty h2 {
-  margin-bottom: 4px;
+/* Problems with a synced folder, under its panel in My Drive. */
+.sync-problems {
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
 }
 .sync-dialog {
   display: grid;
@@ -190,16 +109,6 @@
 }
 .sync-notification-error {
   margin-bottom: 16px;
-}
-.sync-state-button {
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: none;
-  cursor: pointer;
-}
-.sync-state-button:hover .badge {
-  text-decoration: underline;
 }
 .sync-problem,
 .sync-notification-invite {

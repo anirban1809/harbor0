@@ -63,6 +63,8 @@ export class SyncEngine {
   private nextRemoteAt = 0;
   private checkpointed?: number;
   private hurried = false;
+  // Files finished per sync folder since it was last idle; the base for its percent complete.
+  private syncDone = new Map<string, number>();
   state: SyncRuntime = {
     running: false,
     paused: false,
@@ -252,7 +254,42 @@ export class SyncEngine {
     this.lastProgressEmit = now;
     this.state.queued = this.journal.jobCount();
     this.state.waiting = [...this.waiting.values()];
+    this.state.progress = this.progress();
     this.changed({ ...this.state });
+  }
+  /**
+   * Sync: files finished since the folder was last idle against those still queued, plus a
+   * download in flight. Backup: files saved in the current run against the run's size. The file
+   * being transferred counts by its bytes. Stays below 100 until the work is done.
+   */
+  private progress() {
+    const progress: Record<string, number> = {};
+    const queued = this.journal.jobCounts();
+    const active = this.state.active;
+    for (const root of this.journal.roots()) {
+      const fraction =
+        active?.rootId === root.id && active.total > 0
+          ? Math.min(1, active.loaded / active.total)
+          : 0;
+      let done: number;
+      let total: number;
+      if (root.mode === 'backup') {
+        const run = this.backups.run(root.id);
+        if (!run?.total) continue;
+        ({ done, total } = run);
+      } else {
+        const download = active?.rootId === root.id && active.direction === 'download' ? 1 : 0;
+        const remaining = (queued.get(root.id) ?? 0) + download;
+        if (!remaining) continue;
+        done = this.syncDone.get(root.id) ?? 0;
+        total = done + remaining;
+      }
+      progress[root.id] = Math.min(99, Math.floor(((done + fraction) / total) * 100));
+    }
+    return progress;
+  }
+  private finished(rootId: string) {
+    this.syncDone.set(rootId, (this.syncDone.get(rootId) ?? 0) + 1);
   }
   validateRoot(root: Root) {
     if (root.mode === 'sync' && !root.remoteId)
@@ -319,9 +356,9 @@ export class SyncEngine {
     if (!root) throw new Error('Backup folder was not found on this computer.');
     if (this.state.paused) throw new Error('Resume backups before backing up now.');
     if (root.archive) throw new Error('Restore this archived folder before backing up.');
-    await this.backups.request(root);
-    this.wake();
-    return { queued: true };
+    const changes = await this.backups.request(root);
+    if (changes) this.wake();
+    return { queued: changes > 0, changes };
   }
   async addRoot(root: Root) {
     this.validateRoot(root);
@@ -503,6 +540,7 @@ export class SyncEngine {
     if (current) this.journal.root({ ...current, lastSyncedAt: at });
     // Upload jobs remain active until their queue entry has been removed.
     if (direction === 'download') {
+      this.finished(root.id);
       this.state.active = null;
       this.emit();
     }
@@ -810,6 +848,7 @@ export class SyncEngine {
         try {
           await this.localJob(root, job);
           this.journal.finish(job.id);
+          this.finished(root.id);
           if (this.state.issues.some((issue) => issue.jobId === job.id)) {
             this.state.issues = this.state.issues.filter((issue) => issue.jobId !== job.id);
             this.persistIssues();
@@ -960,6 +999,9 @@ export class SyncEngine {
       }
       this.state.running = false;
       this.state.active = null;
+      // A folder with nothing left starts its next batch from 0%.
+      const queued = this.journal.jobCounts();
+      for (const id of this.syncDone.keys()) if (!queued.get(id)) this.syncDone.delete(id);
       this.emit();
     }
   }

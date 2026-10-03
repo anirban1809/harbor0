@@ -106,5 +106,7 @@ await run('npx', [
   `R2SecretArn=${arn}`,
   '--parameters',
   `EmailFrom=${config.EMAIL_FROM}`,
+  '--parameters',
+  `AdminOrigin=${process.env.ADMIN_ORIGIN ?? ''}`,
 ]);
 console.log('Cloud deployment finished. Non-secret outputs are in .cloud/outputs.json.');

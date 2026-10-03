@@ -2,67 +2,51 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { SyncFolderItem } from '@harbor/contracts';
 import type { SyncFolder } from '../src/sync-state';
 
-const request = vi.fn();
 const selectSyncLocal = vi.fn();
 const addSyncRoot = vi.fn();
-let SyncPage: typeof import('../src/sync-page').SyncPage;
+const rootSettings = vi.fn();
+let SyncFolderPanel: typeof import('../src/sync-page').SyncFolderPanel;
 beforeAll(async () => {
   Object.defineProperty(window, 'harbor', {
     configurable: true,
-    value: { request, selectSyncLocal, addSyncRoot },
+    value: { selectSyncLocal, addSyncRoot, rootSettings },
   });
-  ({ SyncPage } = await import('../src/sync-page'));
-});
-const folder = (id: string, ownerUserId = 'me') => ({
-  id,
-  ownerUserId,
-  name: `Folder ${id}`,
-  type: 'FOLDER',
-  syncDevices: [{ id: 'laptop', name: 'Laptop' }],
+  ({ SyncFolderPanel } = await import('../src/sync-page'));
 });
 beforeEach(() => {
-  request.mockReset().mockResolvedValue({
-    items: [folder('here'), folder('elsewhere'), folder('theirs', 'other')],
-  });
   selectSyncLocal
     .mockReset()
     .mockResolvedValue({ selectionId: 'local', path: '/local/docs', name: 'docs' });
   addSyncRoot.mockReset().mockResolvedValue({});
+  rootSettings.mockReset().mockResolvedValue({});
 });
 afterEach(cleanup);
 
-it('offers folders synced on other devices and links one to a local folder', async () => {
+const state = { online: true, paused: false, issues: [] } as never;
+
+it('offers a folder synced on another device and links it to a local folder', async () => {
   const refresh = vi.fn().mockResolvedValue(undefined);
-  const root = {
-    id: 'root',
-    localPath: '/local/here',
-    localPathDisplayName: 'here',
-    remoteId: 'here',
-    mode: 'sync',
-    paused: false,
-    excluded: [],
-    fileCount: 0,
-    folderCount: 0,
-  } as SyncFolder;
+  const remote = {
+    id: 'elsewhere',
+    ownerUserId: 'me',
+    name: 'Folder elsewhere',
+    type: 'FOLDER',
+    syncDevices: [{ id: 'laptop', name: 'Laptop' }],
+  } as unknown as SyncFolderItem;
   render(
-    createElement(SyncPage, {
-      roots: [root],
+    createElement(SyncFolderPanel, {
+      remote,
+      state,
       jobs: [],
-      state: { online: true, issues: [] } as never,
-      deviceName: 'Desktop',
-      accountId: 'me',
       refresh,
-      openCloud: vi.fn(),
       manageStorage: vi.fn(),
     }),
   );
-  await screen.findByText('Folder elsewhere');
-  expect(request).toHaveBeenCalledWith({ path: '/v1/sync/folders' });
-  // Already linked here, or shared by another account: not offered.
-  expect(screen.queryByText('Folder here')).toBeNull();
-  expect(screen.queryByText('Folder theirs')).toBeNull();
+  screen.getByText('Not synced on this computer');
+  screen.getByText(/Synced on Laptop/);
   fireEvent.click(screen.getByRole('button', { name: 'Sync to this computer' }));
   fireEvent.click(screen.getByRole('button', { name: 'Choose local folder' }));
   await screen.findByText('/local/docs');
@@ -75,4 +59,41 @@ it('offers folders synced on other devices and links one to a local folder', asy
     }),
   );
   await waitFor(() => expect(refresh).toHaveBeenCalled());
+});
+
+it('shows a folder synced here with its status and pauses it', async () => {
+  const refresh = vi.fn().mockResolvedValue(undefined);
+  const root = {
+    id: 'root',
+    localPath: '/local/here',
+    localPathDisplay: '~/here',
+    localPathDisplayName: 'here',
+    remoteId: 'here',
+    mode: 'sync',
+    paused: false,
+    excluded: ['node_modules'],
+    fileCount: 0,
+    folderCount: 0,
+  } as unknown as SyncFolder;
+  render(
+    createElement(SyncFolderPanel, { root, state, jobs: [], refresh, manageStorage: vi.fn() }),
+  );
+  screen.getByText('Synced on this computer');
+  screen.getByText('Up to date');
+  fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+  await waitFor(() =>
+    expect(rootSettings).toHaveBeenCalledWith({
+      id: 'root',
+      paused: true,
+      excluded: ['node_modules'],
+    }),
+  );
+  await waitFor(() => expect(refresh).toHaveBeenCalled());
+});
+
+it('shows nothing for a folder that is not synced anywhere', () => {
+  const { container } = render(
+    createElement(SyncFolderPanel, { state, jobs: [], refresh: vi.fn(), manageStorage: vi.fn() }),
+  );
+  expect(container.innerHTML).toBe('');
 });
