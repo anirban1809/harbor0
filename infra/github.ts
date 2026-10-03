@@ -8,6 +8,9 @@ import { harborEnv } from './environment';
 //   HARBOR_ENV=staging npx cdk deploy HarborGitHubStaging --app 'npx tsx infra/github.ts'
 // then set the DeployRoleArn output as the PRODUCTION_/STAGING_AWS_ROLE_ARN repository variable.
 const repository = 'anirban1809/harbor0';
+// The repository uses GitHub's immutable OIDC subject, which names the owner and repository by
+// login@id, so a renamed or re-created repository with the same name cannot assume the role.
+const subjectRepository = 'anirban1809@43294429/harbor0@1392168060';
 const branch = harborEnv.branch;
 const label = harborEnv.production ? 'Production' : 'Staging';
 const app = new App();
@@ -23,7 +26,7 @@ const role = new iam.Role(stack, `${label}Deploy`, {
   assumedBy: new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
     StringEquals: {
       'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-      'token.actions.githubusercontent.com:sub': `repo:${repository}:ref:refs/heads/${branch}`,
+      'token.actions.githubusercontent.com:sub': `repo:${subjectRepository}:ref:refs/heads/${branch}`,
     },
   }),
 });
