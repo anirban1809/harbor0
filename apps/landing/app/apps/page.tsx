@@ -121,7 +121,7 @@ export default function AppsPage() {
       </section>
 
       <section className="wrap section learn-cta">
-        <h2>100 GB free forever. Nothing to pay during the beta.</h2>
+        <h2>50 GB free for beta members. Nothing to pay during the beta.</h2>
         <SignupButton />
       </section>
 

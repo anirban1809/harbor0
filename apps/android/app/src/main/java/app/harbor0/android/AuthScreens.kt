@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.sp
 private data class AuthCopy(val title: String, val lead: String, val submit: String, val busy: String)
 private val authCopy = mapOf(
     AuthMode.Login to AuthCopy("Welcome back", "Sign in to your files.", "Sign in", "Signing in…"),
-    AuthMode.Signup to AuthCopy("Create your account", "100 GB of private storage, free.", "Create your account", "Creating account…"),
+    AuthMode.Signup to AuthCopy("Create your account", "50 GB of private storage, free.", "Create your account", "Creating account…"),
     AuthMode.Confirm to AuthCopy("Check your email", "Enter the 6-digit code we sent you.", "Verify email", "Verifying…"),
     AuthMode.Forgot to AuthCopy("Reset your password", "Enter your account email and we’ll send you a reset code.", "Send reset code", "Sending…"),
     AuthMode.Reset to AuthCopy("Set a new password", "Enter the code from your email and choose a new password.", "Reset password", "Saving…"),

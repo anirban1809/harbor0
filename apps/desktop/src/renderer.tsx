@@ -544,7 +544,7 @@ function App() {
             <p>
               Back up, sync, and send files across devices.
               <br />
-              100 GB of free storage.
+              50 GB of free storage.
             </p>
             <ul className="auth-features">
               <li>

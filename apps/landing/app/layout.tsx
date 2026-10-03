@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 import './globals.css';
 
-const title = 'harbor0 — 100 GB of free storage, forever.';
+const title = 'harbor0 — 50 GB of free storage for beta members.';
 const description =
-  'A private cloud drive with desktop sync, versioned backups, and person-to-person sharing. 100 GB free forever; no payment during the beta, and more storage on request.';
+  'A private cloud drive with desktop sync, versioned backups, and person-to-person sharing. 50 GB free for beta members, kept after launch; no payment during the beta, and more storage on request.';
 export const metadata: Metadata = {
   title,
   description,

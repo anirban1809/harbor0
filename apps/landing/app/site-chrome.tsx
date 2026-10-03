@@ -55,7 +55,7 @@ export function SiteFoot() {
       <span className="brand">
         <BrandLogo />
       </span>
-      <span>100 GB free forever. Files are private unless you share them.</span>
+      <span>50 GB free during the beta. Files are private unless you share them.</span>
       <a href={signupUrl} className="text-link">
         Sign up free <ArrowUpRight size={16} />
       </a>

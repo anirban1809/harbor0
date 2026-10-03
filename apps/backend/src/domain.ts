@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
-  FREE_QUOTA,
+  SIGNUP_QUOTA,
   PART_SIZE,
   normalizeEmail,
   normalizeName,
@@ -51,6 +51,8 @@ const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).di
 export type Account = User & {
   sequence: number;
   minCursor: number;
+  /** Free storage granted at sign-up (`SIGNUP_QUOTA` then); paid storage is anything above it. */
+  freeQuotaBytes?: number;
   deletedAt?: string;
   purgeAt?: string;
   /** Measured bytes of items in trash; emptying moves them out of `storageUsedBytes` at once. */
@@ -230,7 +232,8 @@ export class StorageService {
         username: normalized,
         displayName: identity.displayName || normalized,
         avatarUrl: null,
-        storageQuotaBytes: FREE_QUOTA,
+        storageQuotaBytes: SIGNUP_QUOTA,
+        freeQuotaBytes: SIGNUP_QUOTA,
         storageUsedBytes: 0,
         storageReservedBytes: 0,
         createdAt: now(),

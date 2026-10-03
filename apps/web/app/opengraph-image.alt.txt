@@ -1,1 +1,1 @@
-harbor0 — File storage, backup, sync, and sharing. 100 GB free.
+harbor0 — File storage, backup, sync, and sharing. 50 GB free in beta.

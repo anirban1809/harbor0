@@ -27,11 +27,12 @@ export async function applyEntitlement(
       const previous = await tx.get<{ occurredAt: string }>(userPK(event.userId), 'ENTITLEMENT');
       if (previous && previous.occurredAt > event.occurredAt) return { applied: false };
       const account = await service.account(tx, event.userId);
+      const baseFreeBytes = account.freeQuotaBytes ?? FREE_QUOTA;
       account.storageQuotaBytes = event.totalQuotaBytes;
       await tx.put(userPK(event.userId), 'PROFILE', account);
       await tx.put(userPK(event.userId), 'ENTITLEMENT', {
-        baseFreeBytes: FREE_QUOTA,
-        paidBytes: event.totalQuotaBytes - FREE_QUOTA,
+        baseFreeBytes,
+        paidBytes: Math.max(0, event.totalQuotaBytes - baseFreeBytes),
         totalQuotaBytes: event.totalQuotaBytes,
         occurredAt: event.occurredAt,
       });

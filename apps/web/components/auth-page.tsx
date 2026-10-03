@@ -21,7 +21,7 @@ const copy: Record<AuthMode, { title: string; lead: string; submit: string; busy
   },
   signup: {
     title: 'Create your account',
-    lead: '100 GB of private storage, free.',
+    lead: '50 GB of private storage, free.',
     submit: 'Create your account',
     busy: 'Creating account…',
   },
@@ -54,7 +54,7 @@ const passwordRules = [
 ];
 
 const features = [
-  { icon: HardDrive, text: '100 GB of storage on the free plan' },
+  { icon: HardDrive, text: '50 GB of free storage for beta members' },
   { icon: Laptop, text: 'Sync folders across desktop and mobile' },
   { icon: Send, text: 'Send files to anyone by @username' },
 ];

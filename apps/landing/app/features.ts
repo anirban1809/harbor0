@@ -84,7 +84,10 @@ export const features: Feature[] = [
       alt: 'The version history of a file, with Download and Restore for each version',
     },
     facts: [
-      ['Storage', '100 GB free. Every version, backups and the trash count towards it.'],
+      [
+        'Storage',
+        '50 GB free during the beta. Every version, backups and the trash count towards it.',
+      ],
       ['Previews', 'Text up to 1 MB, images, audio and video. Other formats download instead.'],
       [
         'ZIP downloads',
@@ -95,7 +98,7 @@ export const features: Feature[] = [
       ['Stable links', 'A folder keeps the same address when it is renamed or moved.'],
     ],
     questions: [
-      ['Do old versions use my storage?', 'Yes. Every saved version counts towards your 100 GB.'],
+      ['Do old versions use my storage?', 'Yes. Every saved version counts towards your storage.'],
       [
         'Does search look inside files?',
         'No. Search matches the names of files and folders, not their contents.',
@@ -248,7 +251,7 @@ export const features: Feature[] = [
         'Your rules',
         'Pause a folder’s backups whenever you like. Stop backing up keeps your files and every saved version, and the folder becomes an ordinary Cloud folder.',
       ],
-      ['Storage', 'Saved versions count towards your 100 GB and are never removed automatically.'],
+      ['Storage', 'Saved versions count towards your storage and are never removed automatically.'],
     ],
     questions: [
       [

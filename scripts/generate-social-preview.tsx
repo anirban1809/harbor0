@@ -4,7 +4,7 @@ import { ImageResponse } from 'next/og';
 import { brandName } from '../apps/web/lib/brand';
 import { brandIconSrc } from '../apps/web/lib/brand-icon';
 
-const alt = 'harbor0 — File storage, backup, sync, and sharing. 100 GB free.';
+const alt = 'harbor0 — File storage, backup, sync, and sharing. 50 GB free in beta.';
 const size = { width: 1200, height: 630 };
 
 function Image() {
@@ -30,7 +30,7 @@ function Image() {
         Store, back up, sync, and share files.
       </div>
       <div style={{ display: 'flex', marginTop: 'auto', fontSize: 26, color: '#57534d' }}>
-        100 GB free
+        50 GB free in beta
       </div>
     </div>,
     size,

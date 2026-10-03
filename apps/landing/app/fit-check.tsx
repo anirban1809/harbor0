@@ -2,13 +2,13 @@
 import { ArrowRight } from 'lucide-react';
 import { useState } from 'react';
 
-const included = 100;
-const max = 300;
+const included = 50;
+const max = 200;
 const count = new Intl.NumberFormat('en');
 
-/** Lets a visitor check their own storage needs against the free 100 GB. */
+/** Lets a visitor check their own storage needs against the free 50 GB. */
 export function FitCheck({ signupUrl }: { signupUrl: string }) {
-  const [need, setNeed] = useState(40);
+  const [need, setNeed] = useState(30);
   const fits = need <= included;
   const scale = Math.max(need, included);
   return (
@@ -39,16 +39,19 @@ export function FitCheck({ signupUrl }: { signupUrl: string }) {
         </div>
         <div className="fit-scale" aria-hidden="true">
           <span>0</span>
-          <span style={{ left: `${(included / scale) * 100}%` }}>100 GB free forever</span>
+          <span style={{ left: `${(included / scale) * 100}%` }}>{included} GB free</span>
         </div>
         {fits ? (
           <p>
-            <strong>It fits.</strong> {included - need} GB to spare, free forever.
+            <strong>It fits.</strong> {included - need} GB to spare, and beta members keep it after
+            launch.
           </p>
         ) : (
           <p>
-            <strong>{need - included} GB over the free 100 GB.</strong> Sign up, then ask us — more
-            storage is available on request.
+            <strong>
+              {need - included} GB over the free {included} GB.
+            </strong>{' '}
+            Sign up, then ask us — more storage is available on request.
           </p>
         )}
         <a href={signupUrl} className="btn signup" data-variant="primary" data-size="lg">

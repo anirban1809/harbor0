@@ -1333,7 +1333,7 @@ export function createApp(
       {
         id: 'free',
         name: 'Free',
-        storageBytes: c.FREE_QUOTA,
+        storageBytes: c.SIGNUP_QUOTA,
         priceMinorUnits: 0,
         currency: 'USD',
         billingPeriod: 'MONTH',
@@ -1347,18 +1347,19 @@ export function createApp(
     'Current storage entitlement',
     undefined,
     anyObject,
-    async (ctx) => ({
-      planId: 'free',
-      entitlement: {
-        userId: userId(ctx),
-        baseFreeBytes: c.FREE_QUOTA,
-        paidBytes: Math.max(
-          0,
-          (await service.me(userId(ctx))).user.storageQuotaBytes - c.FREE_QUOTA,
-        ),
-        totalQuotaBytes: (await service.me(userId(ctx))).user.storageQuotaBytes,
-      },
-    }),
+    async (ctx) => {
+      const { user } = await service.me(userId(ctx));
+      const baseFreeBytes = user.freeQuotaBytes ?? c.FREE_QUOTA;
+      return {
+        planId: 'free',
+        entitlement: {
+          userId: userId(ctx),
+          baseFreeBytes,
+          paidBytes: Math.max(0, user.storageQuotaBytes - baseFreeBytes),
+          totalQuotaBytes: user.storageQuotaBytes,
+        },
+      };
+    },
   );
   add(
     'get',

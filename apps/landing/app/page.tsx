@@ -4,7 +4,7 @@ import { ProductStage } from './product-stage';
 import { loginUrl, SignupButton, signupUrl, SiteFoot, SiteNav } from './site-chrome';
 
 const facts = [
-  { value: '100 GB', label: 'Free forever, on every account' },
+  { value: '50 GB', label: 'Free for beta members, kept after launch' },
   { value: '$0', label: 'No payment until the beta ends' },
   { value: 'More', label: 'Storage on request' },
 ];
@@ -20,8 +20,8 @@ const details = [
 
 const questions = [
   [
-    'Is the 100 GB really free forever?',
-    'Yes. Every account gets 100 GB as soon as it is created, and it stays free after the beta ends.',
+    'Do I keep the 50 GB after the beta?',
+    'Yes. Every account created during the beta gets 50 GB, and it stays free after the beta ends.',
   ],
   ['Do I need to pay or add a card?', 'No. There is nothing to pay until the beta program ends.'],
   ['What if I need more?', 'Ask. More storage is available on request.'],
@@ -52,7 +52,7 @@ export default function LandingPage() {
         </h1>
         <div className="hero-foot">
           <p className="lede">
-            100 GB of private storage, <em>free forever.</em>
+            50 GB of private storage, <em>free for beta members.</em>
           </p>
           <div className="hero-cta">
             <SignupButton />
@@ -102,7 +102,7 @@ export default function LandingPage() {
             <h2>Nothing to pay until the beta program ends.</h2>
             <ul>
               <li>
-                <strong>100 GB free forever</strong> — it stays free after the beta
+                <strong>50 GB free</strong> — beta members keep it after launch
               </li>
               <li>No payment required while the beta runs</li>
               <li>More storage available on request</li>

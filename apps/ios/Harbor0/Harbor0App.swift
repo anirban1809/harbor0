@@ -101,7 +101,7 @@ struct AuthScreen: View {
     private var copy: (title: String, lead: String, submit: String, busy: String) {
         switch mode {
         case .login: ("Welcome back", "Sign in to your files.", "Sign in", "Signing in…")
-        case .signup: ("Create your account", "100 GB of private storage, free.", "Create your account", "Creating account…")
+        case .signup: ("Create your account", "50 GB of private storage, free.", "Create your account", "Creating account…")
         case .confirm: ("Check your email", "Enter the 6-digit code we sent you.", "Verify email", "Verifying…")
         case .forgot: ("Reset your password", "Enter your account email and we’ll send you a reset code.", "Send reset code", "Sending…")
         case .reset: ("Set a new password", "Enter the code from your email and choose a new password.", "Reset password", "Saving…")

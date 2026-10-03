@@ -1,5 +1,12 @@
 import { z } from 'zod';
-export const FREE_QUOTA = 100_000_000_000;
+/** Storage on the free plan for accounts created after the beta. */
+export const FREE_QUOTA = 25_000_000_000;
+/** Storage for accounts created during the beta; they keep it after launch. */
+export const BETA_QUOTA = 50_000_000_000;
+/** Whether new accounts join the beta. Set to false at launch. */
+export const BETA = true;
+/** Free storage a new account gets. */
+export const SIGNUP_QUOTA = BETA ? BETA_QUOTA : FREE_QUOTA;
 export const PART_SIZE = 64 * 1024 * 1024;
 export const id = z
   .string()

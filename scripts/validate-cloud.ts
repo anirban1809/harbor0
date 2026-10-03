@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, ApiError, createTransport } from '@harbor/api-client';
-import type { Transfer } from '@harbor/contracts';
+import { SIGNUP_QUOTA, type Transfer } from '@harbor/contracts';
 import { DynamoRepository, transact } from '../apps/backend/src/repository';
 import { StorageService } from '../apps/backend/src/domain';
 import { R2Storage } from '../apps/backend/src/storage';
@@ -131,7 +131,7 @@ try {
   const bob = new ApiClient(createTransport(ApiUrl, async () => sessionB.accessToken));
   const accountA = await alice.me();
   check(
-    accountA.user.emailVerified && accountA.storage.quotaBytes === 100_000_000_000,
+    accountA.user.emailVerified && accountA.storage.quotaBytes === SIGNUP_QUOTA,
     'Cognito authentication creates DynamoDB account and quota',
   );
   const oldRefresh = sessionA.refreshToken;

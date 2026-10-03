@@ -112,12 +112,12 @@ describe('management console API', () => {
       id: 'alice',
       email: 'alice@example.test',
       status: 'CONFIRMED',
-      quotaBytes: 100_000_000_000,
+      quotaBytes: 50_000_000_000,
       usedBytes: 0,
       suspended: false,
     });
     const detail = await (await call(cookie, 'GET', '/users/alice')).json();
-    expect(detail.profile.storage.quotaBytes).toBe(100_000_000_000);
+    expect(detail.profile.storage.quotaBytes).toBe(50_000_000_000);
     expect(detail.devices).toHaveLength(1);
   });
 
@@ -142,7 +142,7 @@ describe('management console API', () => {
       action: 'QUOTA_CHANGED',
       actor: { email: 'admin@example.test' },
       reason: 'Beta tester upgrade',
-      details: { previousBytes: 100_000_000_000, quotaBytes: 500_000_000_000 },
+      details: { previousBytes: 50_000_000_000, quotaBytes: 500_000_000_000 },
     });
     const audit = await (await call(admin, 'GET', '/audit')).json();
     expect(audit.items[0].action).toBe('QUOTA_CHANGED');
@@ -250,14 +250,14 @@ describe('management console API', () => {
     expect(first.storage).toMatchObject({
       accounts: 2,
       usedBytes: 3_000_000_000,
-      allocatedBytes: 200_000_000_000,
+      allocatedBytes: 100_000_000_000,
       trashBytes: 1_000_000_000,
       deletedAccounts: 0,
     });
     // A quota change clears the cached totals so allocation is current at once.
     await call(admin, 'PUT', '/users/bob/quota', { quotaBytes: 1_000_000_000_000, reason: 'Pro' });
     const afterQuota = await (await call(admin, 'GET', '/overview')).json();
-    expect(afterQuota.storage.allocatedBytes).toBe(1_100_000_000_000);
+    expect(afterQuota.storage.allocatedBytes).toBe(1_050_000_000_000);
     await call(admin, 'POST', '/users/alice/delete', {
       confirmEmail: 'alice@example.test',
       reason: 'Requested',
