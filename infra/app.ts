@@ -16,10 +16,15 @@ import {
   aws_logs as logs,
   aws_sqs as sqs,
   aws_cloudwatch as cloudwatch,
+  Tags,
 } from 'aws-cdk-lib';
 import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { harborEnv } from './environment';
 const app = new App();
-const stack = new Stack(app, 'HarborStorage');
+const stack = new Stack(app, harborEnv.stacks.storage);
+// Staging is disposable: its data is test data, so it is not retained or backed up when removed.
+const removalPolicy = harborEnv.production ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+if (!harborEnv.production) Tags.of(stack).add('Environment', harborEnv.name);
 const param = (name: string, description: string) =>
   new CfnParameter(stack, name, { type: 'String', description }).valueAsString;
 const webOrigin = param('WebOrigin', 'HTTPS origin of the deployed web application');
@@ -45,11 +50,11 @@ const table = new dynamodb.Table(stack, 'Metadata', {
   sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
   billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
   encryption: dynamodb.TableEncryption.AWS_MANAGED,
-  pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+  pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: harborEnv.production },
   timeToLiveAttribute: 'expiresAt',
   // Keys only: live updates need to know which rows changed, never their contents.
   stream: dynamodb.StreamViewType.KEYS_ONLY,
-  removalPolicy: RemovalPolicy.RETAIN,
+  removalPolicy,
 });
 table.addGlobalSecondaryIndex({
   indexName: 'jobs',
@@ -76,7 +81,7 @@ const pool = new cognito.UserPool(stack, 'Users', {
     requireSymbols: true,
   },
   accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
-  removalPolicy: RemovalPolicy.RETAIN,
+  removalPolicy,
 });
 const registration = new lambda.Function(stack, 'Registration', {
   runtime: lambda.Runtime.NODEJS_22_X,
@@ -110,7 +115,10 @@ const client = new cognito.CfnUserPoolClient(stack, 'Client', {
 const domain = pool.addDomain('ManagedLogin', {
   cognitoDomain: {
     domainPrefix:
-      app.node.tryGetContext('cognitoDomainPrefix') ?? `harbor-${stack.account}-${stack.region}`,
+      app.node.tryGetContext('cognitoDomainPrefix') ??
+      (harborEnv.production
+        ? `harbor-${stack.account}-${stack.region}`
+        : `harbor-${harborEnv.name}-${stack.account}-${stack.region}`),
   },
 });
 const environment = {
@@ -126,7 +134,7 @@ const environment = {
 };
 const logGroup = new logs.LogGroup(stack, 'ApiLogs', {
   retention: logs.RetentionDays.ONE_MONTH,
-  removalPolicy: RemovalPolicy.RETAIN,
+  removalPolicy,
 });
 const apiFunction = new lambda.Function(stack, 'Api', {
   runtime: lambda.Runtime.NODEJS_22_X,
@@ -200,8 +208,8 @@ const realtimeStream = new lambda.Function(stack, 'RealtimeStream', {
     TABLE_NAME: table.tableName,
     REALTIME_URL: socketStage.url,
     REALTIME_ENDPOINT: socketStage.callbackUrl,
-    // File Provider pushes for iOS; off until the `harbor0-apns` secret exists.
-    APNS_SECRET_ID: 'harbor0-apns',
+    // File Provider pushes for iOS; off until the APNs secret (`harbor0-apns`) exists.
+    APNS_SECRET_ID: harborEnv.apnsSecretName,
     APNS_BUNDLE_ID: 'app.harbor0.ios',
     NODE_ENV: 'production',
   },
@@ -210,7 +218,7 @@ realtimeStream.addToRolePolicy(
   new iam.PolicyStatement({
     actions: ['secretsmanager:GetSecretValue'],
     resources: [
-      `arn:${stack.partition}:secretsmanager:${stack.region}:${stack.account}:secret:harbor0-apns-*`,
+      `arn:${stack.partition}:secretsmanager:${stack.region}:${stack.account}:secret:${harborEnv.apnsSecretName}-*`,
     ],
   }),
 );
@@ -254,7 +262,7 @@ const staffPool = new cognito.UserPool(stack, 'Staff', {
     emailBody:
       'An administrator added you to the harbor0 management console. Sign in with {username} and the temporary password {####}, then set a password and add an authenticator app.',
   },
-  removalPolicy: RemovalPolicy.RETAIN,
+  removalPolicy,
 });
 for (const [id, groupName, description] of [
   ['StaffAdmins', 'admin', 'Full console access: storage limits, suspension, deletion'],
@@ -282,7 +290,7 @@ const staffClient = new cognito.CfnUserPoolClient(stack, 'StaffClient', {
 });
 const adminLogs = new logs.LogGroup(stack, 'AdminLogs', {
   retention: logs.RetentionDays.ONE_YEAR,
-  removalPolicy: RemovalPolicy.RETAIN,
+  removalPolicy,
 });
 const adminFunction = new lambda.Function(stack, 'Admin', {
   runtime: lambda.Runtime.NODEJS_22_X,

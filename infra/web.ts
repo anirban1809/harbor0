@@ -9,9 +9,12 @@ import {
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_certificatemanager as acm,
+    Tags,
 } from 'aws-cdk-lib';
+import { harborEnv } from './environment';
 const app = new App();
-const stack = new Stack(app, 'HarborWeb');
+const stack = new Stack(app, harborEnv.stacks.web);
+if (!harborEnv.production) Tags.of(stack).add('Environment', harborEnv.name);
 const apiHost = new CfnParameter(stack, 'ApiHostname', {
     type: 'String',
     description: 'Existing harbor0 API Gateway hostname, without a scheme',
@@ -43,6 +46,14 @@ const headers = new cloudfront.ResponseHeadersPolicy(stack, 'WebHeaders', {
             override: true,
         },
     },
+    // Keep staging out of search results.
+    ...(harborEnv.production
+        ? {}
+        : {
+            customHeadersBehavior: {
+                customHeaders: [{ header: 'X-Robots-Tag', value: 'noindex, nofollow', override: true }],
+            },
+        }),
 });
 const staticCache = new cloudfront.CachePolicy(stack, 'StaticCache', {
     minTtl: Duration.seconds(0),
@@ -56,9 +67,10 @@ const staticCache = new cloudfront.CachePolicy(stack, 'StaticCache', {
 });
 // Next's static export writes /settings as settings.html. Resolve clean URLs at
 // the edge while leaving API requests, assets and navigation payloads untouched.
-// With WEB_CERT_ARN set the app is served at app.harbor0.com, and the default
-// CloudFront hostname permanently redirects there so older links keep working.
-const appDomain = 'app.harbor0.com';
+// With WEB_CERT_ARN set the app is served at app.harbor0.com (staging: WEB_DOMAIN, by default
+// staging.harbor0.com), and the default CloudFront hostname permanently redirects there so older
+// links keep working.
+const appDomain = harborEnv.appDomain;
 const certArn = process.env.WEB_CERT_ARN;
 const legacyRedirect = certArn
     ? `var host = request.headers.host && request.headers.host.value;

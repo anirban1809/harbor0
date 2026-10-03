@@ -1,10 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { desktopConfiguration } from '../apps/desktop/src/config';
+import { readOutputs } from '../infra/environment';
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
-const web = await readFile('.cloud/web-outputs.json', 'utf8').then(
-  (text) => JSON.parse(text).HarborWeb as { WebUrl?: string },
+const output = await readOutputs('storage');
+const web = await readOutputs('web').then(
+  (outputs) => outputs as { WebUrl?: string },
   () => undefined,
 );
 const settings = {

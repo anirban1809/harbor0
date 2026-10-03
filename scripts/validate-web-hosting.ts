@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { writeFile, readdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-const web = JSON.parse(await readFile('.cloud/web-outputs.json', 'utf8')).HarborWeb;
+import { readOutputs } from '../infra/environment';
+const web = await readOutputs('web');
 const aws = (...args: string[]) =>
   JSON.parse(execFileSync('aws', [...args, '--output', 'json'], { encoding: 'utf8' }));
 const checks: string[] = [];

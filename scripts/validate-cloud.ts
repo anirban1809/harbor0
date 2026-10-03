@@ -15,6 +15,7 @@ import { DynamoRepository, transact } from '../apps/backend/src/repository';
 import { StorageService } from '../apps/backend/src/domain';
 import { R2Storage } from '../apps/backend/src/storage';
 import { TransferWorkflows } from '../apps/backend/src/workflows';
+import { readOutputs } from '../infra/environment';
 
 // A connection timeout occurs before any request reaches the service. Retry only
 // this transport failure; API errors and ambiguous response timeouts still fail.
@@ -34,7 +35,7 @@ globalThis.fetch = async (...args: Parameters<typeof fetch>) => {
   }
 };
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const output = await readOutputs('storage');
 const { ApiUrl, UserPoolId, ClientId, TableName, MaintenanceFunctionName } = output;
 if (!ApiUrl.startsWith('https://') || !UserPoolId || !ClientId)
   throw new Error('Deploy the live stack first.');

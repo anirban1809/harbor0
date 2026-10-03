@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, access } from 'node:fs/promises';
+import { assertDeployBranch, harborEnv, outputsPath, readOutputs } from '../infra/environment';
 // Publishes the management console: HarborAdmin (static site + /api/* → console API), then
-// records its origin in .env.cloud and redeploys HarborStorage so the console API accepts it.
-const outputs = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
-if (!outputs.AdminApiUrl) throw new Error('Run npm run cloud:deploy first: no AdminApiUrl output.');
+// records its origin in the environment's settings file and redeploys the storage stack so the
+// console API accepts it.
+assertDeployBranch();
+const outputs = await readOutputs('storage');
+if (!outputs.AdminApiUrl) throw new Error('Deploy the storage stack first: no AdminApiUrl output.');
 const apiHost = new URL(outputs.AdminApiUrl).hostname;
 if (!/^[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/.test(apiHost))
   throw new Error('Expected the deployed console API Gateway endpoint.');
@@ -54,26 +57,26 @@ if (!assetsOnly) {
   await run('npx', [
     'cdk',
     'deploy',
-    'HarborAdmin',
+    harborEnv.stacks.admin,
     '--app',
     'npx tsx infra/admin.ts',
     '--require-approval',
     'never',
     '--outputs-file',
-    '.cloud/admin-outputs.json',
+    outputsPath('admin'),
     '--parameters',
     `AdminApiHostname=${apiHost}`,
   ]);
 }
-const site = JSON.parse(await readFile('.cloud/admin-outputs.json', 'utf8')).HarborAdmin;
+const site = await readOutputs('admin');
 if (!assetsOnly && process.env.ADMIN_ORIGIN !== site.AdminUrl) {
   process.env.ADMIN_ORIGIN = site.AdminUrl;
-  let env = await readFile('.env.cloud', 'utf8');
+  let env = await readFile(harborEnv.envFile, 'utf8');
   env = /^ADMIN_ORIGIN=.*$/m.test(env)
     ? env.replace(/^ADMIN_ORIGIN=.*$/m, `ADMIN_ORIGIN=${site.AdminUrl}`)
     : env + `\nADMIN_ORIGIN=${site.AdminUrl}\n`;
-  await writeFile('.env.cloud', env, { mode: 0o600 });
-  await run('npm', ['run', 'cloud:deploy']);
+  await writeFile(harborEnv.envFile, env, { mode: 0o600 });
+  await run('npx', ['tsx', `--env-file=${harborEnv.envFile}`, 'scripts/deploy-cloud.ts']);
 }
 await run('aws', [
   's3',
@@ -121,4 +124,4 @@ await run('aws', [
   '--id',
   invalidation.Invalidation.Id,
 ]);
-console.log(`Published the harbor0 management console at ${site.AdminUrl}`);
+console.log(`Published the harbor0 ${harborEnv.name} management console at ${site.AdminUrl}`);

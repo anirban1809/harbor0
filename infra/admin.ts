@@ -9,11 +9,14 @@ import {
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_certificatemanager as acm,
+    Tags,
 } from 'aws-cdk-lib';
+import { harborEnv } from './environment';
 // The management console is a separate static export on its own distribution. Its `/api/*`
 // goes to the console API (its own Lambda), never to the customer API.
 const app = new App();
-const stack = new Stack(app, 'HarborAdmin');
+const stack = new Stack(app, harborEnv.stacks.admin);
+if (!harborEnv.production) Tags.of(stack).add('Environment', harborEnv.name);
 const apiHost = new CfnParameter(stack, 'AdminApiHostname', {
     type: 'String',
     description: 'The console API Gateway hostname (HarborStorage AdminApiUrl), without a scheme',

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -12,14 +11,16 @@ import {
   ListUsersCommand,
   AdminListGroupsForUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import { readOutputs } from '../infra/environment';
 // Manages console staff in the staff pool. Run with AWS credentials for the harbor0 account:
 //   npm run admin:staff -- list
 //   npm run admin:staff -- add someone@harbor0.com support|admin
 //   npm run admin:staff -- role someone@harbor0.com admin|support
 //   npm run admin:staff -- disable|enable|reset-mfa someone@harbor0.com
-const outputs = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const outputs = await readOutputs('storage');
 const UserPoolId: string = outputs.StaffUserPoolId;
-if (!UserPoolId) throw new Error('No StaffUserPoolId in .cloud/outputs.json; run cloud:deploy.');
+if (!UserPoolId)
+  throw new Error('No StaffUserPoolId in the storage outputs; deploy the storage stack first.');
 const client = new CognitoIdentityProviderClient({});
 const [command, email, role] = process.argv.slice(2);
 const roles = ['admin', 'support'];

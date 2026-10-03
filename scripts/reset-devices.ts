@@ -2,16 +2,14 @@
 // Dry run by default; pass --apply to write. Deploy the backend first: backups must already be
 // matched by installation, or the computers that own them can't run them afterwards.
 //   npx tsx --env-file=.env.cloud scripts/reset-devices.ts [--apply]
-import { readFile } from 'node:fs/promises';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { DynamoRepository } from '../apps/backend/src/repository';
 import { resetDevices } from '../apps/backend/src/device-reset';
+import { readOutputs } from '../infra/environment';
 
 const apply = process.argv.includes('--apply');
-const table =
-  process.env.TABLE_NAME ??
-  JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage.TableName;
+const table = process.env.TABLE_NAME ?? (await readOutputs('storage')).TableName;
 // DYNAMODB_ENDPOINT points at DynamoDB Local when run with --env-file=.env.
 const endpoint = process.env.DYNAMODB_ENDPOINT;
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint }));

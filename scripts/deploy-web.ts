@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, access } from 'node:fs/promises';
-const outputs = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+import { assertDeployBranch, harborEnv, outputsPath, readOutputs } from '../infra/environment';
+assertDeployBranch();
+const outputs = await readOutputs('storage');
 const apiHost = new URL(outputs.ApiUrl).hostname;
 if (!/^[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/.test(apiHost))
   throw new Error('Expected the deployed harbor0 API Gateway endpoint.');
@@ -45,34 +47,34 @@ if (!assetsOnly && process.env.WEB_CERT_ARN) {
   ).trim();
   if (status !== 'ISSUED')
     throw new Error(
-      `app.harbor0.com certificate is ${status}; add its DNS validation record first.`,
+      `${harborEnv.appDomain} certificate is ${status}; add its DNS validation record first.`,
     );
 }
 if (!assetsOnly) {
   await run('npx', [
     'cdk',
     'deploy',
-    'HarborWeb',
+    harborEnv.stacks.web,
     '--app',
     'npx tsx infra/web.ts',
     '--require-approval',
     'never',
     '--outputs-file',
-    '.cloud/web-outputs.json',
+    outputsPath('web'),
     '--parameters',
     `ApiHostname=${apiHost}`,
   ]);
 }
-const web = JSON.parse(await readFile('.cloud/web-outputs.json', 'utf8')).HarborWeb;
+const web = await readOutputs('web');
 if (!assetsOnly) {
   process.env.WEB_ORIGIN = web.WebUrl;
-  let env = await readFile('.env.cloud', 'utf8');
+  let env = await readFile(harborEnv.envFile, 'utf8');
   env = /^WEB_ORIGIN=.*$/m.test(env)
     ? env.replace(/^WEB_ORIGIN=.*$/m, `WEB_ORIGIN=${web.WebUrl}`)
     : env + `\nWEB_ORIGIN=${web.WebUrl}\n`;
-  await writeFile('.env.cloud', env, { mode: 0o600 });
-  await run('npx', ['tsx', '--env-file=.env.cloud', 'scripts/configure-r2-cors.ts']);
-  await run('npm', ['run', 'cloud:deploy']);
+  await writeFile(harborEnv.envFile, env, { mode: 0o600 });
+  await run('npx', ['tsx', `--env-file=${harborEnv.envFile}`, 'scripts/configure-r2-cors.ts']);
+  await run('npx', ['tsx', `--env-file=${harborEnv.envFile}`, 'scripts/deploy-cloud.ts']);
 }
 // Upload hashed assets first and retain older chunks for browsers opened before
 // the release. Publish uncached HTML only after all its dependencies exist.
@@ -124,4 +126,4 @@ await run('aws', [
   '--id',
   invalidation.Invalidation.Id,
 ]);
-console.log(`Published harbor0 at ${web.WebUrl}`);
+console.log(`Published harbor0 (${harborEnv.name}) at ${web.WebUrl}`);

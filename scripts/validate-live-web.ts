@@ -10,8 +10,9 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { removeFixtureAccount } from './fixture-accounts';
 import { ApiClient, createTransport } from '@harbor/api-client';
+import { readOutputs } from '../infra/environment';
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const output = await readOutputs('storage');
 const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 const username = 'qa_web_' + randomUUID().replaceAll('-', '').slice(0, 14);
 const email = username + '@example.invalid';

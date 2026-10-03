@@ -14,9 +14,10 @@ import { ApiClient, createTransport } from '@harbor/api-client';
 import { Journal, type Root } from '../apps/desktop/src/journal';
 import { SyncEngine } from '../apps/desktop/src/sync';
 import { FolderBackups, BACKUP_QUIET_MS } from '../apps/desktop/src/backups';
+import { readOutputs } from '../infra/environment';
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
-const web = JSON.parse(await readFile('.cloud/web-outputs.json', 'utf8')).HarborWeb;
+const output = await readOutputs('storage');
+const web = await readOutputs('web');
 const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 const username = `qa_backup_${randomUUID().replaceAll('-', '').slice(0, 12)}`;
 const email = `${username}@example.invalid`;

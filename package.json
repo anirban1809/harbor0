@@ -51,6 +51,17 @@
     "admin:staff": "tsx --env-file=.env.cloud scripts/admin-staff.ts",
     "cloud:deploy-landing": "tsx --env-file=.env.cloud scripts/deploy-landing.ts",
     "cloud:deploy-landing:assets": "tsx --env-file=.env.cloud scripts/deploy-landing.ts --assets-only",
+    "staging:r2:provision": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/provision-r2.ts",
+    "staging:deploy": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/deploy-cloud.ts",
+    "staging:deploy-web": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/deploy-web.ts",
+    "staging:deploy-web:assets": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/deploy-web.ts --assets-only",
+    "staging:deploy-admin": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/deploy-admin.ts",
+    "staging:deploy-admin:assets": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/deploy-admin.ts --assets-only",
+    "staging:admin-staff": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/admin-staff.ts",
+    "staging:validate": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/validate-cloud.ts",
+    "staging:validate-web": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/validate-live-web.ts",
+    "staging:dashboard": "HARBOR_ENV=staging tsx --env-file=.env.staging scripts/ops-dashboard.ts",
+    "infra:synth:staging": "HARBOR_ENV=staging cdk synth --app 'npx tsx infra/app.ts'",
     "test:drive": "npm run build -w @harbor/desktop && tsx scripts/drive-redesign-check.ts"
   },
   "dependencies": {

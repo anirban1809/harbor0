@@ -1,0 +1,61 @@
+name: Deploy staging
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+# One staging deploy at a time; a newer push waits rather than racing the stack update.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    # The AWS role only trusts this branch; the guard also stops a manual run from another ref.
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    env:
+      HARBOR_ENV: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.STAGING_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.STAGING_AWS_REGION || 'us-east-1' }}
+      - name: Write .env.staging
+        env:
+          AWS_REGION: ${{ vars.STAGING_AWS_REGION || 'us-east-1' }}
+          R2_BUCKET: ${{ vars.STAGING_R2_BUCKET }}
+          R2_ENDPOINT: ${{ vars.STAGING_R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.STAGING_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.STAGING_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
+          WEB_ORIGIN: ${{ vars.STAGING_WEB_ORIGIN }}
+          WEB_DOMAIN: ${{ vars.STAGING_WEB_DOMAIN }}
+          WEB_CERT_ARN: ${{ vars.STAGING_WEB_CERT_ARN }}
+          EMAIL_FROM: ${{ vars.STAGING_EMAIL_FROM }}
+          ADMIN_ORIGIN: ${{ vars.STAGING_ADMIN_ORIGIN }}
+          ADMIN_DOMAIN: ${{ vars.STAGING_ADMIN_DOMAIN }}
+          ADMIN_CERT_ARN: ${{ vars.STAGING_ADMIN_CERT_ARN }}
+        run: |
+          umask 077
+          for name in HARBOR_ENV AWS_REGION R2_BUCKET R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
+            CLOUDFLARE_API_TOKEN WEB_ORIGIN WEB_DOMAIN WEB_CERT_ARN EMAIL_FROM \
+            ADMIN_ORIGIN ADMIN_DOMAIN ADMIN_CERT_ARN; do
+            printf '%s=%s\n' "$name" "${!name}"
+          done > .env.staging
+      # Backend first (writes the outputs the web deploy reads), then the web app.
+      - run: npm run staging:deploy
+      - run: npm run staging:deploy-web
+      - if: vars.STAGING_ADMIN_ORIGIN != ''
+        run: npm run staging:deploy-admin

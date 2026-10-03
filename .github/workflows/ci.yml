@@ -17,6 +17,7 @@ jobs:
       - run: git diff --exit-code -- docs/openapi.json packages/api-client/src/generated.ts
       - run: npm run build:backend
       - run: npm run infra:synth
+      - run: npm run infra:synth:staging
       - run: npm run build -w @harbor/web
       - run: npm run build:web-static
       - run: npx cdk synth --app 'npx tsx infra/web.ts' --quiet

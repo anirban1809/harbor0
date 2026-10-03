@@ -11,8 +11,9 @@ import {
 import { removeFixtureAccount } from './fixture-accounts';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ZipReader, Uint8ArrayReader, Uint8ArrayWriter } from '@zip.js/zip.js';
+import { readOutputs } from '../infra/environment';
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const output = await readOutputs('storage');
 const origin = process.env.WEB_ORIGIN!;
 const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 const username = 'qa_zip_' + randomUUID().replaceAll('-', '').slice(0, 14);

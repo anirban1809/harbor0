@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { chromium, expect } from '@playwright/test';
 import {
   CognitoIdentityProviderClient,
@@ -8,10 +8,11 @@ import {
   AdminSetUserPasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { removeFixtureAccount } from './fixture-accounts';
+import { readOutputs } from '../infra/environment';
 
 // Exercise the published app using a disposable account, never an existing user's trash.
-const { HarborStorage: backend } = JSON.parse(await readFile('.cloud/outputs.json', 'utf8'));
-const { HarborWeb: web } = JSON.parse(await readFile('.cloud/web-outputs.json', 'utf8'));
+const backend = await readOutputs('storage');
+const web = await readOutputs('web');
 const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 const username = `qa_trash_${randomUUID().replaceAll('-', '').slice(0, 14)}`;
 const email = `${username}@example.invalid`;

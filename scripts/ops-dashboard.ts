@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { harborEnv } from '../infra/environment';
 
 const exec = promisify(execFile);
 const DAY = 86_400_000;
@@ -70,8 +71,8 @@ const physical = (list: StackResource[], type: string) =>
 
 async function discover() {
   const [storage, web] = await Promise.all([
-    stackResources('HarborStorage'),
-    attempt('HarborWeb stack', () => stackResources('HarborWeb'), []),
+    stackResources(harborEnv.stacks.storage),
+    attempt('web stack', () => stackResources(harborEnv.stacks.web), []),
   ]);
   const functions = await Promise.all(
     storage
@@ -540,10 +541,14 @@ async function collect(res: Resources) {
             'cloudwatch',
             'describe-alarms',
             '--alarm-name-prefix',
-            'HarborStorage',
+            // The trailing dash keeps production's prefix from also matching the staging stack.
+            `${harborEnv.stacks.storage}-`,
           ])
         ).MetricAlarms.map((a) => ({
-          name: a.AlarmName.replace(/^HarborStorage-/, '').replace(/[0-9A-F]{8}-.*$/, ''),
+          name: a.AlarmName.slice(harborEnv.stacks.storage.length + 1).replace(
+            /[0-9A-F]{8}-.*$/,
+            '',
+          ),
           state: a.StateValue,
         })),
       [],

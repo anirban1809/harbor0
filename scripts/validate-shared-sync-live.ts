@@ -16,8 +16,9 @@ import { StorageService } from '../apps/backend/src/domain';
 import { DynamoRepository } from '../apps/backend/src/repository';
 import { R2Storage } from '../apps/backend/src/storage';
 import { DeletionWorkflows } from '../apps/backend/src/deletion';
+import { readOutputs } from '../infra/environment';
 
-const output = JSON.parse(await readFile('.cloud/outputs.json', 'utf8')).HarborStorage;
+const output = await readOutputs('storage');
 const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
 const publicApi = new ApiClient(createTransport(output.ApiUrl));
 const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-live-shared-'));
