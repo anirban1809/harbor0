@@ -94,7 +94,10 @@ export const features: Feature[] = [
         'A folder downloads as one ZIP with its subfolders intact. The prepared ZIP is kept for 24 hours.',
       ],
       ['Trash', 'Deleted files wait in the trash until you restore or permanently remove them.'],
-      ['Three views', 'My Drive separates Cloud files, Backup folders and Sync folders.'],
+      [
+        'Devices in one place',
+        'Synced Folders, Backups and Archives sit at the top of My Drive, sorted by the computer or phone each folder comes from.',
+      ],
       ['Stable links', 'A folder keeps the same address when it is renamed or moved.'],
     ],
     questions: [
@@ -116,7 +119,7 @@ export const features: Feature[] = [
     text: 'Pick a folder once and it stays in step on all your computers, and with the people you share it with.',
     shot: syncLight,
     darkShot: syncDark,
-    alt: 'The desktop app listing synced folders and their status',
+    alt: 'My Drive › Synced Folders, listing the folders one computer syncs and where else each is synced',
     notes: [
       { icon: Check, title: 'Up to date', text: 'Nothing to press. Changes go out as you save.' },
       { icon: Users, title: 'Shared folders', text: 'Sync one folder between accounts.' },
@@ -127,7 +130,7 @@ export const features: Feature[] = [
     steps: [
       [
         'Pick a folder',
-        'Choose Add folder to sync and pick any folder on your computer. That is the whole setup.',
+        'Open Synced Folders in My Drive, choose Sync a folder and pick any folder on your computer. That is the whole setup.',
       ],
       [
         'Keep working',
@@ -172,14 +175,14 @@ export const features: Feature[] = [
       ],
       ['Your rules', 'Pause sync whenever you like, and leave chosen subfolders out.'],
       [
-        'Between computers',
-        'The cloud holds a temporary copy only until every computer has the file. To keep one in the cloud too, use Copy to cloud in My Drive, or back the folder up.',
+        'Always in the cloud',
+        'Every synced file is also kept in your account, so a new computer can start syncing even when the others are switched off.',
       ],
     ],
     questions: [
       [
         'Do I need the desktop app?',
-        'Yes, on every computer that syncs, including those of the people you share with. Synced folders can also be browsed on the web under My Drive.',
+        'Yes, on every computer that syncs, including those of the people you share with. Synced folders can also be browsed on the web under My Drive › Synced Folders.',
       ],
       [
         'Does the person I share with need an account?',
@@ -202,7 +205,7 @@ export const features: Feature[] = [
     text: 'Pick a folder once and every version is saved on its own, from all your computers. Restore any of them later.',
     shot: backupsLight,
     darkShot: backupsDark,
-    alt: 'The Backups page with a backed-up folder and the saved versions of one file',
+    alt: 'A backed-up folder in My Drive with its backup status and the saved versions of one file',
     notes: [
       { icon: Clock, title: 'Automatic', text: 'Nothing to press. Versions save themselves.' },
       { icon: RotateCcw, title: 'Restore', text: 'Bring back any saved version.' },
@@ -213,7 +216,7 @@ export const features: Feature[] = [
     steps: [
       [
         'Pick a folder',
-        'Choose Add folder in Backups and pick a folder you already use. Nothing moves and nothing changes on your computer.',
+        'Open Backups in My Drive, choose Back up a folder and pick a folder you already use. Nothing moves and nothing changes on your computer.',
       ],
       [
         'Forget about it',
@@ -229,14 +232,14 @@ export const features: Feature[] = [
       text: 'History lists every backup run with the files it saved. Backups from all your computers sit together in one account, and any version can be downloaded from the web, wherever you are.',
       shot: backupsHistoryLight,
       darkShot: backupsHistoryDark,
-      alt: 'The History tab of a backup folder, listing a run and the files it saved',
+      alt: 'The history of a backup folder, listing a run and the files it saved',
     },
     facts: [
       ['Nothing to press', 'No schedule to set. Each folder shows when it was last backed up.'],
       ['Deleting is safe', 'Deleting a file on your computer leaves every saved version intact.'],
       [
         'All your computers',
-        'Back up folders from each of your computers. They appear together in Backups, with the computer each came from.',
+        'Back up folders from each of your computers. They appear together under Backups in My Drive, grouped by the computer each came from.',
       ],
       [
         'Restore in place',
@@ -264,7 +267,7 @@ export const features: Feature[] = [
       ],
       [
         'What if I delete a file by accident?',
-        'Its saved versions stay. Open the folder in Backups, find the file, and restore or download it.',
+        'Its saved versions stay. Open the folder under Backups in My Drive, find the file, and restore or download it.',
       ],
       [
         'Can I get a file back on a different computer?',

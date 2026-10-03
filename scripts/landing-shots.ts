@@ -62,13 +62,58 @@ try {
       item('proposal', 'Proposal.docx', 'FILE', 412000, 27, { parentId: 'cloud1' }),
       item('invoice', 'Invoice template.xlsx', 'FILE', 96000, 23, { parentId: 'cloud1' }),
     ];
-    const backup = {
-      id: 'backup1',
+    const device = (id: string, name: string, platform: string) => ({
+      id,
+      userId: 'alex',
+      name,
+      platform,
+      appVersion: '0.1.1',
+      devicePublicId: 'pub-' + id,
+      keyFingerprint: null,
+      lastSeenAt: '2026-10-03T09:00:00Z',
+      createdAt: '2026-09-01T09:00:00Z',
+      revokedAt: null,
+      status: 'ACTIVE',
+    });
+    const devices = [
+      device('device1', 'Alex’s MacBook Pro', 'MACOS'),
+      device('device2', 'Studio iMac', 'MACOS'),
+      device('device3', 'Alex’s iPhone', 'IOS'),
+    ];
+    const on = (...ids: string[]) =>
+      ids.map((id) => ({ id, name: devices.find((entry) => entry.id === id)!.name }));
+    const syncFolders = [
+      item('projects-cloud', 'Projects', 'FOLDER', 0, 29, {
+        syncDevices: on('device1', 'device2'),
+      }),
+      item('photos-cloud', 'Photos', 'FOLDER', 0, 28, { syncDevices: on('device1', 'device3') }),
+      item('design-cloud', 'Design assets', 'FOLDER', 0, 27, { syncDevices: on('device1') }),
+    ];
+    const backupRoot = (id: string, name: string, remote: string, deviceId: string) => ({
+      id,
+      userId: 'alex',
       state: 'ACTIVE',
-      deviceId: 'device1',
-      localPathDisplayName: 'Documents',
-      remoteRootDriveItemId: 'cloud1',
+      deviceId,
+      deviceName: devices.find((entry) => entry.id === deviceId)!.name,
+      devicePublicId: 'pub-' + deviceId,
+      localPathDisplayName: name,
+      remoteRootDriveItemId: remote,
       createdAt: '2026-09-20T08:00:00Z',
+      updatedAt: '2026-10-03T08:00:00Z',
+    });
+    const backups = [
+      backupRoot('backup1', 'Documents', 'cloud1', 'device1'),
+      backupRoot('backup2', 'Desktop', 'cloud2', 'device1'),
+      backupRoot('backup3', 'Client work', 'cloud3', 'device2'),
+    ];
+    const usage: Record<string, number> = {
+      'projects-cloud': 482e6,
+      'photos-cloud': 6.3e9,
+      'design-cloud': 1.92e9,
+      cloud1: 96e6,
+      cloud2: 1.4e9,
+      cloud3: 3.8e9,
+      research: 95.4e6,
     };
     const entry = (id: string, displayName: string, itemType: string, mimeType: string | null) => ({
       id,
@@ -155,11 +200,17 @@ try {
       configured: true,
       signedIn: true,
       accountId: 'alex',
+      deviceId: 'device1',
       deviceName: 'Alex’s MacBook Pro',
       roots: [
         root('projects', 'Projects', 482e6),
         root('photos', 'Photos', 6.3e9),
         root('design', 'Design assets', 1.92e9, { shareId: 'share0' }),
+        root('desktop', 'Desktop', 1.4e9, {
+          mode: 'backup',
+          remoteId: 'cloud2',
+          backupId: 'backup2',
+        }),
         root('local1', 'Documents', 96e6, {
           mode: 'backup',
           remoteId: 'cloud1',
@@ -206,7 +257,8 @@ try {
       }),
     ];
     const api = (raw: string) => {
-      const p = new URL(raw, 'http://fixture').pathname;
+      const url = new URL(raw, 'http://fixture');
+      const p = url.pathname;
       if (p === '/v1/users/me')
         return {
           user: { id: 'alex', email: 'alex@example.test', username: 'alex', displayName: 'Alex' },
@@ -221,7 +273,21 @@ try {
       if (p === '/v1/drive/folders/cloud1/children') return { items: archive, nextCursor: null };
       if (p === '/v1/drive/items/cloud1')
         return { item: item('cloud1', 'Documents', 'FOLDER', 0, 20) };
-      if (p === '/v1/backups') return { items: [backup] };
+      if (p === '/v1/backups') return { items: backups };
+      if (p === '/v1/devices') return { items: devices, nextCursor: null };
+      if (p === '/v1/sync/folders') return { items: syncFolders };
+      if (p === '/v1/drive/usage')
+        return {
+          items: url.searchParams
+            .get('ids')!
+            .split(',')
+            .map((itemId) => ({
+              itemId,
+              bytes: usage[itemId] ?? 0,
+              files: 120,
+              complete: true,
+            })),
+        };
       if (p === '/v1/transfers/received') return { items: transfers, nextCursor: null };
       if (p === '/v1/transfers/sent') return { items: sent, nextCursor: null };
       if (p === '/v1/sync/shares') return { items: invitations };
@@ -311,8 +377,20 @@ try {
   await expect(page.getByRole('dialog')).toContainText('Version 3');
   await capture('drive-versions');
   await page.keyboard.press('Escape');
-  await nav.getByRole('button', { name: 'Sync', exact: true }).click();
-  await expect(page.getByRole('heading', { name: /^Sync on/ })).toBeVisible();
+  // Sync and backups live in My Drive's pinned places, each › device › folders.
+  async function openPlace(name: string) {
+    await nav.getByRole('button', { name: 'My Drive', exact: true }).click();
+    await page
+      .locator('.file-entry-pinned')
+      .filter({ has: page.getByText(name, { exact: true }) })
+      .dblclick();
+    await page.locator('.file-entry-pinned').filter({ hasText: 'Alex’s MacBook Pro' }).dblclick();
+    await expect(page.getByRole('heading', { name: 'Alex’s MacBook Pro' })).toBeVisible();
+  }
+  await openPlace('Synced Folders');
+  await expect(page.getByText('Also on Studio iMac')).toBeVisible();
+  await expect(page.getByText(/GB used$/)).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss sync banner' }).click();
   await capture('sync');
   await nav.getByRole('button', { name: 'Shared', exact: true }).click();
   await expect(page.getByText('Contract draft.pdf')).toBeVisible();
@@ -320,13 +398,15 @@ try {
   await page.getByRole('tab', { name: 'Sent', exact: true }).click();
   await expect(page.getByText('Launch video')).toBeVisible();
   await capture('shared-sent');
-  await nav.getByRole('button', { name: 'Backups', exact: true }).click();
-  await page.locator('.backup-folder-row').filter({ hasText: 'Documents' }).click();
-  await page.getByRole('button', { name: 'Project notes.md' }).click();
-  await expect(page.getByText(/^Version 1 ·/)).toBeVisible();
+  await openPlace('Backups');
+  await page.locator('.file-entry-pinned').filter({ hasText: 'Documents' }).dblclick();
+  await expect(page.getByText('Proposal.docx')).toBeVisible();
+  await page.getByRole('button', { name: 'Actions for Project notes.md', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Version history', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('Version 3');
   await capture('backups');
   await page.keyboard.press('Escape');
-  await page.getByRole('tab', { name: /^History/ }).click();
+  await page.getByRole('button', { name: 'History', exact: true }).click();
   await page.getByRole('button', { name: /Automatic backup/ }).click();
   await expect(page.locator('.backup-run-files')).toContainText('Proposal.docx');
   await capture('backups-history');
