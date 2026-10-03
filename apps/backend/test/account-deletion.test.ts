@@ -112,3 +112,30 @@ describe('account deletion', () => {
     });
   });
 });
+
+describe('account emails', () => {
+  it('welcomes a new account once and tells it when it is deleted', async () => {
+    const { service, login, remove } = await setup();
+    const { headers } = await login('alice@example.test');
+    await login('alice@example.test');
+    const sent: Parameters<NonNullable<Parameters<typeof service.runJobs>[0]>>[0][] = [];
+    await service.runJobs(async (email) => void sent.push(email));
+    expect(sent).toEqual([
+      expect.objectContaining({ template: 'WELCOME', to: 'alice@example.test' }),
+    ]);
+
+    const { purgeAt } = await (await remove(headers, 'alice@example.test')).json();
+    await service.runJobs(async (email) => void sent.push(email));
+    expect(sent.slice(1)).toEqual([
+      { template: 'ACCOUNT_DELETED', to: 'alice@example.test', name: expect.any(String), purgeAt },
+    ]);
+  });
+
+  it('drops account notices when email delivery is not configured', async () => {
+    const { repo, service, login } = await setup();
+    await login('alice@example.test');
+    expect(await repo.get({ pk: 'JOB', sk: 'welcome-alice' })).toBeDefined();
+    await service.runJobs();
+    expect(await repo.get({ pk: 'JOB', sk: 'welcome-alice' })).toBeUndefined();
+  });
+});

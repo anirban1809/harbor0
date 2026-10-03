@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { z } from 'zod';
 import { CognitoAuth } from './auth';
-import { invitationEmail } from './emails';
+import { composeEmail, type Email } from './emails';
 import { DynamoRepository } from './repository';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
@@ -74,16 +74,16 @@ async function initialize() {
     app,
     service,
     sendEmail: c.EMAIL_FROM
-      ? async (to: string, sender: string) => {
-          const email = invitationEmail(sender, c.WEB_ORIGIN);
+      ? async (email: Email) => {
+          const message = composeEmail(email, c.WEB_ORIGIN);
           await new SESv2Client({}).send(
             new SendEmailCommand({
               FromEmailAddress: `harbor0 <${c.EMAIL_FROM}>`,
-              Destination: { ToAddresses: [to] },
+              Destination: { ToAddresses: [email.to] },
               Content: {
                 Simple: {
-                  Subject: { Data: email.subject },
-                  Body: { Html: { Data: email.html }, Text: { Data: email.text } },
+                  Subject: { Data: message.subject },
+                  Body: { Html: { Data: message.html }, Text: { Data: message.text } },
                 },
               },
             }),

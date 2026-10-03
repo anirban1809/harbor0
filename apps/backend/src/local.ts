@@ -127,12 +127,13 @@ if (auth instanceof DevelopmentAuth) {
 const timer = setInterval(
   () =>
     void service
-      .runJobs(async () =>
+      .runJobs(async (email) =>
         console.log(
           JSON.stringify({
-            event: 'development_invitation_recorded',
-            message:
-              'Invitation remains accessible through verified signup; local email is not delivered.',
+            event: 'development_email_recorded',
+            template: email.template,
+            to: email.to,
+            message: 'Local email is not delivered.',
           }),
         ),
       )

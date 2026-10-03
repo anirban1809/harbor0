@@ -34,6 +34,7 @@ import {
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { ArchiveWorkflows } from './archives';
 import { abandonCloudCopy } from './cloud-copies';
+import type { Email } from './emails';
 import { DeletionWorkflows } from './deletion';
 import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
 import { TransferWorkflows, type StagedItem, type Save } from './workflows';
@@ -167,6 +168,8 @@ export type Job = {
   userId?: string;
   entityId?: string;
   key?: string;
+  email?: Email;
+  /** Legacy invitation jobs carry the recipient and sender instead of `email`. */
   to?: string;
   sender?: string;
   dueAt: string;
@@ -244,6 +247,18 @@ export class StorageService {
       await tx.put(userPK(user.id), 'PROFILE', user);
       await tx.put('USERNAME', normalized, { userId: user.id });
       await tx.put('EMAIL', email, { userId: user.id });
+      await this.job(tx, {
+        id: `welcome-${user.id}`,
+        type: 'EMAIL',
+        email: {
+          template: 'WELCOME',
+          to: email,
+          name: user.displayName,
+          quotaBytes: user.storageQuotaBytes,
+        },
+        dueAt: now(),
+        attempts: 0,
+      });
       return user;
     });
   }
@@ -1486,8 +1501,7 @@ export class StorageService {
           await this.job(tx, {
             id: `invite-${t.id}`,
             type: 'EMAIL',
-            to: t.recipientEmail!,
-            sender: account.displayName,
+            email: { template: 'INVITE', to: t.recipientEmail!, sender: account.displayName },
             dueAt: now(),
             attempts: 0,
           });
@@ -2368,6 +2382,18 @@ export class StorageService {
         await tx.delete('USERNAME', user.username);
         await tx.delete('EMAIL', user.email);
         await this.job(tx, {
+          id: `account-deleted-${userId}`,
+          type: 'EMAIL',
+          email: {
+            template: 'ACCOUNT_DELETED',
+            to: user.email,
+            name: user.displayName,
+            purgeAt: user.purgeAt,
+          },
+          dueAt: now(),
+          attempts: 0,
+        });
+        await this.job(tx, {
           id: `account-${userId}`,
           type: 'ACCOUNT_DELETE',
           userId,
@@ -2456,7 +2482,7 @@ export class StorageService {
       ),
     };
   }
-  async runJobs(sendEmail?: (to: string, sender: string) => Promise<void>) {
+  async runJobs(sendEmail?: (email: Email) => Promise<void>) {
     const deadline = Date.now() + 210_000;
     const page = await this.repo.due(now());
     for (const row of page.rows) {
@@ -2529,13 +2555,15 @@ export class StorageService {
           }
         }
         if (job.type === 'EMAIL') {
+          const email = job.email ?? { template: 'INVITE', to: job.to!, sender: job.sender! };
+          // Invitations wait until delivery is configured; account notices are simply skipped.
           assert(
-            sendEmail,
+            sendEmail || email.template !== 'INVITE',
             'EMAIL_NOT_CONFIGURED',
             'Invitation email delivery is not configured.',
             503,
           );
-          await sendEmail(job.to!, job.sender!);
+          await sendEmail?.(email);
         }
         await transact(this.repo, async (tx) => {
           // A job scheduled again while this run was under way (e.g. the trash emptied again) stays.

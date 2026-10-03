@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { CustomMessageTriggerEvent } from 'aws-lambda';
-import { customMessage, invitationEmail } from '../src/emails';
+import { composeEmail, customMessage } from '../src/emails';
 
 function event(
   triggerSource: CustomMessageTriggerEvent['triggerSource'],
@@ -46,10 +46,42 @@ it('escapes names users chose themselves', async () => {
 });
 
 it('renders file invitations with an escaped sender, a sign-up link and a plain-text part', () => {
-  const email = invitationEmail('<Sam & Co>', 'https://app.harbor0.com');
+  const email = composeEmail(
+    { template: 'INVITE', to: 'a@example.test', sender: '<Sam & Co>' },
+    'https://app.harbor0.com',
+  );
   expect(email.html).toContain('&lt;Sam &amp; Co&gt;');
   expect(email.html).not.toContain('<Sam');
   expect(email.html).toContain('href="https://app.harbor0.com/signup"');
   expect(email.html).not.toContain('{####}');
   expect(email.text).toContain('<Sam & Co> sent you files');
+});
+
+it('welcomes new accounts with their storage and a link to the app', () => {
+  const email = composeEmail(
+    { template: 'WELCOME', to: 'a@example.test', name: 'Ada', quotaBytes: 50_000_000_000 },
+    'https://app.harbor0.com',
+  );
+  expect(email.subject).toBe('Welcome to harbor0');
+  expect(email.html).toContain('Welcome to harbor0, Ada');
+  expect(email.html).toContain('50 GB of storage');
+  expect(email.html).toContain('href="https://app.harbor0.com"');
+  expect(email.text).toContain('50 GB of storage');
+});
+
+it('tells deleted accounts when their files are erased', () => {
+  const email = composeEmail(
+    {
+      template: 'ACCOUNT_DELETED',
+      to: 'a@example.test',
+      name: 'Ada',
+      purgeAt: '2026-11-02T10:00:00.000Z',
+    },
+    'https://app.harbor0.com',
+  );
+  expect(email.subject).toBe('Your harbor0 account was deleted');
+  expect(email.html).toContain('November 2, 2026');
+  expect(email.text).toContain('November 2, 2026');
+  expect(email.html).toContain('mailto:contact@harbor0.com');
+  expect(email.text).toContain("If you didn't delete your account, write to contact@harbor0.com");
 });

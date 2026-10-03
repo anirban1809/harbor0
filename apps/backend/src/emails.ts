@@ -5,6 +5,7 @@ import type { CustomMessageTriggerEvent } from 'aws-lambda';
 const CODE = '{####}';
 const USERNAME = '{username}';
 const site = 'https://harbor0.com';
+const contact = 'contact@harbor0.com';
 
 type Message = {
   subject: string;
@@ -12,6 +13,7 @@ type Message = {
   heading: string;
   intro: string;
   code?: string;
+  list?: [title: string, text: string][];
   details?: [label: string, value: string][];
   action?: { label: string; url: string };
   footnote: string;
@@ -28,10 +30,16 @@ const mono = "'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace";
 
 // Table layout with inline styles: the subset every mail client renders the same way.
 export function renderEmail(message: Message) {
+  const list = (message.list ?? [])
+    .map(
+      ([title, text]) =>
+        `<tr><td style="padding:0 0 14px;"><div style="font-size:15px;font-weight:600;color:#16181d;">${title}</div><div style="font-size:14px;line-height:1.5;color:#5d6270;">${text}</div></td></tr>`,
+    )
+    .join('');
   const details = (message.details ?? [])
     .map(
       ([label, value]) =>
-        `<tr><td style="padding:4px 0;color:#5d6270;font-size:13px;width:120px;">${label}</td><td style="padding:4px 0;color:#16181d;font-size:14px;font-family:${mono};">${value}</td></tr>`,
+        `<tr><td style="padding:4px 0;color:#5d6270;font-size:13px;width:120px;">${label}</td><td style="padding:4px 0;color:#16181d;font-size:14px;">${value}</td></tr>`,
     )
     .join('');
   return `<!doctype html>
@@ -54,6 +62,7 @@ export function renderEmail(message: Message) {
 <tr><td style="background:#ffffff;border:1px solid #e3e5ea;border-radius:12px;padding:32px;">
 <h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:650;letter-spacing:-0.01em;color:#16181d;">${message.heading}</h1>
 <p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#3d414b;">${message.intro}</p>
+${list ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 10px;">${list}</table>` : ''}
 ${details ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 12px;">${details}</table>` : ''}
 ${message.code ? `<div style="margin:0 0 24px;padding:18px;background:#f0f2fe;border-radius:8px;text-align:center;font-family:${mono};font-size:28px;font-weight:600;letter-spacing:0.18em;color:#2b38a6;">${message.code}</div>` : ''}
 ${
@@ -65,7 +74,7 @@ ${
 </td></tr>
 <tr><td style="padding:20px 4px 0;font-size:12px;line-height:1.5;color:#8a8f9c;">
 harbor0 · File storage, backup, sync, and sharing.<br>
-This is an automated message from <a href="${site}" style="color:#8a8f9c;">harbor0.com</a>; replies aren't read.
+Questions? Write to <a href="mailto:${contact}" style="color:#8a8f9c;">${contact}</a>; replies to this email aren't read.
 </td></tr>
 </table>
 </td></tr>
@@ -74,29 +83,83 @@ This is an automated message from <a href="${site}" style="color:#8a8f9c;">harbo
 </html>`;
 }
 
-// Sent by the maintenance job when someone sends files to an address without an account.
-export function invitationEmail(sender: string, webOrigin: string) {
-  const subject = 'A file is waiting for you in harbor0';
-  return {
-    subject,
-    html: renderEmail({
-      subject,
-      preheader: `${escape(sender)} sent you files in harbor0.`,
-      heading: 'You have files waiting',
-      intro: `<strong style="color:#16181d;">${escape(sender)}</strong> sent you files in harbor0. Create an account with this email address and verify it to receive them.`,
-      action: { label: 'Create your account', url: escape(`${webOrigin}/signup`) },
-      footnote:
-        'Invitations expire after 30 days. Files are never available through public links, only in the account that owns this email address.',
-    }),
-    text: `${sender} sent you files in harbor0. Create an account with this email address and verify it to receive them. Sign in at ${webOrigin}. Invitations expire after 30 days. Files are never available through public links.`,
-  };
+export type Email =
+  | { template: 'INVITE'; to: string; sender: string }
+  | { template: 'WELCOME'; to: string; name: string; quotaBytes: number }
+  | { template: 'ACCOUNT_DELETED'; to: string; name: string; purgeAt: string };
+
+const greet = (name: string | undefined, sentence: string) =>
+  name ? `Hi ${escape(name)}, ${sentence}` : sentence[0].toUpperCase() + sentence.slice(1);
+const longDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-US', { dateStyle: 'long', timeZone: 'UTC' });
+
+// Mail the maintenance job sends: file invitations and account notices.
+export function composeEmail(email: Email, webOrigin: string) {
+  const compose = (message: Message, text: string) => ({
+    subject: message.subject,
+    html: renderEmail(message),
+    text,
+  });
+  switch (email.template) {
+    case 'INVITE':
+      return compose(
+        {
+          subject: 'A file is waiting for you in harbor0',
+          preheader: `${escape(email.sender)} sent you files in harbor0.`,
+          heading: 'You have files waiting',
+          intro: `<strong style="color:#16181d;">${escape(email.sender)}</strong> sent you files in harbor0. Create an account with this email address and verify it to receive them.`,
+          action: { label: 'Create your account', url: escape(`${webOrigin}/signup`) },
+          footnote:
+            'Invitations expire after 30 days. Files are never available through public links, only in the account that owns this email address.',
+        },
+        `${email.sender} sent you files in harbor0. Create an account with this email address and verify it to receive them. Sign in at ${webOrigin}. Invitations expire after 30 days. Files are never available through public links.`,
+      );
+    case 'WELCOME': {
+      const quota = `${Math.round(email.quotaBytes / 1e9)} GB`;
+      const steps: [string, string][] = [
+        ['Upload from your browser', 'Drag files and folders into My Drive.'],
+        [
+          'Sync and back up your computer',
+          'The desktop app keeps a folder in sync and backs up the folders you choose.',
+        ],
+        ['Send files to anyone', 'Share with a harbor0 username or any email address.'],
+      ];
+      return compose(
+        {
+          subject: 'Welcome to harbor0',
+          preheader: `Your account is ready with ${quota} of storage.`,
+          heading: `Welcome to harbor0, ${escape(email.name)}`,
+          intro: `Your account is ready with ${quota} of storage. Here's how to get started:`,
+          list: steps,
+          action: { label: 'Open harbor0', url: escape(webOrigin) },
+          footnote: `Get the desktop and mobile apps at <a href="${site}/apps" style="color:#4353d9;">harbor0.com/apps</a>.`,
+        },
+        `Welcome to harbor0, ${email.name}. Your account is ready with ${quota} of storage.\n\n${steps.map(([title, text]) => `${title}: ${text}`).join('\n')}\n\nOpen harbor0: ${webOrigin}\nDesktop and mobile apps: ${site}/apps`,
+      );
+    }
+    case 'ACCOUNT_DELETED': {
+      const purge = longDate(email.purgeAt);
+      return compose(
+        {
+          subject: 'Your harbor0 account was deleted',
+          preheader: `Your files will be permanently erased on ${purge}.`,
+          heading: 'Your account was deleted',
+          intro: greet(
+            email.name,
+            `your harbor0 account for ${escape(email.to)} was deleted and signed out on every device.`,
+          ),
+          details: [['Files erased on', purge]],
+          footnote: `Until then your files are kept but can't be opened; after that they're permanently erased. Your email address and username are free again, so you can create a new account at any time.<br><br>If you didn't delete your account, write to <a href="mailto:${contact}" style="color:#4353d9;">${contact}</a> right away.`,
+        },
+        `Your harbor0 account for ${email.to} was deleted and signed out on every device. Your files are kept, but can't be opened, until ${purge}, when they're permanently erased. Your email address and username are free again.\n\nIf you didn't delete your account, write to ${contact} right away.`,
+      );
+    }
+  }
 }
 
 function message(event: CustomMessageTriggerEvent): Message | undefined {
   const attributes = event.request.userAttributes;
   const name = attributes.name || attributes.preferred_username;
-  const greet = (sentence: string) =>
-    name ? `Hi ${escape(name)}, ${sentence}` : sentence[0].toUpperCase() + sentence.slice(1);
   const signIn = process.env.SIGN_IN_URL || undefined;
   switch (event.triggerSource) {
     case 'CustomMessage_SignUp':
@@ -105,7 +168,7 @@ function message(event: CustomMessageTriggerEvent): Message | undefined {
         subject: 'Your harbor0 verification code',
         preheader: 'Enter this code to finish creating your harbor0 account.',
         heading: 'Verify your email',
-        intro: greet('enter this code to finish creating your harbor0 account.'),
+        intro: greet(name, 'enter this code to finish creating your harbor0 account.'),
         code: CODE,
         footnote:
           "The code expires in 24 hours. If you didn't create a harbor0 account, you can ignore this email.",
@@ -116,6 +179,7 @@ function message(event: CustomMessageTriggerEvent): Message | undefined {
         preheader: 'Use this code to choose a new password.',
         heading: 'Reset your password',
         intro: greet(
+          name,
           'someone asked to reset the password for your harbor0 account. Use this code to choose a new one.',
         ),
         code: CODE,
@@ -128,7 +192,7 @@ function message(event: CustomMessageTriggerEvent): Message | undefined {
         subject: 'Confirm your harbor0 email address',
         preheader: 'Enter this code to confirm your email address.',
         heading: 'Confirm your email address',
-        intro: greet('enter this code in harbor0 to confirm this email address.'),
+        intro: greet(name, 'enter this code in harbor0 to confirm this email address.'),
         code: CODE,
         footnote: "If you didn't request this, you can ignore this email.",
       };
@@ -137,7 +201,7 @@ function message(event: CustomMessageTriggerEvent): Message | undefined {
         subject: 'Your harbor0 sign-in code',
         preheader: 'Enter this code to finish signing in.',
         heading: 'Finish signing in',
-        intro: greet('enter this code to finish signing in to harbor0.'),
+        intro: greet(name, 'enter this code to finish signing in to harbor0.'),
         code: CODE,
         footnote:
           "If you aren't signing in right now, someone may know your password — change it as soon as you can.",
@@ -148,6 +212,7 @@ function message(event: CustomMessageTriggerEvent): Message | undefined {
         preheader: 'An administrator added you to the harbor0 management console.',
         heading: 'Welcome to the harbor0 console',
         intro: greet(
+          name,
           'an administrator added you to the harbor0 management console. Sign in with your email and this temporary password, then set your own password and add an authenticator app.',
         ),
         details: [['Email', USERNAME]],

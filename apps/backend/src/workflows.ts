@@ -268,8 +268,7 @@ export class TransferWorkflows {
         await s.job(tx, {
           id: `invite-${id}`,
           type: 'EMAIL',
-          to: t.recipientEmail!,
-          sender: sender.displayName,
+          email: { template: 'INVITE', to: t.recipientEmail!, sender: sender.displayName },
           dueAt: now(),
           attempts: 0,
         });
