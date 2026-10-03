@@ -24,8 +24,8 @@ export const harborEnv = {
   r2SecretName: production ? 'harbor-storage/r2' : 'harbor-storage-staging/r2',
   apnsSecretName: production ? 'harbor0-apns' : 'harbor0-staging-apns',
   appDomain: process.env.WEB_DOMAIN || (production ? 'app.harbor0.com' : 'staging.harbor0.com'),
-  /** Staging deploys only from this branch. */
-  branch: production ? undefined : 'staging',
+  /** The branch this environment is built from: production deploys automatically from main. */
+  branch: production ? 'main' : 'staging',
 };
 
 const outputFiles = {
@@ -39,9 +39,12 @@ export async function readOutputs(kind: keyof typeof outputFiles) {
   return JSON.parse(await readFile(outputsPath(kind), 'utf8'))[harborEnv.stacks[kind]];
 }
 
-/** Staging is built from the `staging` branch only, so what runs there is what was pushed. */
+/**
+ * Staging is built from the `staging` branch only, so what runs there is what was pushed.
+ * Production's automated deploys run from main in CI; local production deploys stay unrestricted.
+ */
 export function assertDeployBranch() {
-  if (!harborEnv.branch || process.env.HARBOR_ALLOW_ANY_BRANCH === 'true') return;
+  if (harborEnv.production || process.env.HARBOR_ALLOW_ANY_BRANCH === 'true') return;
   const branch =
     process.env.GITHUB_REF_NAME ||
     execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();

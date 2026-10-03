@@ -1,9 +1,8 @@
 name: Deploy staging
+# Manual only: run it from the Actions tab (or `gh workflow run deploy-staging.yml --ref staging`).
 on:
-  push:
-    branches: [staging]
   workflow_dispatch:
-# One staging deploy at a time; a newer push waits rather than racing the stack update.
+# One staging deploy at a time; a second run waits rather than racing the stack update.
 concurrency:
   group: deploy-staging
   cancel-in-progress: false
@@ -12,8 +11,8 @@ permissions:
   id-token: write
 jobs:
   deploy:
-    # The AWS role only trusts this branch; the guard also stops a manual run from another ref.
-    if: github.ref == 'refs/heads/staging'
+    # The AWS role only trusts this branch; the guard also stops a run started from another ref.
+    if: github.ref == 'refs/heads/staging' && vars.STAGING_AWS_ROLE_ARN != ''
     runs-on: ubuntu-latest
     env:
       HARBOR_ENV: staging

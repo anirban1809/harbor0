@@ -133,3 +133,29 @@ npx tsx --env-file=.env.cloud scripts/publish-desktop-release.ts
 The publisher requires successful live and packaged-app evidence, rejects replacement of an existing version with different bytes, uploads the installer and checksum manifest to the existing private web asset bucket under `downloads/`, and verifies delivery through CloudFront. Regular web deployments preserve this prefix. No backend secrets or development authentication settings are included in the bundle.
 
 On this machine no Developer ID certificate is available. Version 0.1.1 was built with `CSC_IDENTITY_AUTO_DISCOVERY=false`; it is unsigned and not notarized. Installing it requires the user’s macOS approval. A signed release requires supplying a valid signing identity through the build environment. There is no automatic desktop update feed.
+
+## Automated production deploys
+
+Production deploys itself from `main`. `.github/workflows/deploy-production.yml` runs after the Validate workflow completes successfully for a push to `main`. Validate covers checks, integration, e2e and sync. The deploy workflow checks out exactly the commit Validate passed and runs `cloud:deploy`, `cloud:deploy-web`, `cloud:deploy-admin` and `cloud:deploy-landing` in order. Deploys never overlap. Pull requests and failed Validate runs never deploy. A manual **Run workflow** on `main` redeploys its latest commit. Staging is deployed manually; see [STAGING.md](STAGING.md).
+
+One-time setup:
+
+1. Run `npx cdk deploy HarborGitHubProduction --app 'npx tsx infra/github.ts'`. The role it creates can only be assumed by workflow runs on `refs/heads/main` of this repository. It can publish through the CDK bootstrap roles and update the `harbor-storage/r2` secret. It can also upload only to the production web, admin and landing buckets, and invalidate CloudFront.
+2. In GitHub, go to **Settings → Secrets and variables → Actions** and add the following. They mirror `.env.cloud`.
+   - Variables:
+     - `PRODUCTION_AWS_ROLE_ARN`: the `DeployRoleArn` output. Until it is set, the deploy job is skipped.
+     - `PRODUCTION_R2_BUCKET`
+     - `PRODUCTION_R2_ENDPOINT`
+     - `PRODUCTION_WEB_ORIGIN`
+     - `PRODUCTION_WEB_CERT_ARN`
+     - `PRODUCTION_LANDING_CERT_ARN`
+     - `PRODUCTION_ADMIN_ORIGIN`
+     - `PRODUCTION_ADMIN_DOMAIN`
+     - `PRODUCTION_ADMIN_CERT_ARN`
+     - Optional: `PRODUCTION_EMAIL_FROM`, `PRODUCTION_AWS_REGION`
+   - Secrets:
+     - `PRODUCTION_R2_ACCESS_KEY_ID`
+     - `PRODUCTION_R2_SECRET_ACCESS_KEY`
+     - `PRODUCTION_CLOUDFLARE_API_TOKEN`: used for the R2 CORS rule
+
+Local `npm run cloud:*` deploys still work. The next push to `main` redeploys whatever is on `main`, so ship production changes by merging to `main` instead of deploying from a branch.

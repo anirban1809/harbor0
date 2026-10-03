@@ -18,11 +18,13 @@ Staging data is disposable. The table and both user pools are deleted with the s
 
 ## Deploying
 
-Pushing to `staging` runs `.github/workflows/deploy-staging.yml`. It runs lint, typecheck and tests, then `staging:deploy` (backend), `staging:deploy-web`, and `staging:deploy-admin` when `STAGING_ADMIN_ORIGIN` is set. Promote changes by merging into `staging`:
+Staging deploys are manual; pushing to `staging` deploys nothing. Production is the only environment that deploys automatically (see [DEPLOYMENT.md](DEPLOYMENT.md#automated-production-deploys)). To stage a change, merge it into `staging`, push, then start a deploy:
 
 ```sh
 git checkout staging && git merge main && git push
 ```
+
+Then either run **Actions → Deploy staging → Run workflow** on the `staging` branch, or deploy from your machine. The workflow (`.github/workflows/deploy-staging.yml`) runs lint, typecheck and tests, then `staging:deploy` (backend), `staging:deploy-web`, and `staging:deploy-admin` when `STAGING_ADMIN_ORIGIN` is set.
 
 Local deploys use the same scripts. They refuse to run unless the checkout is on `staging`. Set `HARBOR_ALLOW_ANY_BRANCH=true` to override this deliberately.
 
@@ -41,10 +43,10 @@ Desktop and mobile clients target staging through their API URL setting, for exa
 1. `cp .env.staging.example .env.staging` and fill it in. Run `npm run staging:r2:provision` to create the staging bucket. Then create S3 keys in Cloudflare scoped to that bucket only.
 2. From the `staging` branch, run `npm run staging:deploy` and then `npm run staging:deploy-web`.
 3. Optional custom domain: request an ACM certificate in us-east-1 for `staging.harbor0.com` and validate it in DNS. Set `WEB_CERT_ARN`, rerun `staging:deploy-web`, and add a CNAME from `staging` to the distribution hostname.
-4. CI role: run `npx cdk deploy HarborGitHubStaging --app 'npx tsx infra/github.ts'`. The role it creates can only be assumed by workflow runs on `refs/heads/staging` of this repository.
+4. CI role (only needed for the Actions button): run `HARBOR_ENV=staging npx cdk deploy HarborGitHubStaging --app 'npx tsx infra/github.ts'`. The role it creates can only be assumed by workflow runs on `refs/heads/staging` of this repository. Until `STAGING_AWS_ROLE_ARN` is set, the workflow skips its deploy job.
 5. In GitHub, go to **Settings → Secrets and variables → Actions** and add the following.
    - Variables:
-     - `STAGING_AWS_ROLE_ARN`: the `StagingDeployRoleArn` output
+     - `STAGING_AWS_ROLE_ARN`: the `DeployRoleArn` output
      - `STAGING_R2_BUCKET`
      - `STAGING_R2_ENDPOINT`
      - `STAGING_WEB_ORIGIN`: the deployed staging URL
