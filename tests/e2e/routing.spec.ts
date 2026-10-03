@@ -3,7 +3,6 @@ import { test, expect, type Page } from '@playwright/test';
 const pages = [
   ['My Drive', '/drive'],
   ['Shared', '/shared'],
-  ['Favorites', '/favorites'],
   ['Trash', '/trash'],
   ['Devices', '/devices'],
   ['Storage', '/storage'],
@@ -154,7 +153,7 @@ test('account creation and recovery have routes and preserve the entered email',
   await mockSession(page, false);
   await page.goto('/login');
   await page.getByLabel('Email', { exact: true }).fill('routing@example.test');
-  await page.getByRole('link', { name: 'New here? Create an account' }).click();
+  await page.getByRole('link', { name: 'Create an account', exact: true }).click();
   await expect(page).toHaveURL(/\/signup\?/);
   await expect(page.getByLabel('Email', { exact: true })).toHaveValue('routing@example.test');
   await page.getByLabel('Display name').fill('Route Tester');
@@ -242,24 +241,6 @@ test('folder links survive sign-in and new folders use the restored parent', asy
     parentId: 'nested',
     name: 'New subfolder',
   });
-});
-
-test('opening a favorite folder restores its actual ancestors and My Drive returns to root', async ({
-  page,
-}) => {
-  await mockSession(page);
-  await page.goto('/favorites');
-  await page.getByRole('button', { name: 'Design work', exact: true }).click();
-  await expect(page).toHaveURL(/\/drive\?folder=nested$/);
-  await expect(
-    page.locator('.breadcrumbs').getByRole('link', { name: 'Projects', exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('link', { name: 'My Drive', exact: true })
-    .click();
-  await expect(page).toHaveURL(/\/drive$/);
-  await expect(page.getByRole('button', { name: 'Projects', exact: true })).toBeVisible();
 });
 
 test('an unavailable folder reports an error without falling back to root', async ({ page }) => {

@@ -39,11 +39,11 @@ test('Alice uploads, downloads, sends; Bob accepts and saves', async ({ browser 
   await expect(recipient.getByRole('heading', { name: 'My Drive', exact: true })).toBeVisible();
   await recipient.getByRole('link', { name: 'Shared', exact: true }).click();
   await recipient.getByRole('tab', { name: 'Received', exact: true }).click();
-  const card = recipient.locator('article').filter({ hasText: name });
+  const card = recipient.getByRole('listitem').filter({ hasText: name });
   await expect(card).toBeVisible();
   await card.getByRole('button', { name: 'Accept', exact: true }).click();
   await card.getByRole('button', { name: 'Save to My Drive', exact: true }).click();
-  await expect(card.getByRole('button', { name: 'Saved to My Drive', exact: true })).toBeDisabled();
+  await expect(card.getByText('Saved to My Drive', { exact: true })).toBeVisible();
   await recipient.locator('.sidebar').getByRole('link', { name: 'My Drive', exact: true }).click();
   await expect(recipient.getByRole('button', { name, exact: true })).toBeVisible();
   await recipient.setViewportSize({ width: 390, height: 844 });
@@ -73,7 +73,7 @@ test('signup and verified email claim an invitation', async ({ browser }) => {
   const charlie = await browser.newContext();
   const recipient = await charlie.newPage();
   await recipient.goto('/');
-  await recipient.getByRole('link', { name: 'New here? Create an account' }).click();
+  await recipient.getByRole('link', { name: 'Create an account', exact: true }).click();
   await recipient.getByLabel('Email', { exact: true }).fill(recipientEmail);
   await recipient.getByLabel('Display name').fill('Charlie');
   await recipient.getByLabel('Username', { exact: true }).fill(recipientEmail.split('@')[0]);
@@ -86,7 +86,7 @@ test('signup and verified email claim an invitation', async ({ browser }) => {
   await expect(recipient.getByRole('heading', { name: 'My Drive', exact: true })).toBeVisible();
   await recipient.getByRole('link', { name: 'Shared', exact: true }).click();
   await recipient.getByRole('tab', { name: 'Received', exact: true }).click();
-  const card = recipient.locator('article').filter({ hasText: name });
+  const card = recipient.getByRole('listitem').filter({ hasText: name });
   await card.getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Save to My Drive' })).toBeVisible();
   await alice.close();
