@@ -2,6 +2,8 @@ import {
   App,
   Stack,
   CfnParameter,
+  CfnCondition,
+  Fn,
   CfnOutput,
   Duration,
   RemovalPolicy,
@@ -38,8 +40,25 @@ const emailFrom = new CfnParameter(stack, 'EmailFrom', {
   type: 'String',
   default: '',
   description:
-    'Optional SES verified sender for file invitations; Cognito uses its AWS default sender',
+    'Optional SES sender on a verified domain for invitations and Cognito mail; empty keeps the AWS default Cognito sender',
 }).valueAsString;
+const hasEmailFrom = new CfnCondition(stack, 'HasEmailFrom', {
+  expression: Fn.conditionNot(Fn.conditionEquals(emailFrom, '')),
+});
+// Cognito sends from the verified domain identity; the trailing '@' keeps the split two-part
+// even when the sender is empty.
+const emailDomain = Fn.select(1, Fn.split('@', Fn.join('', [emailFrom, '@'])));
+const useSesForCognito = (userPool: cognito.UserPool) => {
+  (userPool.node.defaultChild as cognito.CfnUserPool).emailConfiguration = Fn.conditionIf(
+    hasEmailFrom.logicalId,
+    {
+      EmailSendingAccount: 'DEVELOPER',
+      From: `harbor0 <${emailFrom}>`,
+      SourceArn: `arn:${stack.partition}:ses:${stack.region}:${stack.account}:identity/${emailDomain}`,
+    },
+    { EmailSendingAccount: 'COGNITO_DEFAULT' },
+  );
+};
 const adminOrigin = new CfnParameter(stack, 'AdminOrigin', {
   type: 'String',
   default: '',
@@ -83,6 +102,7 @@ const pool = new cognito.UserPool(stack, 'Users', {
   accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
   removalPolicy,
 });
+useSesForCognito(pool);
 const registration = new lambda.Function(stack, 'Registration', {
   runtime: lambda.Runtime.NODEJS_22_X,
   handler: 'index.preSignup',
@@ -167,7 +187,11 @@ for (const fn of [apiFunction, jobsFunction]) {
 jobsFunction.addToRolePolicy(
   new iam.PolicyStatement({
     actions: ['ses:SendEmail'],
-    resources: [`arn:${stack.partition}:ses:${stack.region}:${stack.account}:identity/*`],
+    // The domain's default configuration set is checked as a resource too.
+    resources: [
+      `arn:${stack.partition}:ses:${stack.region}:${stack.account}:identity/*`,
+      `arn:${stack.partition}:ses:${stack.region}:${stack.account}:configuration-set/*`,
+    ],
     conditions: { StringEquals: { 'ses:FromAddress': emailFrom } },
   }),
 );
@@ -264,6 +288,7 @@ const staffPool = new cognito.UserPool(stack, 'Staff', {
   },
   removalPolicy,
 });
+useSesForCognito(staffPool);
 for (const [id, groupName, description] of [
   ['StaffAdmins', 'admin', 'Full console access: storage limits, suspension, deletion'],
   ['StaffSupport', 'support', 'Read access, notes, password resets and sign-outs'],
