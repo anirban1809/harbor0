@@ -527,6 +527,13 @@
   color: var(--text-3);
   opacity: 0.6;
 }
+.auth-loading {
+  display: block;
+  margin: 24px auto;
+  width: 20px;
+  height: 20px;
+  color: var(--text-3);
+}
 .auth-resend {
   margin-top: 16px;
   font-size: var(--text-sm);

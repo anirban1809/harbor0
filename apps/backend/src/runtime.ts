@@ -12,6 +12,8 @@ import { DynamoRepository } from './repository';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
 import { createApp } from './api';
+import { Beta } from './beta';
+import { BETA } from '@harbor/contracts';
 import { Realtime, type RealtimeGateway } from './realtime';
 import { LazyApnsSender, PushDelivery, PushRegistrations } from './push';
 import { proxyBrowserRequest } from '@harbor/api-client';
@@ -61,6 +63,7 @@ async function initialize() {
         );
     },
     process.env.REALTIME_URL ? new Realtime(repo, process.env.REALTIME_URL) : undefined,
+    new Beta(repo, BETA),
   );
   app.all('/api/*', (ctx) =>
     proxyBrowserRequest(ctx.req.raw, {
@@ -192,7 +195,7 @@ export function adminRuntime() {
     new StorageService(new DynamoRepository(c.TABLE_NAME), noStorage),
     new CognitoDirectory(c.COGNITO_USER_POOL_ID, c.COGNITO_CLIENT_ID),
     new CognitoStaffAuth(c.STAFF_USER_POOL_ID, c.STAFF_CLIENT_ID),
-    { origins: c.ADMIN_ORIGIN ? [c.ADMIN_ORIGIN] : [], secureCookies: true },
+    { origins: c.ADMIN_ORIGIN ? [c.ADMIN_ORIGIN] : [], secureCookies: true, inviteRequired: BETA },
   ).app;
   return adminInstance;
 }

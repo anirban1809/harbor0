@@ -22,6 +22,7 @@ export interface AuthProvider {
     password: string;
     username: string;
     displayName: string;
+    inviteCode?: string;
   }): Promise<unknown>;
   confirm(email: string, code: string): Promise<unknown>;
   resend(email: string): Promise<unknown>;
@@ -91,10 +92,18 @@ export class CognitoAuth implements AuthProvider {
       );
     }
   }
-  async signup(input: { email: string; password: string; username: string; displayName: string }) {
+  async signup(input: {
+    email: string;
+    password: string;
+    username: string;
+    displayName: string;
+    inviteCode?: string;
+  }) {
     await this.client.send(
       new SignUpCommand({
         ClientId: this.clientId,
+        // The sign-up trigger takes the beta seat this code holds.
+        ClientMetadata: input.inviteCode ? { inviteCode: input.inviteCode } : undefined,
         Username: input.email.toLowerCase(),
         Password: input.password,
         UserAttributes: [

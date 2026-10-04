@@ -7,7 +7,7 @@ import type { StorageTotals } from '../../../packages/contracts/src/admin';
 import { bytes, date, relative } from '../lib/format';
 import { StorageMeter } from './storage-meter';
 
-function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
+export function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
   return (
     <div className="admin-stat">
       <span className="admin-stat-label">{label}</span>

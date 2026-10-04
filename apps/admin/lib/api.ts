@@ -1,4 +1,5 @@
 import type {
+    AdminBeta,
     AdminOverview,
     AdminUserDetail,
     AdminUserPage,
@@ -55,6 +56,9 @@ export const api = {
     me: () => request<{ staff: Staff; }>('GET', '/me'),
     overview: (refresh = false) =>
         request<AdminOverview>('GET', `/overview${refresh ? '?refresh=1' : ''}`),
+    beta: () => request<AdminBeta>('GET', '/beta'),
+    openWave: (cap: number, reason: string) =>
+        request<AdminBeta & { newlyInvited: number; }>('POST', '/beta/wave', { cap, reason }),
     audit: (cursor?: string) =>
         request<AuditPage>('GET', `/audit${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
     users: (q: string, cursor?: string) =>

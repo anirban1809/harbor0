@@ -11,6 +11,8 @@ function detail(entry: AuditEntry) {
     return `${d.sessions} active session${d.sessions === 1 ? '' : 's'} ended`;
   if (entry.action === 'ACCOUNT_DELETED' && d.purgeAt)
     return `Files purged after ${date(d.purgeAt as string)}`;
+  if (entry.action === 'BETA_WAVE')
+    return `${d.cap} seats, ${d.invited} invited from the waitlist`;
   return null;
 }
 

@@ -24,6 +24,7 @@ import type { Realtime } from './realtime';
 import { PushRegistrations } from './push';
 import { responseSchema, queryParameters } from './responses';
 import { storageAudit } from './storage-audit';
+import { Beta } from './beta';
 type Env = {
   Variables: { identity: c.Identity; requestId: string; timing?: Record<string, number> };
 };
@@ -62,6 +63,7 @@ export function createApp(
   origins: string[] = [],
   wakeArchives?: () => Promise<void>,
   realtime?: Pick<Realtime, 'ticket'>,
+  beta = new Beta(service.repo, false),
 ) {
   // A scheduled invocation also resumes background work if an immediate wake-up fails.
   const wakeWorker = async () => {
@@ -139,14 +141,22 @@ export function createApp(
           403,
         ],
       };
+      // A sign-up trigger's own message (the username is taken, the beta wave is full) is
+      // clearer than a generic one; Cognito wraps it as "PreSignUp failed with error <message>."
+      const triggerMessage =
+        name === 'UserLambdaValidationException'
+          ? (error as Error).message.match(/failed with error (.+?)\.?$/s)?.[1]
+          : undefined;
       const mapped = known[name];
-      e = mapped
-        ? new DomainError(...mapped)
-        : new DomainError(
-            'INTERNAL_ERROR',
-            'The request could not be completed. Retry with the same operation ID.',
-            500,
-          );
+      e = triggerMessage
+        ? new DomainError('VALIDATION_ERROR', triggerMessage, 400)
+        : mapped
+          ? new DomainError(...mapped)
+          : new DomainError(
+              'INTERNAL_ERROR',
+              'The request could not be completed. Retry with the same operation ID.',
+              500,
+            );
       if (!mapped)
         console.error(
           JSON.stringify({
@@ -289,14 +299,54 @@ export function createApp(
     '/v1/auth/signup',
     'Create a Cognito account',
     z
-      .object({ email, password, username: c.username, displayName: z.string().min(1).max(100) })
+      .object({
+        email,
+        password,
+        username: c.username,
+        displayName: z.string().min(1).max(100),
+        // The code from a beta sign-up link; required while the beta is invite-only.
+        inviteCode: z.string().min(1).max(64).optional(),
+      })
       .strict(),
     anyObject,
     async (_, input) => {
       const existing = await service.lookup(input.username);
       assert(existing.users.length === 0, 'USERNAME_TAKEN', 'This username is taken.', 409);
+      // Cognito's sign-up trigger takes the seat too, for sign-ups that skip this API.
+      await beta.claim(input.email, input.inviteCode);
       return auth.signup(input);
     },
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/request-access',
+    'Email a beta sign-up link, or join the waitlist when the current wave is full',
+    z.object({ email }).strict(),
+    c.accessRequestResultSchema,
+    async (_, i) => {
+      const result = await beta.request(i.email);
+      if (result.status === 'INVITED') await wakeWorker();
+      return result;
+    },
+    true,
+  );
+  add(
+    'get',
+    '/v1/beta',
+    'Whether sign-up needs a beta link and whether requests get one at once',
+    undefined,
+    c.betaStatusSchema,
+    async () => beta.status(),
+    true,
+  );
+  add(
+    'get',
+    '/v1/beta/invites/:code',
+    'The email address a beta sign-up link was sent to',
+    undefined,
+    z.object({ email: z.string() }),
+    async (ctx) => beta.inviteEmail(z.string().min(1).max(64).parse(ctx.req.param('code'))),
     true,
   );
   add(

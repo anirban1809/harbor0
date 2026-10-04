@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import * as c from '@harbor/contracts';
 import {
+    adminBetaSchema,
     adminDeleteBody,
     adminNoteBody,
     adminOverviewSchema,
@@ -12,6 +13,7 @@ import {
     adminReasonBody,
     adminUserDetailSchema,
     adminUserPageSchema,
+    adminWaveBody,
     auditEntrySchema,
     auditPageSchema,
     can,
@@ -25,6 +27,7 @@ import { transact } from '../repository';
 import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
+import { Beta } from '../beta';
 import type { StaffAuth, StaffAuthStep, StaffTokens } from './staff-auth';
 
 type Env = { Variables: { staff: Staff; requestId: string; }; };
@@ -58,6 +61,8 @@ export type AdminAppOptions = {
     /** The console's own origins; state-changing requests from anywhere else are refused. */
     origins: string[];
     secureCookies: boolean;
+    /** Whether customer sign-up is invite-only (the beta). */
+    inviteRequired?: boolean;
 };
 
 /**
@@ -71,6 +76,7 @@ export function createAdminApp(
     options: AdminAppOptions,
 ) {
     const admin = new AdminService(service, directory);
+    const beta = new Beta(service.repo, options.inviteRequired ?? false);
     const app = new Hono<Env>();
     const cookie = (ctx: Context<Env>, name: string, value: string, maxAge: number) =>
         setCookie(ctx, name, value, {
@@ -308,6 +314,23 @@ export function createAdminApp(
         const i = await body(ctx, adminDeleteBody);
         return ctx.json(
             await admin.deleteAccount(ctx.get('staff'), userId(ctx), i.confirmEmail, i.reason),
+        );
+    });
+    v1.get('/beta', guard('read'), async (ctx) =>
+        ctx.json(adminBetaSchema.parse(await beta.summary())),
+    );
+    v1.post('/beta/wave', guard('beta'), async (ctx) => {
+        const i = await body(ctx, adminWaveBody);
+        const member = ctx.get('staff');
+        const result = await beta.openWave(i.cap, (tx, invited) =>
+            admin.audit(tx, member, {
+                action: 'BETA_WAVE',
+                reason: i.reason,
+                details: { cap: i.cap, invited },
+            }),
+        );
+        return ctx.json(
+            adminBetaSchema.extend({ newlyInvited: z.number() }).parse(result),
         );
     });
     app.route('/api/v1/admin', v1);

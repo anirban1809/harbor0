@@ -15,7 +15,7 @@ export const loginUrl = `${appUrl}/login`;
 export function SignupButton() {
   return (
     <a href={signupUrl} className="btn signup" data-variant="primary" data-size="lg">
-      Sign up free
+      Join the beta
       <ArrowRight />
     </a>
   );
@@ -60,7 +60,7 @@ export function SiteFoot() {
         <Link href="/terms">Terms</Link>
         <Link href="/privacy">Privacy</Link>
         <a href={signupUrl} className="text-link">
-          Sign up free <ArrowUpRight size={16} />
+          Join the beta <ArrowUpRight size={16} />
         </a>
       </span>
     </footer>

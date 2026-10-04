@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { serve } from '@hono/node-server';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { createApp } from './api';
+import { Beta } from './beta';
 import { CognitoAuth, DevelopmentAuth } from './auth';
 import { DynamoRepository, type Key, type Write } from './repository';
 import { Realtime } from './realtime';
@@ -107,6 +108,8 @@ const { app } = createApp(
     void service.runJobs().catch(() => console.error('Local archive worker failed'));
   },
   realtime,
+  // Local sign-up is open unless HARBOR_INVITE_ONLY=true, so tests can create accounts freely.
+  new Beta(repo, process.env.HARBOR_INVITE_ONLY === 'true'),
 );
 serve({ fetch: app.fetch, hostname: '127.0.0.1', port: Number(process.env.PORT ?? 8787) }, () =>
   console.log('harbor0 API listening at http://127.0.0.1:8787'),
@@ -118,7 +121,11 @@ if (auth instanceof DevelopmentAuth) {
     service,
     new DevelopmentDirectory(auth),
     new DevelopmentStaffAuth(),
-    { origins: ['http://localhost:3300', 'http://127.0.0.1:3300'], secureCookies: false },
+    {
+      origins: ['http://localhost:3300', 'http://127.0.0.1:3300'],
+      secureCookies: false,
+      inviteRequired: process.env.HARBOR_INVITE_ONLY === 'true',
+    },
   );
   serve({ fetch: adminApp.fetch, hostname: '127.0.0.1', port: adminPort }, () =>
     console.log(`harbor0 admin API listening at http://127.0.0.1:${adminPort}`),
@@ -133,6 +140,9 @@ const timer = setInterval(
             event: 'development_email_recorded',
             template: email.template,
             to: email.to,
+            ...(email.template === 'BETA_INVITE'
+              ? { link: `http://localhost:3000/signup?invite=${email.code}` }
+              : {}),
             message: 'Local email is not delivered.',
           }),
         ),

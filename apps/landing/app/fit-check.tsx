@@ -55,7 +55,7 @@ export function FitCheck({ signupUrl }: { signupUrl: string }) {
           </p>
         )}
         <a href={signupUrl} className="btn signup" data-variant="primary" data-size="lg">
-          Sign up free
+          Join the beta
           <ArrowRight />
         </a>
       </div>

@@ -2558,7 +2558,7 @@ export class StorageService {
           const email = job.email ?? { template: 'INVITE', to: job.to!, sender: job.sender! };
           // Invitations wait until delivery is configured; account notices are simply skipped.
           assert(
-            sendEmail || email.template !== 'INVITE',
+            sendEmail || !['INVITE', 'BETA_INVITE', 'BETA_WAITLIST'].includes(email.template),
             'EMAIL_NOT_CONFIGURED',
             'Invitation email delivery is not configured.',
             503,

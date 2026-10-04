@@ -25,6 +25,7 @@ export const staffPermissions = {
     'quota',
     'suspend',
     'delete',
+    'beta',
   ],
 } as const satisfies Record<z.infer<typeof staffRole>, readonly string[]>;
 export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];
@@ -142,6 +143,19 @@ export const MAX_ADMIN_QUOTA = 1_000_000_000_000_000;
 export const adminQuotaBody = z
   .object({ quotaBytes: z.number().int().min(0).max(MAX_ADMIN_QUOTA), reason })
   .strict();
+/** Beta sign-up: seats taken and allowed, unused sign-up links, and people waiting. */
+export const adminBetaSchema = z.object({
+  inviteRequired: z.boolean(),
+  used: z.number(),
+  cap: z.number(),
+  invited: z.number(),
+  waitlisted: z.number(),
+});
+// Far above any planned wave; it only stops a typo.
+export const MAX_BETA_CAP = 100_000;
+export const adminWaveBody = z
+  .object({ cap: z.number().int().min(1).max(MAX_BETA_CAP), reason })
+  .strict();
 export const adminNoteBody = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
 export const adminDeleteBody = z.object({ confirmEmail: z.string().max(254), reason }).strict();
 
@@ -156,4 +170,5 @@ export type AdminUserDetail = z.infer<typeof adminUserDetailSchema>;
 export type AdminUserPage = z.infer<typeof adminUserPageSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
+export type AdminBeta = z.infer<typeof adminBetaSchema>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;

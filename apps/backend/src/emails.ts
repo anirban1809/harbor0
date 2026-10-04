@@ -1,4 +1,5 @@
 import type { CustomMessageTriggerEvent } from 'aws-lambda';
+import { BETA_QUOTA } from '@harbor/contracts';
 
 // Cognito swaps these placeholders for the real values after the trigger returns, so they
 // must reach the message verbatim.
@@ -85,6 +86,8 @@ Questions? Write to <a href="mailto:${contact}" style="color:#8a8f9c;">${contact
 
 export type Email =
   | { template: 'INVITE'; to: string; sender: string }
+  | { template: 'BETA_INVITE'; to: string; code: string }
+  | { template: 'BETA_WAITLIST'; to: string }
   | { template: 'WELCOME'; to: string; name: string; quotaBytes: number }
   | { template: 'ACCOUNT_DELETED'; to: string; name: string; purgeAt: string };
 
@@ -114,6 +117,37 @@ export function composeEmail(email: Email, webOrigin: string) {
         },
         `${email.sender} sent you files in harbor0. Create an account with this email address and verify it to receive them. Sign in at ${webOrigin}. Invitations expire after 30 days. Files are never available through public links.`,
       );
+    case 'BETA_INVITE': {
+      const quota = `${Math.round(BETA_QUOTA / 1e9)} GB`;
+      const url = `${webOrigin}/signup?invite=${encodeURIComponent(email.code)}`;
+      const footnote =
+        'This link works only for this email address. Seats in each beta wave go to whoever signs up first, so use it soon. If you didn’t ask to join, ignore this email.';
+      return compose(
+        {
+          subject: 'Your harbor0 sign-up link',
+          preheader: 'Your place in the harbor0 beta is ready.',
+          heading: 'You’re in the harbor0 beta',
+          intro: `Your place is ready. Create your account with ${escape(email.to)} to get ${quota} of private storage, yours to keep after the beta.`,
+          action: { label: 'Create your account', url: escape(url) },
+          footnote,
+        },
+        `Your place in the harbor0 beta is ready. Create your account with ${email.to} to get ${quota} of private storage, yours to keep after the beta: ${url}\n\n${footnote}`,
+      );
+    }
+    case 'BETA_WAITLIST': {
+      const footnote =
+        'There’s nothing else to do for now. If you didn’t ask to join, ignore this email.';
+      return compose(
+        {
+          subject: 'You’re on the harbor0 waitlist',
+          preheader: 'We’ll email your sign-up link when the next beta wave opens.',
+          heading: 'You’re on the waitlist',
+          intro: `This wave of the harbor0 beta is full. We’ll email ${escape(email.to)} a sign-up link when the next wave opens. Places go in the order people asked.`,
+          footnote,
+        },
+        `This wave of the harbor0 beta is full. We’ll email ${email.to} a sign-up link when the next wave opens. Places go in the order people asked.\n\n${footnote}`,
+      );
+    }
     case 'WELCOME': {
       const quota = `${Math.round(email.quotaBytes / 1e9)} GB`;
       const steps: [string, string][] = [

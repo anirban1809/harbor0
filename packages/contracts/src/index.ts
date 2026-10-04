@@ -7,6 +7,8 @@ export const BETA_QUOTA = 50_000_000_000;
 export const BETA = true;
 /** Free storage a new account gets. */
 export const SIGNUP_QUOTA = BETA ? BETA_QUOTA : FREE_QUOTA;
+/** Sign-ups the beta takes before staff open the next wave from the management console. */
+export const BETA_FIRST_WAVE = 50;
 export const PART_SIZE = 64 * 1024 * 1024;
 export const id = z
   .string()
@@ -311,6 +313,16 @@ export type Identity = {
 };
 export const normalizeName = (v: string) => v.normalize('NFC').toLowerCase();
 export const normalizeEmail = (v: string) => v.trim().toLowerCase();
+/**
+ * Whether sign-up needs a link from the beta, and whether a request for one gets it at once
+ * (`open`) or joins the waitlist until the next wave.
+ */
+export const betaStatusSchema = z.object({ inviteRequired: z.boolean(), open: z.boolean() });
+export const accessRequestResultSchema = z.object({
+  status: z.enum(['INVITED', 'WAITLISTED', 'REGISTERED']),
+});
+export type BetaStatus = z.infer<typeof betaStatusSchema>;
+export type AccessRequestResult = z.infer<typeof accessRequestResultSchema>;
 export const storageUsage = (u: User): StorageUsage => ({
   quotaBytes: u.storageQuotaBytes,
   usedBytes: u.storageUsedBytes,
