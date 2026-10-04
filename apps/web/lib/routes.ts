@@ -22,6 +22,14 @@ export const authRoutes = {
 
 export type AuthMode = keyof typeof authRoutes;
 
+// Legal pages live on the marketing site, which is deployed separately.
+export const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://harbor0.com').replace(
+  /\/$/,
+  '',
+);
+export const termsUrl = `${siteUrl}/terms`;
+export const privacyUrl = `${siteUrl}/privacy`;
+
 export function driveHref(folderId: string | null = null): string {
   return folderId ? `/drive?${new URLSearchParams({ folder: folderId })}` : '/drive';
 }

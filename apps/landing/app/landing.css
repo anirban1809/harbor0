@@ -606,6 +606,59 @@ html {
   font-size: var(--text-lg);
 }
 
+/* Legal pages --------------------------------------------------------------- */
+.legal {
+  margin-top: clamp(40px, 6vw, 80px);
+}
+.legal section {
+  max-width: 76ch;
+  padding-block: 28px;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 96px;
+}
+.legal h2 {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  margin-bottom: 14px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.legal h2 span {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--text-3);
+}
+.legal p,
+.legal li {
+  font-size: var(--text-lg);
+  line-height: 1.65;
+  color: var(--text-2);
+}
+.legal p + p,
+.legal p + ul,
+.legal ul + p {
+  margin-top: 12px;
+}
+.legal ul {
+  padding-left: 1.2em;
+  list-style: disc;
+}
+.legal a,
+.foot-links a:not(.text-link) {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.foot-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+}
+
 /* Questions ---------------------------------------------------------------- */
 .faq {
   margin-top: -24px;

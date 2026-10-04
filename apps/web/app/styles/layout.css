@@ -532,6 +532,12 @@
   font-size: var(--text-sm);
   color: var(--text-2);
 }
+.auth-terms {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-3);
+}
 .auth-switch {
   margin-top: 28px;
   padding-top: 20px;

@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, HardDrive, Laptop, Loader2, Send, ShieldCheck } from 'lucide-react';
 import { ApiError, type ApiClient } from '@harbor/api-client';
-import { authRoutes, loginDestination, type AuthMode } from '../lib/routes';
+import { authRoutes, loginDestination, privacyUrl, termsUrl, type AuthMode } from '../lib/routes';
 import { BrandLogo } from './brand-logo';
 import { ThemeToggle } from './theme-toggle';
 import { Alert } from './ui/alert';
@@ -333,6 +333,19 @@ export function AuthPage({
               {busy && <Loader2 className="spin" aria-hidden="true" />}
               {busy ? busyLabel : submitLabel}
             </Button>
+            {mode === 'signup' && (
+              <p className="auth-terms">
+                By creating an account, you agree to the{' '}
+                <a href={termsUrl} target="_blank" rel="noreferrer">
+                  Terms of Service
+                </a>{' '}
+                and acknowledge the{' '}
+                <a href={privacyUrl} target="_blank" rel="noreferrer">
+                  Privacy Policy
+                </a>
+                .
+              </p>
+            )}
           </form>
           {(mode === 'confirm' || mode === 'reset') && (
             <p className="auth-resend">

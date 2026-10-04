@@ -56,9 +56,13 @@ export function SiteFoot() {
         <BrandLogo />
       </span>
       <span>50 GB free during the beta. Files are private unless you share them.</span>
-      <a href={signupUrl} className="text-link">
-        Sign up free <ArrowUpRight size={16} />
-      </a>
+      <span className="foot-links">
+        <Link href="/terms">Terms</Link>
+        <Link href="/privacy">Privacy</Link>
+        <a href={signupUrl} className="text-link">
+          Sign up free <ArrowUpRight size={16} />
+        </a>
+      </span>
     </footer>
   );
 }
