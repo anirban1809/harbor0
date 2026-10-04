@@ -9,7 +9,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -17,7 +16,6 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -28,7 +26,6 @@ import androidx.compose.ui.unit.sp
 private data class AuthCopy(val title: String, val lead: String, val submit: String, val busy: String)
 private val authCopy = mapOf(
     AuthMode.Login to AuthCopy("Welcome back", "Sign in to your files.", "Sign in", "Signing in…"),
-    AuthMode.Signup to AuthCopy("Create your account", "50 GB of private storage, free.", "Create your account", "Creating account…"),
     AuthMode.Confirm to AuthCopy("Check your email", "Enter the 6-digit code we sent you.", "Verify email", "Verifying…"),
     AuthMode.Forgot to AuthCopy("Reset your password", "Enter your account email and we’ll send you a reset code.", "Send reset code", "Sending…"),
     AuthMode.Reset to AuthCopy("Set a new password", "Enter the code from your email and choose a new password.", "Reset password", "Saving…"),
@@ -40,25 +37,20 @@ private val passwordRules = listOf<Pair<String, (String) -> Boolean>>(
     "A number" to { p -> p.any { it.isDigit() } },
     "A symbol" to { p -> p.any { !it.isLetterOrDigit() } },
 )
-private fun usernameFrom(email: String) = email.substringBefore('@').lowercase().filter { it.isLetterOrDigit() && it.code < 128 || it == '_' || it == '.' }.take(32)
 
-/** Sign in, sign up, email confirmation and password reset, as the web auth page. */
+/** Sign in, email confirmation and password reset, as the web auth page. Accounts are created on the web. */
 @Composable fun AuthScreen(model: WorkspaceModel) {
     val mode = model.authMode
     val copy = authCopy.getValue(mode)
     val t = theme
     val dark = t.palette.dark
     var password by remember(mode) { mutableStateOf("") }
-    var displayName by rememberSaveable { mutableStateOf("") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var usernameEdited by rememberSaveable { mutableStateOf(false) }
     var code by remember(mode) { mutableStateOf("") }
     var reveal by remember(mode) { mutableStateOf(false) }
     val email = model.authEmail
-    val newPassword = mode == AuthMode.Signup || mode == AuthMode.Reset
+    val newPassword = mode == AuthMode.Reset
     val ready = !model.busy && email.isNotBlank() && when (mode) {
         AuthMode.Login -> password.isNotEmpty()
-        AuthMode.Signup -> displayName.isNotBlank() && username.length >= 3 && passwordRules.all { it.second(password) }
         AuthMode.Confirm -> code.isNotBlank()
         AuthMode.Forgot -> true
         AuthMode.Reset -> code.isNotBlank() && passwordRules.all { it.second(password) }
@@ -67,7 +59,6 @@ private fun usernameFrom(email: String) = email.substringBefore('@').lowercase()
         if (!ready) return
         when (mode) {
             AuthMode.Login -> model.login(email, password)
-            AuthMode.Signup -> model.signup(email, displayName, username, password)
             AuthMode.Confirm -> model.confirmEmail(email, code)
             AuthMode.Forgot -> model.forgot(email)
             AuthMode.Reset -> model.resetPassword(email, code, password)
@@ -100,19 +91,8 @@ private fun usernameFrom(email: String) = email.substringBefore('@').lowercase()
                         }
                         model.authNotice?.takeIf { it.first == mode }?.let { Alert(it.second, tone = Tone.Success) }
                         Field("Email") {
-                            HInput(email, { value -> model.authEmail = value; if (!usernameEdited) username = usernameFrom(value) }, Modifier.testTag("email"), placeholder = "you@example.com",
+                            HInput(email, { model.authEmail = it }, Modifier.testTag("email"), placeholder = "you@example.com",
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next, autoCorrectEnabled = false))
-                        }
-                        if (mode == AuthMode.Signup) {
-                            Field("Display name") { HInput(displayName, { displayName = it.take(100) }, Modifier.testTag("display-name"), placeholder = "Your name",
-                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next)) }
-                            Field("Username", hint = "People can send files directly to your @username.") {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("@", Modifier.padding(end = 6.dp), style = Type.body, color = theme.text2)
-                                    HInput(username, { usernameEdited = true; username = it.lowercase().filter { c -> c in 'a'..'z' || c.isDigit() || c == '_' || c == '.' }.take(32) },
-                                        Modifier.testTag("username"), keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next))
-                                }
-                            }
                         }
                         if (mode == AuthMode.Confirm || mode == AuthMode.Reset) Field("Verification code") {
                             HInput(code, { code = it.filter(Char::isLetterOrDigit).take(8) }, Modifier.testTag("code"), placeholder = "000000", style = Type.mono.copy(fontSize = 18.sp, letterSpacing = .2.em),
@@ -151,8 +131,7 @@ private fun usernameFrom(email: String) = email.substringBefore('@').lowercase()
                         Divider()
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             when (mode) {
-                                AuthMode.Login -> { Text("New to harbor0?", style = Type.sm, color = theme.text2); HButton("Create an account", { model.authGo(AuthMode.Signup) }, variant = Variant.Link) }
-                                AuthMode.Signup -> { Text("Already have an account?", style = Type.sm, color = theme.text2); HButton("Sign in", { model.authGo(AuthMode.Login) }, variant = Variant.Link) }
+                                AuthMode.Login -> Text("New to harbor0? Create an account in the harbor0 web app, then sign in here.", style = Type.sm, color = theme.text2)
                                 else -> HButton("Back to sign in", { model.authGo(AuthMode.Login) }, variant = Variant.Link)
                             }
                         }

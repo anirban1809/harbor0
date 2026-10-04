@@ -102,6 +102,7 @@ final class FolderBackups: @unchecked Sendable {
             // Nothing changed: no backup is recorded, and a Back up now request is settled.
             if ready.isEmpty {
                 if manual { journal.set("backup-now:\(root.id)", false) }
+                try await upToDate(root, url)
                 return
             }
             run = PendingRun(id: UUID().uuidString.lowercased(), trigger: manual ? "MANUAL" : "AUTOMATIC", jobs: ready)
@@ -303,6 +304,16 @@ final class FolderBackups: @unchecked Sendable {
         }
     }
 
+    /// Nothing new records no run, so harbor0 is told the folder is still backed up; otherwise an
+    /// untouched folder would get a stale-backup reminder. Waiting changes don't count.
+    private func upToDate(_ root: SyncRoot, _ url: String) async throws {
+        if !journal.jobs(root: root.id).isEmpty { return }
+        let key = "backup-checked:\(root.id)"
+        let now = Date().timeIntervalSince1970
+        if now - (journal.get(key, as: Double.self) ?? 0) < 12 * 3600 { return }
+        let _: EmptyResponse = try await api.request("\(url)/checked", method: "POST")
+        journal.set(key, now)
+    }
     private func restores(_ root: SyncRoot, base: URL, url: String) async throws {
         if SyncClock.now < (nextRestoreCheck[root.id] ?? 0) { return }
         nextRestoreCheck[root.id] = SyncClock.now + 10_000

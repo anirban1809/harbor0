@@ -84,6 +84,7 @@ import { SharedTabs, type SharedTab } from './shared-tabs';
 import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { TransferTable, type TransferView } from './transfer-table';
 import { BackupFolderPanel } from './backup-folder-panel';
+import { SyncedFolderPanel, SyncInvitations } from './sync-sharing';
 import { DriveWorkspace } from './lazy-drive-workspace';
 import type { AddedItem } from './drive-workspace';
 import { loadUsage, type UsageMap } from '../lib/folder-usage';
@@ -415,12 +416,15 @@ function Workspace() {
   });
   const syncFolders = useQuery<{ items: SyncFolderItem[] }>({
     queryKey: ['sync-folders'],
-    enabled: !!user && (placesShown || section === 'Devices'),
+    enabled: !!user && (placesShown || section === 'My Drive' || section === 'Devices'),
     queryFn: () => api.request('/v1/sync/folders'),
   });
   // The open folder is a backup's top folder: show its status and controls above the files.
   const backupFolder =
     !!parentId && !!backups.data?.items.some((root) => root.remoteRootDriveItemId === parentId);
+  const syncedFolder = parentId
+    ? syncFolders.data?.items.find((folder) => folder.id === parentId)
+    : undefined;
   const failing = (backups.data?.items ?? []).filter((root) => root.state === 'ERROR');
   const folderActivity: FolderActivity | null = failing.length
     ? {
@@ -1141,13 +1145,22 @@ function Workspace() {
               }
               showFolderUsage={!!place}
               header={
-                backupFolder && (
+                backupFolder ? (
                   <BackupFolderPanel
                     key={parentId}
                     api={api}
                     folderId={parentId!}
                     onChanged={() => void backups.refetch()}
                   />
+                ) : (
+                  syncedFolder && (
+                    <SyncedFolderPanel
+                      key={parentId}
+                      request={api.request}
+                      folder={syncedFolder}
+                      userId={user.id}
+                    />
+                  )
                 )
               }
               onActivity={activity.publish}
@@ -1412,6 +1425,7 @@ function Workspace() {
               }}
             >
               <div className="transfer-list">
+                {sharedTab === 'Received' && <SyncInvitations request={api.request} />}
                 {transfers.isPending ? (
                   <ContentSkeleton label="Loading transfers" />
                 ) : transfers.isError && !transfers.data?.items.length ? (

@@ -414,6 +414,7 @@ export class TransferWorkflows {
         const account = await s.account(tx, save.userId);
         account.storageReservedBytes -= save.bytes;
         account.storageUsedBytes += save.bytes;
+        await s.storageAlert(tx, account);
         await tx.put(userPK(save.userId), 'PROFILE', account);
         save.state = 'COMPLETED';
         await tx.put(`SAVE#${id}`, 'META', save);

@@ -35,6 +35,7 @@ export type ProfileStorage = {
   trashBytes?: number;
   purgingBytes?: number;
   deletedAt?: string;
+  purgeAt?: string;
 };
 const PROFILE_FIELDS = [
   'id',
@@ -44,6 +45,7 @@ const PROFILE_FIELDS = [
   'trashBytes',
   'purgingBytes',
   'deletedAt',
+  'purgeAt',
 ] as const;
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
 /** A cursor that resumes a query just after this row. */

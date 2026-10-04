@@ -9,6 +9,7 @@ import { Card } from '../../web/components/ui/card';
 import { Input, InputGroup } from '../../web/components/ui/input';
 import { AuditList } from '../components/audit-list';
 import { BetaCard } from '../components/beta-card';
+import { PurgeDeletedCard } from '../components/purge-deleted';
 import { StorageTotalsCard } from '../components/storage-totals';
 import { Skeleton } from '../../web/components/ui/skeleton';
 import { PageHeader, Shell } from '../components/shell';
@@ -55,6 +56,7 @@ function Overview() {
         refreshing={refresh.isPending}
         onRefresh={() => refresh.mutate()}
       />
+      <PurgeDeletedCard totals={overview.data?.storage ?? null} />
       <BetaCard />
       <Card
         title="Recent activity"

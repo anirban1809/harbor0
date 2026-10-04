@@ -19,6 +19,8 @@ type PendingRun = {
   error?: string;
 };
 const ARCHIVE_ATTEMPTS = 3;
+// Telling harbor0 a folder with nothing new is still backed up happens at most this often.
+const CHECKED_MS = 12 * 3600_000;
 // A request the server will keep refusing; retrying every pass would stall all other folders.
 function refused(error: unknown) {
   if (
@@ -118,12 +120,24 @@ export class FolderBackups {
         !job.payload.backupEntry &&
         (await hashFile(filename)) === known.hash
       ) {
+        this.journal.putFile({ ...known, sizeBytes: info.size, mtimeMs: info.mtimeMs });
         this.journal.finish(job.id);
         continue;
       }
       ready.push(job.id);
     }
     return ready;
+  }
+  /**
+   * Nothing new records no run, so harbor0 is told the folder is still backed up; otherwise an
+   * untouched folder would get a stale-backup reminder. Waiting changes don't count.
+   */
+  private async upToDate(root: Root, url: string) {
+    if (this.journal.jobs().some((j) => j.rootId === root.id)) return;
+    const key = `backup-checked:${root.id}`;
+    if (Date.now() - (this.journal.get<number>(key) ?? 0) < CHECKED_MS) return;
+    await this.api.request(`${url}/checked`, { method: 'POST' });
+    this.journal.set(key, Date.now());
   }
   async process(
     root: Root,
@@ -152,6 +166,7 @@ export class FolderBackups {
       const ready = await this.changed(root, manual);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
+        await this.upToDate(root, url);
         return;
       }
       run = {

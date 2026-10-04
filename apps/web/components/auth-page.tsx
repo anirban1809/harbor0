@@ -445,7 +445,7 @@ export function AuthPage({
                   tone="error"
                   action={
                     error.unverified && (
-                      <Button variant="link" onClick={() => void verifyInstead()}>
+                      <Button type="button" variant="link" onClick={() => void verifyInstead()}>
                         Verify now
                       </Button>
                     )

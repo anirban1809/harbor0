@@ -9,6 +9,7 @@ import {
     Play,
     Plus,
     RefreshCw,
+    UserPlus,
     WifiOff,
 } from 'lucide-react';
 import { FolderProgress, FolderProgressBanner } from '../../web/components/folder-progress';
@@ -31,9 +32,11 @@ import {
     type SyncRuntime,
 } from './sync-state';
 import { storageSize } from './overview';
-import { ShareSyncFolderDialog } from './sync-sharing';
+import { SyncShareDialog } from '../../web/components/sync-sharing';
 
 const bridge = window.harbor;
+const shareRequest = (path: string, init?: { method?: string; body?: unknown }) =>
+    bridge.request({ path, method: init?.method ?? 'GET', body: init?.body });
 function ago(value?: string | null) {
     if (!value) return 'Not checked yet';
     const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
@@ -569,6 +572,7 @@ export function SyncFolderPanel({
     const [dialog, setDialog] = useState<{ mode: string; root: SyncFolder; } | null>(null);
     const [conflict, setConflict] = useState<SyncIssue | null>(null);
     const [linking, setLinking] = useState(false);
+    const [sharing, setSharing] = useState<{ id: string; name: string } | null>(null);
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
     async function run(task: () => Promise<unknown>) {
@@ -616,10 +620,21 @@ export function SyncFolderPanel({
                             <Plus />
                             Sync to this computer
                         </Button>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSharing({ id: remote.id, name: remote.name })}
+                        >
+                            <UserPlus />
+                            Share
+                        </Button>
                     </div>
                 </Card>
                 {linking && (
                     <AddSyncFolderDialog remote={remote} close={() => setLinking(false)} refresh={refresh} />
+                )}
+                {sharing && (
+                    <SyncShareDialog request={shareRequest} folder={sharing} close={() => setSharing(null)} />
                 )}
             </div>
         );
@@ -662,14 +677,24 @@ export function SyncFolderPanel({
                         {root.paused ? <Play /> : <Pause />}
                         {root.paused ? 'Resume' : 'Pause'}
                     </Button>
+                    {!root.shareId && root.remoteId && (
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() =>
+                                setSharing({ id: root.remoteId!, name: root.localPathDisplayName })
+                            }
+                        >
+                            <UserPlus />
+                            Share
+                        </Button>
+                    )}
                     <Button size="sm" variant="ghost" disabled={busy} onClick={() => action('open', root)}>
                         <FolderOpen />
                         Open local folder
                     </Button>
                     <ActionsMenu label={`More actions for ${root.localPathDisplayName}`} disabled={busy}>
-                        {!root.shareId && (
-                            <MenuItem onClick={() => action('share', root)}>Share folder</MenuItem>
-                        )}
                         <MenuItem onClick={() => action('location', root)}>Change local folder</MenuItem>
                         <MenuItem onClick={() => action('exclusions', root)}>Manage exclusions</MenuItem>
                         <MenuItem onClick={() => action('details', root)}>Folder details</MenuItem>
@@ -702,8 +727,8 @@ export function SyncFolderPanel({
             {dialog?.mode === 'mapping' && (
                 <AddSyncFolderDialog root={dialog.root} close={() => setDialog(null)} refresh={refresh} />
             )}
-            {dialog?.mode === 'share' && (
-                <ShareSyncFolderDialog root={dialog.root} close={() => setDialog(null)} />
+            {sharing && (
+                <SyncShareDialog request={shareRequest} folder={sharing} close={() => setSharing(null)} />
             )}
             {dialog && ['location', 'exclusions', 'details'].includes(dialog.mode) && (
                 <FolderSettingsDialog

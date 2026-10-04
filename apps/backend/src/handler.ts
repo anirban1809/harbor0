@@ -38,5 +38,5 @@ export async function realtimeStream(event: DynamoDBStreamEvent) {
   if (keys.length) await realtimeRuntime().publish(keys);
 }
 
-export { preSignup } from './registration';
+export { preSignup, postConfirmation } from './registration';
 export { customMessage } from './emails';

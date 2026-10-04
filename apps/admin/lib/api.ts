@@ -1,11 +1,13 @@
 import type {
     AdminBeta,
     AdminOverview,
+    AdminPurgeResult,
     AdminUserDetail,
     AdminUserPage,
     AuditEntry,
     AuditPage,
     Staff,
+    StaffDeletionReason,
     StaffLoginResult,
 } from '../../../packages/contracts/src/admin';
 
@@ -59,6 +61,8 @@ export const api = {
     beta: () => request<AdminBeta>('GET', '/beta'),
     openWave: (cap: number, reason: string) =>
         request<AdminBeta & { newlyInvited: number; }>('POST', '/beta/wave', { cap, reason }),
+    purgeDeletedAccounts: (reason: string) =>
+        request<AdminPurgeResult>('POST', '/deleted-accounts/purge', { reason }),
     audit: (cursor?: string) =>
         request<AuditPage>('GET', `/audit${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
     users: (q: string, cursor?: string) =>
@@ -74,10 +78,18 @@ export const api = {
     signOutDevice: (id: string, deviceId: string, reason: string) =>
         request('POST', `${user(id)}/devices/${encodeURIComponent(deviceId)}/sign-out`, { reason }),
     note: (id: string, text: string) => request<AuditEntry>('POST', `${user(id)}/notes`, { text }),
-    deleteAccount: (id: string, confirmEmail: string, reason: string) =>
+    deleteAccount: (
+        id: string,
+        confirmEmail: string,
+        reason: string,
+        category: StaffDeletionReason,
+        notify: boolean,
+    ) =>
         request<{ deleted: boolean; purgeAt: string | null; }>('POST', `${user(id)}/delete`, {
             confirmEmail,
             reason,
+            category,
+            notify,
         }),
 };
 export type UserAction =

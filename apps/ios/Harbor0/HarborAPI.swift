@@ -129,7 +129,7 @@ final class HarborAPI: ObservableObject {
         return (response.device.id, response.device.name)
     }
 
-    /// Signed-out account flows: sign up, confirm, resend, forgot and reset.
+    /// Signed-out account flows: confirm, resend, forgot and reset.
     func publicRequest<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
         try await raw(path, method: "POST", body: body)
     }

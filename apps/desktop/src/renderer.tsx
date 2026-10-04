@@ -216,7 +216,7 @@ function App() {
   }>({ error: false });
   const [placeRevision, setPlaceRevision] = useState(0);
   // My Drive's root shows each place's total too.
-  const placesShown = section === 'My Drive' && (!!place || !trail.length);
+  const placesShown = !!status?.signedIn && section === 'My Drive' && (!!place || !trail.length);
   useEffect(() => {
     if (section !== 'My Drive') setPlace(null);
   }, [section]);
@@ -248,7 +248,7 @@ function App() {
     return () => {
       live = false;
     };
-  }, [placesShown, placeRevision]);
+  }, [placesShown, placeRevision, status?.accountId]);
   function goToPlace(next: { place: DrivePlace; key?: string } | null) {
     setPlace(next);
     goToFolder([]);
@@ -625,6 +625,7 @@ function App() {
               </Field>
               {status.accountLinks && (
                 <Button
+                  type="button"
                   variant="link"
                   className="auth-forgot"
                   onClick={() => void openAccountPage('forgot')}

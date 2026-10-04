@@ -34,7 +34,8 @@ import {
 import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { ArchiveWorkflows } from './archives';
 import { abandonCloudCopy } from './cloud-copies';
-import type { Email } from './emails';
+import type { Email, StorageAlertLevel } from './emails';
+import type { StaffDeletionReason } from '../../../packages/contracts/src/admin';
 import { DeletionWorkflows } from './deletion';
 import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
 import { TransferWorkflows, type StagedItem, type Save } from './workflows';
@@ -65,6 +66,8 @@ export type Account = User & {
   /** Set by staff in the management console; a suspended account cannot use the API. */
   suspendedAt?: string;
   suspendedReason?: string;
+  /** Highest storage threshold the account was last emailed about, or 0 below them all. */
+  storageAlertLevel?: StorageAlertLevel | 0;
 };
 /** Whether `item` was in the trash when it was last emptied. */
 export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
@@ -80,6 +83,11 @@ const deviceRevocationKey = (publicId: string) => `DEVICE_REVOCATION#${digest(pu
 type DeviceKey = { fingerprint: string; publicKey: string; boundAt: string };
 type DeviceChallenge = { challenge: string; expiresAt: number };
 const deviceKeyKey = (publicId: string) => `DEVICE_KEY#${digest(publicId)}`;
+// Installations already announced to the account holder by a new sign-in email.
+const knownDeviceKey = (publicId: string) => `KNOWN_DEVICE#${digest(publicId)}`;
+// A backup that has not finished a run for this long gets a reminder email.
+export const BACKUP_STALE_MS = 7 * 86400_000;
+export const watchedBackup = (root: BackupRoot) => root.state === 'ACTIVE' || root.state === 'ERROR';
 /** Groups sign-in sessions into devices: sessions sharing a key fingerprint or installation ID. */
 function deviceGroups<T extends Pick<Device, 'id' | 'keyFingerprint' | 'devicePublicId'>>(
   sessions: T[],
@@ -164,7 +172,8 @@ export type Job = {
     | 'PERMANENT_DELETE'
     | 'TRASH_MEASURE'
     | 'TRASH_EMPTY'
-    | 'ACCOUNT_DELETE';
+    | 'ACCOUNT_DELETE'
+    | 'BACKUP_CHECK';
   userId?: string;
   entityId?: string;
   key?: string;
@@ -175,6 +184,11 @@ export type Job = {
   dueAt: string;
   attempts: number;
 };
+/** Queues an email for the maintenance job; a queued one with the same id is replaced. */
+export async function queueEmail(tx: Transaction, id: string, email: Email) {
+  const job: Job = { id, type: 'EMAIL', email, dueAt: now(), attempts: 0 };
+  await tx.put('JOB', id, job, { gpk: 'JOB', gsk: job.dueAt });
+}
 export class StorageService {
   constructor(
     public repo: Repository,
@@ -247,17 +261,11 @@ export class StorageService {
       await tx.put(userPK(user.id), 'PROFILE', user);
       await tx.put('USERNAME', normalized, { userId: user.id });
       await tx.put('EMAIL', email, { userId: user.id });
-      await this.job(tx, {
-        id: `welcome-${user.id}`,
-        type: 'EMAIL',
-        email: {
-          template: 'WELCOME',
-          to: email,
-          name: user.displayName,
-          quotaBytes: user.storageQuotaBytes,
-        },
-        dueAt: now(),
-        attempts: 0,
+      await this.email(tx, `welcome-${user.id}`, {
+        template: 'WELCOME',
+        to: email,
+        name: user.displayName,
+        quotaBytes: user.storageQuotaBytes,
       });
       return user;
     });
@@ -986,6 +994,7 @@ export class StorageService {
       const account = await this.account(tx, owner);
       account.storageReservedBytes -= u.expectedSizeBytes;
       account.storageUsedBytes += u.expectedSizeBytes;
+      await this.storageAlert(tx, account);
       await tx.put(userPK(owner), 'PROFILE', account);
       u.state = 'COMPLETED';
       u.result = item;
@@ -998,6 +1007,104 @@ export class StorageService {
   }
   async job(tx: Transaction, job: Job) {
     await tx.put('JOB', job.id, job, { gpk: 'JOB', gsk: job.dueAt });
+  }
+  async email(tx: Transaction, id: string, email: Email) {
+    await queueEmail(tx, id, email);
+  }
+  /**
+   * Call when `account`'s usage grows, before saving it: emails the holder once for each
+   * threshold crossed. Dropping below a threshold re-arms it for the next growth.
+   */
+  async storageAlert(tx: Transaction, account: Account) {
+    const { usedBytes, quotaBytes } = storageUsage(account);
+    const level =
+      ([100, 95, 80] as const).find((l) => quotaBytes > 0 && usedBytes * 100 >= quotaBytes * l) ??
+      0;
+    if (level && level > (account.storageAlertLevel ?? 0) && !account.deletedAt)
+      await this.email(tx, `storage-${account.id}`, {
+        template: 'STORAGE',
+        to: account.email,
+        name: account.displayName,
+        level,
+        usedBytes,
+        quotaBytes,
+      });
+    account.storageAlertLevel = level;
+  }
+  /** Re-arms the reminder sent when a backup goes `BACKUP_STALE_MS` without finishing a run. */
+  async scheduleBackupCheck(
+    tx: Transaction,
+    userId: string,
+    rootId: string,
+    lastBackupAt: string | null,
+    dueAt = new Date(Date.now() + BACKUP_STALE_MS).toISOString(),
+  ) {
+    await this.job(tx, {
+      id: `backup-check-${rootId}`,
+      type: 'BACKUP_CHECK',
+      userId,
+      entityId: rootId,
+      key: lastBackupAt ?? '',
+      dueAt,
+      attempts: 0,
+    });
+  }
+  /**
+   * Emails one reminder per computer: other folders it backs up that are also about to go stale
+   * join this one, and their own checks are dropped until their next finished run re-arms them.
+   */
+  private async backupCheck(job: Job) {
+    const userId = job.userId!;
+    const roots = await new Transaction(this.repo).list<BackupRoot>(userPK(userId), 'BACKUP#');
+    await transact(this.repo, async (tx) => {
+      // Gone if another folder's reminder took this one in; moved if a run just finished.
+      if ((await tx.get<Job>('JOB', job.id))?.dueAt !== job.dueAt) return;
+      const root = await tx.get<BackupRoot>(userPK(userId), `BACKUP#${job.entityId}`);
+      if (!root || !watchedBackup(root)) return;
+      const account = await tx.get<Account>(userPK(userId), 'PROFILE');
+      if (!account || account.deletedAt || account.suspendedAt) return;
+      const computer = (r: BackupRoot) => r.devicePublicId ?? r.deviceId;
+      const soon = new Date(Date.now() + 86400_000).toISOString();
+      const folders = [{ name: root.localPathDisplayName, lastBackupAt: job.key || null }];
+      for (const other of roots) {
+        if (other.id === root.id || !watchedBackup(other) || computer(other) !== computer(root))
+          continue;
+        const check = await tx.get<Job>('JOB', `backup-check-${other.id}`);
+        if (!check || check.dueAt > soon) continue;
+        folders.push({ name: other.localPathDisplayName, lastBackupAt: check.key || null });
+        await tx.delete('JOB', check.id);
+      }
+      const device = await tx.get<Device>(userPK(userId), `DEVICE#${root.deviceId}`);
+      await this.email(tx, `backup-stale-${root.id}`, {
+        template: 'BACKUP_STALE',
+        to: account.email,
+        name: account.displayName,
+        device: device?.name ?? root.deviceName ?? 'your computer',
+        folders,
+      });
+    });
+  }
+  /**
+   * Whether an installation is new to the account, read outside the registering transaction
+   * because an account can have many sessions. `FIRST` is the account's first installation.
+   */
+  private async deviceSighting(userId: string, devicePublicId: string) {
+    if (await this.repo.get({ pk: userPK(userId), sk: knownDeviceKey(devicePublicId) }))
+      return 'KNOWN';
+    let first = true;
+    let cursor: string | undefined;
+    do {
+      const page = await this.repo.query(userPK(userId), 'DEVICE#', 100, cursor);
+      for (const row of page.rows) {
+        // A session's own row counts: it exists only once that session has registered.
+        const device = row.data as DeviceSession;
+        if (!device.devicePublicId) continue;
+        if (device.devicePublicId === devicePublicId) return 'KNOWN';
+        first = false;
+      }
+      cursor = page.cursor ?? undefined;
+    } while (cursor);
+    return first ? 'FIRST' : 'NEW';
   }
   async abortUpload(
     userId: string,
@@ -1229,6 +1336,7 @@ export class StorageService {
           409,
         );
         account.storageUsedBytes += previous.sizeBytes;
+        await this.storageAlert(tx, account);
         await tx.put(userPK(userId), 'PROFILE', account);
         const v = {
           ...previous,
@@ -1739,6 +1847,7 @@ export class StorageService {
           items.push(item);
         }
         account.storageUsedBytes += t.totalSizeBytes;
+        await this.storageAlert(tx, account);
         await tx.put(userPK(userId), 'PROFILE', account);
         for (const item of items)
           await this.record(
@@ -1851,6 +1960,9 @@ export class StorageService {
     },
     sessionId?: string,
   ) {
+    const sighting = input.devicePublicId
+      ? await this.deviceSighting(userId, input.devicePublicId)
+      : 'KNOWN';
     return transact(this.repo, async (tx) => {
       const id = sessionId ?? uid();
       const existing = await tx.get<DeviceSession>(userPK(userId), `DEVICE#${id}`);
@@ -1913,6 +2025,21 @@ export class StorageService {
       const revocation = devicePublicId
         ? await tx.get<DeviceRevocation>(userPK(userId), deviceRevocationKey(devicePublicId))
         : undefined;
+      if (sighting !== 'KNOWN' && devicePublicId === input.devicePublicId) {
+        await tx.put(userPK(userId), knownDeviceKey(devicePublicId), { seenAt: now() });
+        // The account's first installation is the sign-up itself, not news.
+        if (sighting === 'NEW') {
+          const account = await this.account(tx, userId);
+          await this.email(tx, `sign-in-${id}`, {
+            template: 'NEW_SIGN_IN',
+            to: account.email,
+            name: account.displayName,
+            device: input.name,
+            platform: input.platform,
+            at: now(),
+          });
+        }
+      }
       const device: Device = {
         id,
         userId,
@@ -2360,7 +2487,12 @@ export class StorageService {
       },
     );
   }
-  async deleteAccount(userId: string, input: { operationId: string; email: string }) {
+  /** `closedBy` is set when staff delete the account, choosing the email the holder gets. */
+  async deleteAccount(
+    userId: string,
+    input: { operationId: string; email: string },
+    closedBy?: { reason: StaffDeletionReason; notify: boolean },
+  ) {
     return this.operation(
       userId,
       input.operationId,
@@ -2381,18 +2513,18 @@ export class StorageService {
         // Releasing the claims lets the email and username register again as a new account.
         await tx.delete('USERNAME', user.username);
         await tx.delete('EMAIL', user.email);
-        await this.job(tx, {
-          id: `account-deleted-${userId}`,
-          type: 'EMAIL',
-          email: {
+        const notice = { to: user.email, name: user.displayName, purgeAt: user.purgeAt };
+        if (!closedBy)
+          await this.email(tx, `account-deleted-${userId}`, {
             template: 'ACCOUNT_DELETED',
-            to: user.email,
-            name: user.displayName,
-            purgeAt: user.purgeAt,
-          },
-          dueAt: now(),
-          attempts: 0,
-        });
+            ...notice,
+          });
+        else if (closedBy.notify)
+          await this.email(tx, `account-deleted-${userId}`, {
+            template: 'ACCOUNT_CLOSED',
+            ...notice,
+            reason: closedBy.reason,
+          });
         await this.job(tx, {
           id: `account-${userId}`,
           type: 'ACCOUNT_DELETE',
@@ -2460,6 +2592,7 @@ export class StorageService {
         updatedAt: now(),
       };
       await tx.put(userPK(userId), `BACKUP#${root.id}`, root);
+      await this.scheduleBackupCheck(tx, userId, root.id, null);
       await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
       return { root };
     });
@@ -2523,6 +2656,7 @@ export class StorageService {
             Math.min(deadline, Date.now() + 30_000),
           );
         if (job.type === 'ACCOUNT_DELETE') complete = await this.purgeAccount(job.userId!);
+        if (job.type === 'BACKUP_CHECK') await this.backupCheck(job);
         if (job.type === 'TRANSFER_BUILD') complete = await workflows.build(job.entityId!);
         if (job.type === 'TRANSFER_SAVE') complete = await workflows.saveBatch(job.entityId!);
         if (job.type === 'TRANSFER_RELEASE') complete = await workflows.release(job.entityId!);

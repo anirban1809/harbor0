@@ -175,38 +175,6 @@
   justify-self: start;
 }
 
-/* Sharing a synced folder */
-.sync-shared-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.sync-share-invite {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.sync-share-members {
-  display: grid;
-  gap: 4px;
-}
-.sync-share-members h3 {
-  margin-bottom: 4px;
-}
-.sync-share-confirm {
-  display: grid;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-@media (max-width: 640px) {
-  .sync-share-invite {
-    flex-direction: column;
-    align-items: stretch;
-  }
-}
-
 /* Sign-in links that open the web app in the default browser. */
 .auth-forgot {
   align-self: flex-end;

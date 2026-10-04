@@ -1,12 +1,7 @@
-import type { ShareGrant } from '@harbor/contracts';
 import type { TransferView } from '../../web/components/transfer-table';
+import type { SyncInvitation } from '../../web/components/sync-sharing';
 
-export type SyncInvitation = ShareGrant & {
-  name: string;
-  direction: 'SENT' | 'RECEIVED';
-  owner: { username: string; displayName: string };
-  recipient: { username: string; displayName: string };
-};
+export type { SyncInvitation };
 export type IncomingContent =
   { kind: 'transfer'; item: TransferView } | { kind: 'sync'; item: SyncInvitation };
 

@@ -314,6 +314,13 @@ body {
   display: grid;
   gap: 14px;
 }
+.admin-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
 .admin-presets {
   display: flex;
   flex-wrap: wrap;

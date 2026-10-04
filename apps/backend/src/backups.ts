@@ -5,10 +5,14 @@ import type {
   BackupEntry,
   BackupRestore,
 } from '../../../packages/contracts/src/backups';
-import { StorageService, userPK } from './domain';
+import { BACKUP_STALE_MS, StorageService, userPK, watchedBackup, type Job } from './domain';
 import { Transaction, transact } from './repository';
 import { assert } from './errors';
 const partition = (userId: string, rootId: string) => `${userPK(userId)}#BACKUP#${rootId}`;
+// When the folder's last backup run finished, kept for its stale-backup reminder.
+type LastRun = { completedAt: string };
+// A device saying nothing changed re-arms the reminder at most this often.
+const CHECKED_MS = 12 * 3600_000;
 export class Backups {
   constructor(private service: StorageService) {}
   async root(tx: Transaction, userId: string, rootId: string, deviceId?: string) {
@@ -61,6 +65,7 @@ export class Backups {
         root.state = archived ? 'ARCHIVED' : 'ACTIVE';
         root.updatedAt = new Date().toISOString();
         await tx.put(userPK(userId), `BACKUP#${root.id}`, root);
+        if (!archived) await this.rearm(tx, userId, rootId);
       }
       return { root };
     });
@@ -85,7 +90,7 @@ export class Backups {
       409,
     );
     const pk = partition(userId, rootId);
-    for (const prefix of ['ENTRY#', 'RUN#', 'RESTORE#', 'PENDING#']) {
+    for (const prefix of ['ENTRY#', 'RUN#', 'RESTORE#', 'PENDING#', 'LAST_RUN']) {
       for (;;) {
         const page = await repo.query(pk, prefix, 25);
         if (!page.rows.length) break;
@@ -196,9 +201,69 @@ export class Backups {
         run.completedAt = new Date().toISOString();
         if (error) run.error = error;
         await tx.put(pk, `RUN#${runId}`, run);
+        if (run.state !== 'FAILED') {
+          await tx.put(pk, 'LAST_RUN', { completedAt: run.completedAt } satisfies LastRun);
+          await this.service.scheduleBackupCheck(tx, userId, rootId, run.completedAt);
+        }
       }
       return { run };
     });
+  }
+  /**
+   * The source device found nothing new to back up, so the folder is still protected: pushes
+   * its stale-backup reminder out without recording an empty run.
+   */
+  async checked(userId: string, rootId: string, deviceId: string) {
+    return transact(this.service.repo, async (tx) => {
+      const root = await this.connected(tx, userId, rootId, deviceId);
+      if (!watchedBackup(root)) return { checked: false };
+      const check = await tx.get<Job>('JOB', `backup-check-${rootId}`);
+      if (check && Date.parse(check.dueAt) > Date.now() + BACKUP_STALE_MS - CHECKED_MS)
+        return { checked: true };
+      await this.rearm(tx, userId, rootId);
+      return { checked: true };
+    });
+  }
+  private async rearm(tx: Transaction, userId: string, rootId: string) {
+    const last = await tx.get<LastRun>(partition(userId, rootId), 'LAST_RUN');
+    await this.service.scheduleBackupCheck(tx, userId, rootId, last?.completedAt ?? null);
+  }
+  /**
+   * Gives folders backed up before stale-backup reminders existed their first check, due a week
+   * after their last finished run (or now, when that is already past). Returns how many it armed.
+   */
+  async backfillChecks(userId: string, apply: boolean) {
+    const repo = this.service.repo;
+    const roots = await new Transaction(repo).list<BackupRoot>(userPK(userId), 'BACKUP#');
+    let armed = 0;
+    for (const root of roots.filter(watchedBackup)) {
+      if (await repo.get({ pk: 'JOB', sk: `backup-check-${root.id}` })) continue;
+      let last: string | null = null;
+      let cursor: string | undefined;
+      do {
+        const page = await repo.query(partition(userId, root.id), 'RUN#', 100, cursor);
+        for (const row of page.rows) {
+          const run = row.data as BackupRun;
+          if (run.state !== 'FAILED' && run.completedAt && (!last || run.completedAt > last))
+            last = run.completedAt;
+        }
+        cursor = page.cursor ?? undefined;
+      } while (cursor);
+      armed++;
+      if (!apply) continue;
+      const due = Math.max(Date.now(), Date.parse(last ?? root.createdAt) + BACKUP_STALE_MS);
+      await transact(repo, async (tx) => {
+        if (last) await tx.put(partition(userId, root.id), 'LAST_RUN', { completedAt: last });
+        await this.service.scheduleBackupCheck(
+          tx,
+          userId,
+          root.id,
+          last,
+          new Date(due).toISOString(),
+        );
+      });
+    }
+    return armed;
   }
   async restore(
     userId: string,

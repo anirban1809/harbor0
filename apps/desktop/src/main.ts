@@ -44,7 +44,8 @@ import {
   loadDesktopEnvironment,
   loadBundledDesktopConfiguration,
 } from './config';
-import { DesktopSession, isSessionError } from './session';
+import { DesktopSession, RenewalError, isSessionError } from './session';
+import { retrying } from './retry';
 import { cloudLocation, localDirectory } from './sync-mapping';
 import { IncomingMonitor, type IncomingContent } from './incoming';
 // fetch closes idle connections after 4s, so the first request after a quiet moment
@@ -136,7 +137,7 @@ const session = new DesktopSession({
     });
     const data = await response.json();
     if (!response.ok) {
-      const error = new ApiError(
+      const error = new RenewalError(
         data.error?.code ?? 'REQUEST_FAILED',
         data.error?.message ?? 'Could not renew your session. Try again.',
         response.status,
@@ -147,10 +148,12 @@ const session = new DesktopSession({
     return data;
   },
 });
-const transport = createTransport(
-  apiUrl,
-  () => session.token(),
-  () => session.refresh(),
+const transport = retrying(
+  createTransport(
+    apiUrl,
+    () => session.token(),
+    () => session.refresh(),
+  ),
 );
 const api = new ApiClient(async (endpoint, init) => {
   try {
@@ -255,6 +258,8 @@ else {
     window?.focus();
   });
 }
+// The login page uses these, so they work without an account.
+const signedOutChannels = new Set(['status', 'openAccountPage']);
 function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<unknown>) {
   ipcMain.handle('harbor:' + name, async (event, input) => {
     if (
@@ -276,7 +281,7 @@ function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<u
         // Old requests and sync work must finish before credentials or journals change.
         await Promise.allSettled([...operations]);
         await stoppingSync;
-      } else if (name !== 'status' && (authTransition || !accountReady)) {
+      } else if (!signedOutChannels.has(name) && (authTransition || !accountReady)) {
         throw new Error('Sign in before continuing.');
       }
       operation = handler(parsed);

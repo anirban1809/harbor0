@@ -9,6 +9,7 @@ import {
     adminDeleteBody,
     adminNoteBody,
     adminOverviewSchema,
+    adminPurgeResultSchema,
     adminQuotaBody,
     adminReasonBody,
     adminUserDetailSchema,
@@ -313,7 +314,16 @@ export function createAdminApp(
     v1.post('/users/:id/delete', guard('delete'), async (ctx) => {
         const i = await body(ctx, adminDeleteBody);
         return ctx.json(
-            await admin.deleteAccount(ctx.get('staff'), userId(ctx), i.confirmEmail, i.reason),
+            await admin.deleteAccount(ctx.get('staff'), userId(ctx), i.confirmEmail, i.reason, {
+                reason: i.category,
+                notify: i.notify,
+            }),
+        );
+    });
+    v1.post('/deleted-accounts/purge', guard('delete'), async (ctx) => {
+        const { reason } = await body(ctx, adminReasonBody);
+        return ctx.json(
+            adminPurgeResultSchema.parse(await admin.purgeDeletedAccounts(ctx.get('staff'), reason)),
         );
     });
     v1.get('/beta', guard('read'), async (ctx) =>

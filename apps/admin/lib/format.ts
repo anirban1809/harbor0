@@ -54,6 +54,7 @@ export const actionLabels: Record<string, string> = {
   SUSPENDED: 'Suspended account',
   UNSUSPENDED: 'Restored account',
   ACCOUNT_DELETED: 'Deleted account',
+  ACCOUNT_PURGED: 'Purged deleted account now',
   NOTE: 'Added a note',
   BETA_WAVE: 'Opened a beta wave',
 };

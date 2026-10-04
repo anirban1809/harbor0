@@ -21,9 +21,14 @@ import { Button } from '../../../web/components/ui/button';
 import { Card } from '../../../web/components/ui/card';
 import { Field } from '../../../web/components/ui/field';
 import { Input, Textarea } from '../../../web/components/ui/input';
+import { Select } from '../../../web/components/ui/select';
+import { Checkbox } from '../../../web/components/ui/checkbox';
 import { DataTable } from '../../../web/components/ui/table';
 import { Skeleton } from '../../../web/components/ui/skeleton';
-import type { AdminUserDetail } from '../../../../packages/contracts/src/admin';
+import type {
+  AdminUserDetail,
+  StaffDeletionReason,
+} from '../../../../packages/contracts/src/admin';
 import { MAX_ADMIN_QUOTA } from '../../../../packages/contracts/src/admin';
 import { AuditList } from '../../components/audit-list';
 import { ReasonDialog } from '../../components/reason-dialog';
@@ -139,6 +144,23 @@ function QuotaFields({
   );
 }
 
+// Each reason sends the account holder its own email (apps/backend/src/emails.ts).
+const deletionReasons: [StaffDeletionReason, string, string][] = [
+  ['USER_REQUEST', 'The account holder asked', 'Confirms we deleted the account as they asked.'],
+  [
+    'TERMS_VIOLATION',
+    'Breaks the terms of use',
+    'Says the account was closed for breaking the terms of use.',
+  ],
+  ['ABUSE', 'Spam, fraud or abuse', 'Says the account was closed for spam, fraud or abuse.'],
+  [
+    'DUPLICATE',
+    'Duplicate account',
+    "Says a duplicate was closed and their other account isn't affected.",
+  ],
+  ['OTHER', 'Other', 'Says the harbor0 team closed the account, without a reason.'],
+];
+
 function Detail({ id }: { id: string }) {
   const queries = useQueryClient();
   const detail = useQuery({ queryKey: ['user', id], queryFn: () => api.user(id) });
@@ -146,6 +168,8 @@ function Detail({ id }: { id: string }) {
   const [notice, setNotice] = useState('');
   const [quota, setQuota] = useState('');
   const [confirmEmail, setConfirmEmail] = useState('');
+  const [deletionReason, setDeletionReason] = useState<StaffDeletionReason | ''>('');
+  const [notifyDeletion, setNotifyDeletion] = useState(true);
   const [note, setNote] = useState('');
   const [allDevices, setAllDevices] = useState(false);
   const canQuota = useCan('quota');
@@ -193,7 +217,11 @@ function Detail({ id }: { id: string }) {
   const open = (d: Dialog) => {
     setNotice('');
     if (d.kind === 'quota') setQuota(String((profile?.storage.quotaBytes ?? 0) / GB));
-    if (d.kind === 'delete') setConfirmEmail('');
+    if (d.kind === 'delete') {
+      setConfirmEmail('');
+      setDeletionReason('');
+      setNotifyDeletion(true);
+    }
     setDialog(d);
   };
   const submitNote = (event: FormEvent) => {
@@ -249,7 +277,10 @@ function Detail({ id }: { id: string }) {
       )}
       {deleted && (
         <Alert tone="warning" role="none">
-          Deleted {relative(profile!.deletedAt)}. Files are purged after {date(profile!.purgeAt)}.
+          Deleted {relative(profile!.deletedAt)}.{' '}
+          {profile!.purgeAt && profile!.purgeAt <= new Date().toISOString()
+            ? `Files purged from ${date(profile!.purgeAt)}.`
+            : `Files are purged after ${date(profile!.purgeAt)}.`}
         </Alert>
       )}
       {!profile && !deleted && (
@@ -556,12 +587,51 @@ function Detail({ id }: { id: string }) {
           }
           confirmLabel="Delete account"
           danger
-          canSubmit={confirmEmail.trim().toLowerCase() === account.email.toLowerCase()}
+          canSubmit={
+            !!deletionReason && confirmEmail.trim().toLowerCase() === account.email.toLowerCase()
+          }
           onConfirm={async (reason) => {
-            const result = await api.deleteAccount(id, confirmEmail.trim(), reason);
+            if (!deletionReason) return;
+            const result = await api.deleteAccount(
+              id,
+              confirmEmail.trim(),
+              reason,
+              deletionReason,
+              notifyDeletion,
+            );
             done(`Account deleted. Files are purged after ${date(result.purgeAt)}.`);
           }}
         >
+          <Field
+            label="Why is this account being deleted?"
+            hint={
+              deletionReasons.find(([value]) => value === deletionReason)?.[2] ??
+              'The account holder gets an email written for the reason you choose.'
+            }
+          >
+            <Select
+              block
+              required
+              value={deletionReason}
+              onChange={(e) => setDeletionReason(e.target.value as StaffDeletionReason)}
+            >
+              <option value="" disabled>
+                Choose a reason
+              </option>
+              {deletionReasons.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <label className="admin-checkbox">
+            <Checkbox
+              checked={notifyDeletion}
+              onChange={(e) => setNotifyDeletion(e.target.checked)}
+            />
+            Email the account holder at {account.email}
+          </label>
           <Field
             label={
               <>

@@ -72,6 +72,7 @@ class FolderBackups(private val api: HarborApi, private val journal: SyncJournal
             // Nothing changed: no backup is recorded, and a Back up now request is settled.
             if (ready.isEmpty()) {
                 if (manual) journal.set("backup-now:${root.id}", false)
+                upToDate(root, url)
                 return
             }
             val created = PendingRun(UUID.randomUUID().toString(), if (manual) "MANUAL" else "AUTOMATIC", ready)
@@ -225,6 +226,18 @@ class FolderBackups(private val api: HarborApi, private val journal: SyncJournal
         if (walk(root.remoteId!!, "")) journal.root(root.copy(archive = null, archiveError = null))
     }
 
+    /**
+     * Nothing new records no run, so harbor0 is told the folder is still backed up; otherwise an
+     * untouched folder would get a stale-backup reminder. Waiting changes don't count.
+     */
+    private suspend fun upToDate(root: SyncRoot, url: String) {
+        if (journal.jobs(root.id).isNotEmpty()) return
+        val key = "backup-checked:${root.id}"
+        val now = System.currentTimeMillis()
+        if (now - (journal.get<Long>(key) ?: 0L) < 12 * 3600_000L) return
+        api.request("$url/checked", "POST")
+        journal.set(key, now)
+    }
     private suspend fun restores(root: SyncRoot, url: String) {
         if (System.currentTimeMillis() < (nextRestoreCheck[root.id] ?: 0)) return
         nextRestoreCheck[root.id] = System.currentTimeMillis() + 10_000

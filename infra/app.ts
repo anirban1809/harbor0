@@ -112,6 +112,16 @@ const registration = new lambda.Function(stack, 'Registration', {
 });
 table.grantReadWriteData(registration);
 pool.addTrigger(cognito.UserPoolOperation.PRE_SIGN_UP, registration);
+// Queues the password-changed email after a reset, however the reset was made.
+const passwordNotices = new lambda.Function(stack, 'PasswordNotices', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.postConfirmation',
+  code: lambda.Code.fromAsset('dist/backend'),
+  timeout: Duration.seconds(10),
+  environment: { TABLE_NAME: table.tableName, NODE_ENV: 'production' },
+});
+table.grantReadWriteData(passwordNotices);
+pool.addTrigger(cognito.UserPoolOperation.POST_CONFIRMATION, passwordNotices);
 // Cognito's verification, reset and invitation mail is rendered as branded HTML; each pool
 // gets its own function so its links point at the right app.
 const brandEmails = (userPool: cognito.UserPool, id: string, signInUrl: string) =>

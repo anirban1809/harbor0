@@ -76,9 +76,9 @@ private struct RootView: View {
     }
 }
 
-// MARK: - Sign in, sign up, confirm, forgot and reset (auth-page.tsx)
+// MARK: - Sign in, confirm, forgot and reset (auth-page.tsx); accounts are created on the web
 
-enum AuthMode { case login, signup, confirm, forgot, reset }
+enum AuthMode { case login, confirm, forgot, reset }
 
 struct AuthScreen: View {
     @ObservedObject var api: HarborAPI
@@ -87,9 +87,6 @@ struct AuthScreen: View {
     @State private var mode: AuthMode = .login
     @State private var email = ""
     @State private var password = ""
-    @State private var displayName = ""
-    @State private var username = ""
-    @State private var usernameEdited = false
     @State private var code = ""
     @State private var error: String?
     @State private var unverified = false
@@ -101,13 +98,12 @@ struct AuthScreen: View {
     private var copy: (title: String, lead: String, submit: String, busy: String) {
         switch mode {
         case .login: ("Welcome back", "Sign in to your files.", "Sign in", "Signing in…")
-        case .signup: ("Create your account", "50 GB of private storage, free.", "Create your account", "Creating account…")
         case .confirm: ("Check your email", "Enter the 6-digit code we sent you.", "Verify email", "Verifying…")
         case .forgot: ("Reset your password", "Enter your account email and we’ll send you a reset code.", "Send reset code", "Sending…")
         case .reset: ("Set a new password", "Enter the code from your email and choose a new password.", "Reset password", "Saving…")
         }
     }
-    private var newPassword: Bool { mode == .signup || mode == .reset }
+    private var newPassword: Bool { mode == .reset }
 
     var body: some View {
         ScrollView {
@@ -157,21 +153,7 @@ struct AuthScreen: View {
             }
             VStack(alignment: .leading, spacing: 16) {
                 Field(label: "Email") {
-                    TextInput(placeholder: "you@example.com", text: Binding(get: { email }, set: { value in
-                        email = value
-                        if !usernameEdited { username = Self.usernameFrom(value) }
-                    }), large: true, keyboard: .emailAddress, content: .username, identifier: "email") { submit() }
-                }
-                if mode == .signup {
-                    Field(label: "Display name") {
-                        TextInput(placeholder: "Your name", text: $displayName, large: true, content: .name, autocapitalize: true, identifier: "displayName")
-                    }
-                    Field(label: "Username", hint: "People can send files directly to your @username.") {
-                        TextInput(placeholder: "", text: Binding(get: { username }, set: { value in
-                            usernameEdited = true
-                            username = value.lowercased().filter { $0.isLetter && $0.isASCII || $0.isNumber || $0 == "_" || $0 == "." }
-                        }), prefix: "@", large: true, content: .username, identifier: "username")
-                    }
+                    TextInput(placeholder: "you@example.com", text: $email, large: true, keyboard: .emailAddress, content: .username, identifier: "email") { submit() }
                 }
                 if mode == .confirm || mode == .reset {
                     Field(label: "Verification code") {
@@ -182,7 +164,7 @@ struct AuthScreen: View {
                             .modifier(InputChrome(focused: false, large: true))
                     }
                 }
-                if mode == .login || mode == .signup || mode == .reset {
+                if mode == .login || mode == .reset {
                     Field(label: mode == .reset ? "New password" : "Password") {
                         if mode == .login {
                             Button("Forgot password?") { go(.forgot) }.harborButton(.link).font(TypeScale.sm).accessibilityIdentifier("forgotPassword")
@@ -227,11 +209,8 @@ struct AuthScreen: View {
                 HStack(spacing: 4) {
                     switch mode {
                     case .login:
-                        Text("New to harbor0?").foregroundStyle(tokens.text2)
-                        Button("Create an account") { go(.signup) }.harborButton(.link).accessibilityIdentifier("createAccount")
-                    case .signup:
-                        Text("Already have an account?").foregroundStyle(tokens.text2)
-                        Button("Sign in") { go(.login) }.harborButton(.link)
+                        Text("New to harbor0? Create an account in the harbor0 web app, then sign in here.")
+                            .foregroundStyle(tokens.text2)
                     default:
                         Button("Back to sign in") { go(.login) }.harborButton(.link)
                     }
@@ -268,15 +247,10 @@ struct AuthScreen: View {
         let hasEmail = !email.trimmingCharacters(in: .whitespaces).isEmpty
         switch mode {
         case .login: return hasEmail && !password.isEmpty
-        case .signup: return hasEmail && !displayName.trimmingCharacters(in: .whitespaces).isEmpty && username.count >= 3 && password.count >= 12
         case .confirm: return hasEmail && !code.isEmpty
         case .forgot: return hasEmail
         case .reset: return hasEmail && !code.isEmpty && password.count >= 12
         }
-    }
-
-    static func usernameFrom(_ email: String) -> String {
-        String(email.split(separator: "@").first.map(String.init)?.lowercased().filter { ($0.isLetter && $0.isASCII) || $0.isNumber || $0 == "_" || $0 == "." }.prefix(32) ?? "")
     }
 
     private func go(_ next: AuthMode, notice text: String? = nil) {
@@ -308,11 +282,6 @@ struct AuthScreen: View {
                 case .login:
                     try await api.login(email: address, password: password, deviceName: UIDevice.current.model)
                     password = ""
-                case .signup:
-                    let _: EmptyResponse = try await api.publicRequest("/v1/auth/signup", body: ["email": address, "password": password,
-                        "displayName": displayName.trimmingCharacters(in: .whitespaces), "username": username])
-                    startCooldown()
-                    go(.confirm, notice: "We sent a verification code to \(address).")
                 case .confirm:
                     let _: EmptyResponse = try await api.publicRequest("/v1/auth/confirm", body: ["email": address, "code": code.trimmingCharacters(in: .whitespaces)])
                     code = ""

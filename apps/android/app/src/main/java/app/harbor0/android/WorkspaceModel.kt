@@ -22,7 +22,7 @@ enum class Section(val title: String) {
     Sync("Sync"), Devices("Devices"), Storage("Storage"), Settings("Settings"), Notifications("Notifications");
     val inMore get() = this in listOf(Sync, Devices, Storage, Settings, Notifications)
 }
-enum class AuthMode { Login, Signup, Confirm, Forgot, Reset }
+enum class AuthMode { Login, Confirm, Forgot, Reset }
 data class Confirmation(val title: String, val description: String, val label: String, val done: String? = null,
     val danger: Boolean = true, val cancel: String = "Go back", val note: String? = null, val run: suspend () -> Unit)
 data class ActivityEntry(val id: String, val message: String, val status: String, val time: Long, val read: Boolean = false)
@@ -232,13 +232,6 @@ class WorkspaceModel(application: Application): AndroidViewModel(application) {
         authEmail = email.trim()
         api.login(email, password, "${Build.MANUFACTURER} ${Build.MODEL}")
         opened()
-    }
-    fun signup(email: String, displayName: String, username: String, password: String) = authAction {
-        authEmail = email.trim()
-        api.anonymous("/v1/auth/signup", buildJsonObject {
-            put("email", email.trim()); put("password", password); put("username", username); put("displayName", displayName.trim())
-        })
-        startCooldown(); authGo(AuthMode.Confirm, "We sent a verification code to ${email.trim()}.")
     }
     fun confirmEmail(email: String, code: String) = authAction {
         api.anonymous("/v1/auth/confirm", buildJsonObject { put("email", email.trim()); put("code", code.trim()) })

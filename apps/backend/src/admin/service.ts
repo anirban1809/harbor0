@@ -7,10 +7,11 @@ import type {
     AuditEntry,
     DirectoryUser,
     Staff,
+    StaffDeletionReason,
     StorageTotals,
 } from '../../../../packages/contracts/src/admin';
 import type { BackupRoot } from '../../../../packages/contracts/src/backups';
-import { StorageService, userPK, type Account } from '../domain';
+import { StorageService, userPK, type Account, type Job } from '../domain';
 import { assert } from '../errors';
 import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
@@ -84,7 +85,7 @@ export class AdminService {
         const cached = await this.repo.get({ pk: 'ADMIN_STATS', sk: 'STORAGE' });
         // Totals cached before a field was added are recomputed rather than served incomplete.
         const age =
-            cached && (cached.data as Partial<StorageTotals>).orphans
+            cached && (cached.data as Partial<StorageTotals>).awaitingPurge
                 ? Date.now() - Date.parse((cached.data as StorageTotals).computedAt)
                 : Infinity;
         if (cached && age < (refresh ? STORAGE_TOTALS_MIN_REFRESH_MS : STORAGE_TOTALS_MAX_AGE_MS))
@@ -98,14 +99,20 @@ export class AdminService {
             trashBytes: 0,
             pendingDeletionBytes: 0,
             deletedAccounts: 0,
+            awaitingPurge: { accounts: 0, usedBytes: 0 },
             orphans: { accounts: 0, usedBytes: 0, allocatedBytes: 0 },
         };
         const [profiles, signIns] = await Promise.all([this.repo.scanProfiles(), this.directory.ids()]);
+        const at = new Date().toISOString();
         for (const p of profiles) {
             totals.pendingDeletionBytes += p.purgingBytes ?? 0;
             if (p.deletedAt) {
                 totals.deletedAccounts++;
                 totals.pendingDeletionBytes += p.storageUsedBytes ?? 0;
+                if (p.purgeAt && p.purgeAt > at) {
+                    totals.awaitingPurge.accounts++;
+                    totals.awaitingPurge.usedBytes += p.storageUsedBytes ?? 0;
+                }
                 continue;
             }
             if (p.id && !signIns.has(p.id)) {
@@ -283,7 +290,15 @@ export class AdminService {
     async signOut(staff: Staff, userId: string, reason: string) {
         const user = await this.live(userId);
         await this.directory.signOut(userId);
-        const sessions = (await this.profile(userId)) ? await this.service.signOutAll(userId) : 0;
+        const account = await this.profile(userId);
+        const sessions = account ? await this.service.signOutAll(userId) : 0;
+        await transact(this.repo, (tx) =>
+            this.service.email(tx, `signed-out-${userId}-${Date.now()}`, {
+                template: 'SIGNED_OUT',
+                to: user.email,
+                name: account?.displayName ?? '',
+            }),
+        );
         await this.record(staff, {
             action: 'SIGNED_OUT_EVERYWHERE',
             userId,
@@ -297,6 +312,14 @@ export class AdminService {
         const account = await this.profile(userId);
         assert(account, 'USER_NOT_FOUND', 'No account has this ID.', 404);
         const { device } = await this.service.signOutDevice(userId, deviceId);
+        await transact(this.repo, (tx) =>
+            this.service.email(tx, `signed-out-${deviceId}-${Date.now()}`, {
+                template: 'SIGNED_OUT',
+                to: account.email,
+                name: account.displayName,
+                device: device.name,
+            }),
+        );
         await this.record(staff, {
             action: 'DEVICE_SIGNED_OUT',
             userId,
@@ -352,7 +375,16 @@ export class AdminService {
      * Deletes the account the way a user's own deletion does: files are purged after the grace
      * period, the email and username are released, and the sign-in account is removed now.
      */
-    async deleteAccount(staff: Staff, userId: string, confirmEmail: string, reason: string) {
+    async deleteAccount(
+        staff: Staff,
+        userId: string,
+        confirmEmail: string,
+        reason: string,
+        closedBy: { reason: StaffDeletionReason; notify: boolean } = {
+            reason: 'OTHER',
+            notify: true,
+        },
+    ) {
         const [user, account] = await Promise.all([this.directory.get(userId), this.profile(userId)]);
         const email = user?.email ?? account?.email;
         assert(email, 'USER_NOT_FOUND', 'No account has this ID.', 404);
@@ -363,10 +395,11 @@ export class AdminService {
         );
         let purgeAt: string | null = account?.purgeAt ?? null;
         if (account && !account.deletedAt)
-            ({ purgeAt } = await this.service.deleteAccount(userId, {
-                operationId: randomUUID(),
-                email: account.email,
-            }));
+            ({ purgeAt } = await this.service.deleteAccount(
+                userId,
+                { operationId: randomUUID(), email: account.email },
+                closedBy,
+            ));
         if (user) await this.directory.delete(userId);
         await transact(this.repo, (tx) => tx.delete('ADMIN_STATS', 'STORAGE'));
         await this.record(staff, {
@@ -374,9 +407,47 @@ export class AdminService {
             userId,
             userEmail: email,
             reason,
-            details: { purgeAt },
+            details: { purgeAt, category: closedBy.reason, notified: closedBy.notify },
         });
         return { deleted: true, purgeAt };
+    }
+    /**
+     * Ends the grace period of every deleted account now: each account's purge job falls due at
+     * once, and the background worker (which, unlike the console, can reach file storage) removes
+     * its files within a minute or so. Cannot be undone.
+     */
+    async purgeDeletedAccounts(staff: Staff, reason: string) {
+        const at = new Date().toISOString();
+        const waiting = (await this.repo.scanProfiles()).filter(
+            (p) => p.id && p.deletedAt && p.purgeAt && p.purgeAt > at,
+        );
+        let accounts = 0;
+        let usedBytes = 0;
+        for (const p of waiting) {
+            const purged = await transact(this.repo, async (tx) => {
+                const account = await tx.get<Account>(userPK(p.id!), 'PROFILE');
+                if (!account?.deletedAt || !account.purgeAt || account.purgeAt <= at) return false;
+                const previous = account.purgeAt;
+                account.purgeAt = at;
+                account.updatedAt = at;
+                await tx.put(userPK(p.id!), 'PROFILE', account);
+                const job = await tx.get<Job>('JOB', `account-${p.id}`);
+                if (job) await this.service.job(tx, { ...job, dueAt: at });
+                await this.audit(tx, staff, {
+                    action: 'ACCOUNT_PURGED',
+                    userId: p.id,
+                    userEmail: account.email,
+                    reason,
+                    details: { previousPurgeAt: previous, usedBytes: account.storageUsedBytes ?? 0 },
+                });
+                return true;
+            });
+            if (!purged) continue;
+            accounts++;
+            usedBytes += p.storageUsedBytes ?? 0;
+        }
+        if (accounts) await transact(this.repo, (tx) => tx.delete('ADMIN_STATS', 'STORAGE'));
+        return { accounts, usedBytes };
     }
     async note(staff: Staff, userId: string, text: string) {
         const [user, account] = await Promise.all([this.directory.get(userId), this.profile(userId)]);

@@ -1,6 +1,7 @@
-import type { PreSignUpTriggerEvent } from 'aws-lambda';
+import type { PostConfirmationTriggerEvent, PreSignUpTriggerEvent } from 'aws-lambda';
 import { BETA, username, normalizeEmail } from '@harbor/contracts';
-import { DynamoRepository, transact } from './repository';
+import { DynamoRepository, transact, Transaction } from './repository';
+import { queueEmail, userPK, type Account } from './domain';
 import { assert } from './errors';
 import { Beta } from './beta';
 export async function preSignup(event: PreSignUpTriggerEvent) {
@@ -32,5 +33,30 @@ export async function preSignup(event: PreSignUpTriggerEvent) {
         { expiresAt: Math.floor(Date.now() / 1000) + 7 * 86400 },
       );
   });
+  return event;
+}
+
+/** Cognito runs this after a password reset by any route, including its hosted pages. */
+export async function postConfirmation(event: PostConfirmationTriggerEvent) {
+  if (event.triggerSource !== 'PostConfirmation_ConfirmForgotPassword') return event;
+  const attributes = event.request.userAttributes;
+  const email = normalizeEmail(attributes.email ?? '');
+  if (!email) return event;
+  // The new password is already set, so a failure here must not fail the reset.
+  try {
+    const repo = new DynamoRepository(process.env.TABLE_NAME!);
+    const account = await new Transaction(repo).get<Account>(userPK(attributes.sub), 'PROFILE');
+    const at = new Date().toISOString();
+    await transact(repo, (tx) =>
+      queueEmail(tx, `password-${attributes.sub}-${at}`, {
+        template: 'PASSWORD_CHANGED',
+        to: email,
+        name: account?.displayName || attributes.name || attributes.preferred_username,
+        at,
+      }),
+    );
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'password_notice_failed', error: String(error) }));
+  }
   return event;
 }

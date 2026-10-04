@@ -124,6 +124,8 @@ export const storageTotalsSchema = z.object({
   /** Still in storage but leaving: emptied trash being purged, and deleted accounts' files. */
   pendingDeletionBytes: z.number(),
   deletedAccounts: z.number(),
+  /** Deleted accounts still in their grace period, whose files have not started purging. */
+  awaitingPurge: z.object({ accounts: z.number(), usedBytes: z.number() }),
   /**
    * Profiles whose sign-in account no longer exists but which were never deleted through the
    * app (e.g. removed directly in Cognito). Excluded from the totals above.
@@ -156,10 +158,27 @@ export const MAX_BETA_CAP = 100_000;
 export const adminWaveBody = z
   .object({ cap: z.number().int().min(1).max(MAX_BETA_CAP), reason })
   .strict();
+export const adminPurgeResultSchema = z.object({ accounts: z.number(), usedBytes: z.number() });
 export const adminNoteBody = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
-export const adminDeleteBody = z.object({ confirmEmail: z.string().max(254), reason }).strict();
+/** Why staff deleted an account; each sends the account holder its own email. */
+export const staffDeletionReason = z.enum([
+  'USER_REQUEST',
+  'TERMS_VIOLATION',
+  'ABUSE',
+  'DUPLICATE',
+  'OTHER',
+]);
+export const adminDeleteBody = z
+  .object({
+    confirmEmail: z.string().max(254),
+    reason,
+    category: staffDeletionReason,
+    notify: z.boolean().default(true),
+  })
+  .strict();
 
 export type Staff = z.infer<typeof staffSchema>;
+export type StaffDeletionReason = z.infer<typeof staffDeletionReason>;
 export type StaffRole = z.infer<typeof staffRole>;
 export type StaffLoginResult = z.infer<typeof staffLoginResultSchema>;
 export type AccountStatus = z.infer<typeof accountStatus>;
@@ -171,4 +190,5 @@ export type AdminUserPage = z.infer<typeof adminUserPageSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;
+export type AdminPurgeResult = z.infer<typeof adminPurgeResultSchema>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;

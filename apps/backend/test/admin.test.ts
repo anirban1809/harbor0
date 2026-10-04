@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
-import { StorageService } from '../src/domain';
+import { StorageService, type Job } from '../src/domain';
 import { MemoryRepository } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
@@ -180,6 +180,12 @@ describe('management console API', () => {
     ).json();
     expect(result.sessions).toBe(1);
     expect((await asUser('/v1/users/me')).status).toBe(401);
+    const emails = [...(service.repo as MemoryRepository).rows.values()]
+      .map((row) => (row.data as Job).email)
+      .filter((email) => email?.template === 'SIGNED_OUT');
+    expect(emails).toEqual([
+      { template: 'SIGNED_OUT', to: 'alice@example.test', name: 'Alice Morgan' },
+    ]);
   });
 
   it('only resets passwords for verified accounts, and confirms unverified ones', async () => {
@@ -217,17 +223,55 @@ describe('management console API', () => {
         await call(admin, 'POST', '/users/bob/delete', {
           confirmEmail: 'alice@example.test',
           reason: 'Requested',
+          category: 'USER_REQUEST',
         })
       ).status,
     ).toBe(400);
     const deleted = await call(admin, 'POST', '/users/bob/delete', {
       confirmEmail: 'BOB@example.test',
       reason: 'GDPR erasure request',
+      category: 'USER_REQUEST',
     });
     expect(await deleted.json()).toMatchObject({ deleted: true });
+    const job = await service.repo.get({ pk: 'JOB', sk: 'account-deleted-bob' });
+    expect((job?.data as Job).email).toMatchObject({
+      template: 'ACCOUNT_CLOSED',
+      reason: 'USER_REQUEST',
+      to: 'bob@example.test',
+    });
     const detail = await (await call(admin, 'GET', '/users/bob')).json();
     expect(detail.profile.deletedAt).toBeTruthy();
     expect(detail.activity[0].action).toBe('ACCOUNT_DELETED');
+  });
+
+  it('purges every deleted account now, admins only', async () => {
+    const admin = await signIn('admin@example.test');
+    const support = await signIn('support@example.test');
+    await call(admin, 'POST', '/users/bob/delete', {
+      confirmEmail: 'bob@example.test',
+      reason: 'Requested',
+      category: 'USER_REQUEST',
+    });
+    const before = await (await call(admin, 'GET', '/overview')).json();
+    expect(before.storage.awaitingPurge).toEqual({ accounts: 1, usedBytes: 0 });
+    expect(
+      (await call(support, 'POST', '/deleted-accounts/purge', { reason: 'Free space' })).status,
+    ).toBe(403);
+    const purged = await call(admin, 'POST', '/deleted-accounts/purge', { reason: 'Free space' });
+    expect(await purged.json()).toEqual({ accounts: 1, usedBytes: 0 });
+    const job = (await service.repo.get({ pk: 'JOB', sk: 'account-bob' }))!;
+    expect(Date.parse(job.gsk!)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse((job.data as Job).dueAt)).toBeLessThanOrEqual(Date.now());
+    const detail = await (await call(admin, 'GET', '/users/bob')).json();
+    expect(Date.parse(detail.profile.purgeAt)).toBeLessThanOrEqual(Date.now());
+    expect(detail.activity[0]).toMatchObject({ action: 'ACCOUNT_PURGED', reason: 'Free space' });
+    const after = await (await call(admin, 'GET', '/overview')).json();
+    expect(after.storage.awaitingPurge.accounts).toBe(0);
+    // Already due, so a second run has nothing to do.
+    const again = await call(admin, 'POST', '/deleted-accounts/purge', { reason: 'Again' });
+    expect(await again.json()).toEqual({ accounts: 0, usedBytes: 0 });
+    await service.runJobs();
+    expect(await service.repo.get({ pk: 'JOB', sk: 'account-bob' })).toBeUndefined();
   });
 
   it('records support notes', async () => {
@@ -261,7 +305,10 @@ describe('management console API', () => {
     await call(admin, 'POST', '/users/alice/delete', {
       confirmEmail: 'alice@example.test',
       reason: 'Requested',
+      category: 'DUPLICATE',
+      notify: false,
     });
+    expect(await repo.get({ pk: 'JOB', sk: 'account-deleted-alice' })).toBeUndefined();
     const afterDelete = await (await call(admin, 'GET', '/overview')).json();
     expect(afterDelete.storage).toMatchObject({
       accounts: 1,

@@ -3,6 +3,9 @@ import { ApiError, SESSION_DURATION_SECONDS } from '@harbor/api-client';
 type Tokens = { accessToken: string; refreshToken: string; expiresIn: number };
 export type SavedSession = { refreshToken: string; expiresAt: number };
 
+/** A failed session renewal, as opposed to a failed request made with the session. */
+export class RenewalError extends ApiError {}
+
 export function isSessionError(error: unknown) {
   return (
     error instanceof ApiError &&

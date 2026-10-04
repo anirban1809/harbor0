@@ -131,6 +131,12 @@ export function createApp(
         ],
         CodeMismatchException: ['AUTH_INVALID', 'The verification code is incorrect.', 400],
         ExpiredCodeException: ['AUTH_EXPIRED', 'The verification code expired.', 400],
+        // The refresh token was already rotated (by another client or a lost response).
+        RefreshTokenReuseException: [
+          'AUTH_INVALID',
+          'Your session expired. Sign in again.',
+          401,
+        ],
         TooManyRequestsException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         LimitExceededException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         InvalidPasswordException: ['VALIDATION_ERROR', 'Use a stronger password.', 400],
@@ -1308,6 +1314,14 @@ export function createApp(
         ),
     );
   }
+  add(
+    'post',
+    '/v1/backups/:id/checked',
+    'Report that a backup folder has nothing new to back up',
+    undefined,
+    z.object({ checked: z.boolean() }),
+    async (ctx) => backupWorkflows.checked(userId(ctx), p(ctx, 'id'), backupDevice(ctx)),
+  );
   add(
     'post',
     '/v1/backups/:id/runs',
