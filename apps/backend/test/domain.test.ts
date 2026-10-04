@@ -852,4 +852,32 @@ describe('instant permanent deletion', () => {
       (await service.browseSpecial('alice', { trash: 'true' })).items.map((i) => i.id),
     ).toEqual([later.id]);
   });
+
+  it('keeps a file trashed on its own when its folder is permanently deleted', async () => {
+    const outer = await folder('Outer');
+    await uploaded('a.txt', 'a'.repeat(10), outer.id);
+    const loose = await trash((await uploaded('own.txt', 'o'.repeat(7), outer.id)).item);
+    const trashedOuter = await trash(outer);
+    await drain();
+    expect(await ledger()).toEqual({ used: 17, trash: 17, purging: 0 });
+    await service.permanentDelete('alice', outer.id, {
+      operationId: op(),
+      baseRevision: trashedOuter.revision,
+    });
+    await drain();
+    // Only the folder's own contents are gone; the separately trashed file is still restorable.
+    expect(await ledger()).toEqual({ used: 7, trash: 7, purging: 0 });
+    expect(
+      (await service.browseSpecial('alice', { trash: 'true' })).items.map((i) => i.id),
+    ).toEqual([loose.id]);
+    const restored = (
+      await service.mutate('alice', loose.id, {
+        operationId: op(),
+        baseRevision: loose.revision,
+        action: 'restore',
+      })
+    ).item;
+    expect(restored.parentId).toBeNull();
+    expect((await service.list('alice', null)).items.map((i) => i.name)).toEqual(['own.txt']);
+  });
 });

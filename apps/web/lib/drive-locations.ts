@@ -1,3 +1,4 @@
+import { ApiError } from '@harbor/api-client';
 import type { DriveItem } from '@harbor/contracts';
 export type DriveLocation = 'Cloud' | 'Backup' | 'Sync';
 // Resolve ancestry for deep links and search results, not just the current folder.
@@ -25,7 +26,14 @@ export function driveLocations(
         throw new Error('Could not identify this folder location.');
       seen.add(current.parentId);
       if (!cache.has(current.parentId)) cache.set(current.parentId, load(current.parentId));
-      current = await cache.get(current.parentId)!;
+      try {
+        current = await cache.get(current.parentId)!;
+      } catch (error) {
+        // A folder shared from inside someone's private folder: the walk stops at the share.
+        if (error instanceof ApiError && [403, 404].includes(error.status))
+          return { location: sync ? 'Sync' : 'Cloud' };
+        throw error;
+      }
     }
   };
 }

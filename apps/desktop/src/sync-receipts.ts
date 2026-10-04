@@ -173,7 +173,8 @@ export class SyncReceipts {
       }
       if (root.paused) continue;
       try {
-        const full = await safeParents(root.localPath, receipt.relative);
+        // Only checks what is there: recreating a parent would undo the user deleting it.
+        const full = await safeParents(root.localPath, receipt.relative, false);
         const stat = await lstat(full);
         if (receipt.item.type === 'FILE') {
           if (!stat.isFile() || (await hashFile(full)) !== receipt.hash) {

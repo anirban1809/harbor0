@@ -286,6 +286,10 @@ export class DeletionWorkflows {
           );
           for (const row of children.rows) {
             const childId = (row.data as { id: string }).id;
+            // A descendant trashed on its own is listed in the trash by itself; it stays there
+            // (restoring it to My Drive once this parent is gone) until it is deleted itself.
+            const child = await tx.get<PurgingItem>(userPK(userId), `ITEM#${childId}`);
+            if (child?.deletedAt) continue;
             if (!(await tx.get(`PURGE#${id}`, `WORK#${childId}`)))
               await tx.put(`PURGE#${id}`, `WORK#${childId}`, {
                 itemId: childId,

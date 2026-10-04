@@ -1220,6 +1220,7 @@ export class SyncEngine {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       }
       if (root.mode === 'backup') return;
+      if (known?.type === 'FILE' && (await this.renamedTo(root, known))) return;
       if (known) {
         try {
           await this.api.request(`/v1/drive/items/${known.itemId}`, {
@@ -1276,6 +1277,7 @@ export class SyncEngine {
       }
       return;
     }
+    if (root.mode === 'sync' && !known && (await this.renamedFrom(root, job.relativePath))) return;
     if (root.mode === 'backup') {
       await safeParents(root.localPath, job.relativePath, false);
       const remote = known
@@ -1452,6 +1454,136 @@ export class SyncEngine {
     }
     return false;
   }
+  /**
+   * A local rename or move arrives as a deletion plus a new file, in either order. When both are
+   * queued and the new file holds the deleted one's content, the cloud item is moved instead:
+   * nothing is uploaded again, and the cloud copy never leaves, even when storage is full.
+   */
+  private async renamedTo(root: Root, known: LocalFile) {
+    for (const other of this.journal.jobs())
+      if (
+        other.rootId === root.id &&
+        other.kind === 'upsert' &&
+        !this.journal.file(root.id, other.relativePath) &&
+        (await this.sameContent(root, other.relativePath, known)) &&
+        (await this.moveRemote(root, known, other.relativePath))
+      ) {
+        this.journal.finish(other.id);
+        return true;
+      }
+    return false;
+  }
+  private async renamedFrom(root: Root, relative: string) {
+    for (const other of this.journal.jobs()) {
+      if (other.rootId !== root.id || other.kind !== 'delete') continue;
+      const known = this.journal.file(root.id, other.relativePath);
+      if (known?.type !== 'FILE' || (await this.exists(root, other.relativePath))) continue;
+      if (
+        (await this.sameContent(root, relative, known)) &&
+        (await this.moveRemote(root, known, relative))
+      ) {
+        this.journal.finish(other.id);
+        return true;
+      }
+    }
+    return false;
+  }
+  private async exists(root: Root, relative: string) {
+    try {
+      await lstat(contained(root.localPath, relative));
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      return false;
+    }
+  }
+  /** Only files of the recorded size are hashed; an unreadable one is simply not a match. */
+  private async sameContent(root: Root, relative: string, known: LocalFile) {
+    if (!known.hash || known.sizeBytes === undefined) return false;
+    const full = contained(root.localPath, relative);
+    try {
+      const info = await lstat(full);
+      if (!info.isFile() || info.size !== known.sizeBytes) return false;
+      return (await hashFile(full)) === known.hash;
+    } catch {
+      return false;
+    }
+  }
+  /** Moves and renames `known`'s cloud item to `relative`; false when the cloud refuses. */
+  private async moveRemote(root: Root, known: LocalFile, relative: string) {
+    const info = await lstat(contained(root.localPath, relative));
+    const oldDir = path.posix.dirname(known.relativePath);
+    const oldParent = oldDir === '.' ? root.remoteId : this.journal.file(root.id, oldDir)?.itemId;
+    const name = path.posix.basename(relative);
+    let item: DriveItem | undefined;
+    let revision = known.revision;
+    try {
+      const parentId = await this.remoteParent(root, relative);
+      if (parentId !== oldParent) {
+        item = (
+          await this.api.request(`/v1/drive/items/${known.itemId}/move`, {
+            method: 'POST',
+            body: { operationId: crypto.randomUUID(), baseRevision: revision, parentId },
+          })
+        ).item;
+        revision = item!.revision;
+      }
+      if (name !== path.posix.basename(known.relativePath))
+        item = (
+          await this.api.request(`/v1/drive/items/${known.itemId}`, {
+            method: 'PATCH',
+            body: { operationId: crypto.randomUUID(), baseRevision: revision, name },
+          })
+        ).item;
+    } catch (e) {
+      // Changed elsewhere, or the destination is taken: sync the two changes separately.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500) return false;
+      throw e;
+    }
+    if (!item) return false;
+    this.journal.deleteFile(root.id, known.relativePath);
+    this.journal.putFile({
+      ...known,
+      relativePath: relative,
+      revision: item.revision,
+      sizeBytes: info.size,
+      mtimeMs: info.mtimeMs,
+    });
+    this.receipts.queue(root, relative, item, known.hash);
+    this.activity(root, relative, 'upload', item);
+    return true;
+  }
+  /**
+   * Deletes what under a remotely deleted folder is exactly as last synced: unchanged files, then
+   * folders left holding only file-manager metadata. Edited or unknown files stay.
+   */
+  private async removeSynced(root: Root, folder: string) {
+    const pending = new Set(
+      this.journal
+        .jobs()
+        .filter((job) => job.rootId === root.id && job.kind === 'upsert')
+        .map((job) => job.relativePath),
+    );
+    const entries = this.journal
+      .files(root.id)
+      .filter((f) => f.relativePath.startsWith(folder + '/') && !pending.has(f.relativePath))
+      .sort((a, b) => b.relativePath.length - a.relativePath.length);
+    for (const entry of entries) {
+      const full = contained(root.localPath, entry.relativePath);
+      try {
+        if (entry.type === 'FILE') {
+          if (
+            (await this.matchesDisk(root, entry)) ||
+            ((await lstat(full)).isFile() && (await hashFile(full)) === entry.hash)
+          )
+            await rm(full, { force: true });
+        } else if ((await readdir(full)).every(metadataSegment))
+          await rm(full, { recursive: true });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+    }
+  }
   /** The journal's copy is still the one on disk: same size and time, or a folder present. */
   private async matchesDisk(root: Root, known: LocalFile) {
     try {
@@ -1481,9 +1613,10 @@ export class SyncEngine {
         await this.preserve(root, known.relativePath, known.hash);
         await rm(full, { force: true });
       } else {
-        // Preserve the entire local directory on remote deletion. It may contain unsynced work.
-        // The copy stays visible beside its old location and is excluded from further syncing.
+        // Files the cloud already has go with the folder; anything else (unsynced work) is kept
+        // in a copy beside the old location, which is excluded from further syncing.
         try {
+          await this.removeSynced(root, known.relativePath);
           if ((await readdir(full)).every(metadataSegment)) await rm(full, { recursive: true });
           else {
             const kept = path.posix.join(

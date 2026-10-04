@@ -130,6 +130,31 @@ API restarted fresh on 127.0.0.1:8787, web `next dev` on :3000 → local API, Dy
 
 ### P1: data loss or a blocked core flow
 
+**Status 2026-10-05: all five fixed (uncommitted), each with a regression test that fails before the fix.**
+
+- **P1-1.** `driveLocations` stops at the first parent folder the viewer can't access (403/404), the same way breadcrumbs already did.
+  - Test: `apps/web/test/drive-locations.test.ts`.
+  - Checked in a real browser: the recipient now opens `Private/Team docs`.
+- **P1-2.** There were two causes.
+  - (a) The delivery-receipt check re-created the parents of a just-deleted folder (`safeParents(…, create=true)` in `sync-receipts.ts`). The folder delete then saw the folder still existed and skipped it.
+  - (b) A remote folder deletion moved fully synced files into "(Recovered…)". Now only unsynced or edited files are kept (`removeSynced` in `sync.ts`).
+  - Tests: `apps/desktop/test/sync-two-computers.test.ts` and `sync-receipts.test.ts`.
+  - Checked with real file watchers on two engines against the local API: the cloud and both computers end up empty.
+- **P1-3.** The engine now detects local renames and moves. A queued delete plus a queued new file with the same size and SHA-256 becomes a move/rename of the cloud item, in either order (`renamedTo` / `renamedFrom` / `moveRemote` in `sync.ts`). If the cloud refuses, it falls back to the old upload + delete.
+  - Nothing is re-uploaded, so this works when storage is full and saves bandwidth on every rename.
+  - Test: `sync-two-computers.test.ts`.
+  - Checked against the local API with storage exactly full: the same item is renamed, with no issues.
+- **P1-4.** The purge walk skips descendants that were trashed on their own. They stay in Trash and restore to My Drive.
+  - Test: `apps/backend/test/domain.test.ts`.
+- **P1-5.** The Next `/api` route now hands `fetch` a string body. Next re-wrapped the `Request` body as a stream, and undici rejected any 401 answer to it ("expected non-null body source"), which the proxy reported as a 503. The production in-process proxy (`runtime.ts`) was not affected.
+  - Test: `apps/web/test/api-route.test.ts`.
+  - Checked in a real browser: signing the web device out remotely now lands on `/login?next=/trash`.
+
+Checks after the fixes:
+- `npm run check`: 400 tests pass.
+- `npm run test:e2e`: 18/18.
+- `npm run test:sync`: passes.
+
 | # | Bug | Where | Evidence / source |
 |---|---|---|---|
 | P1-1 | **Web can't open a shared folder that sits inside one of the owner's private folders.** The recipient sees "You do not have access to this item." The API listing returns 200, but the web resolves the item's location by walking the owner's private parent folders, gets a 403, and fails the whole page. Only folders at the owner's top level can be opened. | Web | `apps/web/components/drive-workspace.tsx:373-377`, `apps/web/lib/drive-locations.ts:27-28` |

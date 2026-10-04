@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -78,6 +78,25 @@ it('does not confirm excluded, paused or unlinked roots', async () =>
     await receipts.flush();
     expect(journal.get('syncReceipts')).toEqual({});
     expect(calls).toEqual([]);
+  }));
+it('drops a confirmation whose folder was deleted without recreating the folder', async () =>
+  fixture(async (journal, root) => {
+    const calls: string[] = [];
+    const receipts = new SyncReceipts(
+      new ApiClient(async (p) => {
+        calls.push(p);
+        return { ok: true };
+      }),
+      journal,
+    );
+    // The user deleted Docs before this copy's confirmation was sent.
+    receipts.queue(root, 'Docs/Inner/hello.txt', item, hash);
+    await receipts.flush();
+    expect(journal.get('syncReceipts')).toEqual({});
+    expect(calls).toEqual([]);
+    await expect(stat(path.join(root.localPath, 'Docs'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   }));
 it('requests a released copy and queues verified sources for rehydration without deleting local files', async () =>
   fixture(async (journal, root) => {
