@@ -1,15 +1,29 @@
 import path from 'node:path';
 import { lstat, mkdir } from 'node:fs/promises';
-export function safeSegment(name: string, id: string) {
+const ILLEGAL = /[<>:"|?*\u0000-\u001f]/;
+function unsafeLocally(name: string) {
   if (!name || name === '.' || name === '..' || /[\\/\0]/.test(name))
     throw new Error('Unsafe remote filename.');
-  if (
-    /[<>:"|?*\u0000-\u001f]/.test(name) ||
+  return (
+    ILLEGAL.test(name) ||
     /[. ]$/.test(name) ||
     /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)
-  )
-    return `${name.replace(/[^a-zA-Z0-9._ -]/g, '_').replace(/[. ]+$/, '') || 'file'}~${id.slice(0, 8)}`;
-  return name;
+  );
+}
+/**
+ * The local name for a cloud name. One that is not valid on every OS gets its illegal characters
+ * replaced and a `~id` suffix before the extension, so it stays unique and keeps its file type.
+ */
+export function safeSegment(name: string, id: string) {
+  if (!unsafeLocally(name)) return name;
+  const clean = name.replace(new RegExp(ILLEGAL, 'g'), '_').replace(/[. ]+$/, '');
+  const ext = path.extname(clean);
+  return `${clean.slice(0, clean.length - ext.length) || 'file'}~${id.slice(0, 8)}${ext}`;
+}
+/** The local name earlier versions chose; files already synced under it keep that name. */
+export function legacySafeSegment(name: string, id: string) {
+  if (!unsafeLocally(name)) return name;
+  return `${name.replace(/[^a-zA-Z0-9._ -]/g, '_').replace(/[. ]+$/, '') || 'file'}~${id.slice(0, 8)}`;
 }
 // OS and file-manager bookkeeping that should never be synced or backed up.
 const METADATA_NAMES = new Set([

@@ -127,6 +127,8 @@ export const folderUsageSchema = z.object({
 export type FolderUsage = z.infer<typeof folderUsageSchema>;
 export const itemSchema = z.object({
   backupRootId: z.string().optional(),
+  /** The caller's access to someone else's item, through a share; absent on their own items. */
+  access: z.enum(['EDITOR', 'VIEWER']).optional(),
   syncRemovedAt: z.string().nullable().optional(),
   cloudState: syncCloudState.optional(),
   id: z.string(),

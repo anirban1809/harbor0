@@ -482,9 +482,11 @@ function App() {
       setLoadedView('');
       void load().catch(() => {});
     });
-    const signedOut = bridge.onSignedOut(() => {
+    const signedOut = bridge.onSignedOut((reason) => {
       requestId.current++;
-      setStatus((previous: any) => (previous ? { ...previous, signedIn: false } : previous));
+      setStatus((previous: any) =>
+        previous ? { ...previous, signedIn: false, signedOutReason: reason } : previous,
+      );
       setItems([]);
       setAccount(undefined);
       setQuery('');
@@ -583,6 +585,7 @@ function App() {
                 harbor0.
               </Alert>
             )}
+            {status.signedOutReason && !error && <Alert>{status.signedOutReason}</Alert>}
             {error && <Alert tone="error">{error}</Alert>}
             <form
               className="form"
@@ -741,7 +744,17 @@ function App() {
       ? Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)
       : undefined;
   };
-  const failingBackups = (placeData.backups ?? []).filter((root) => root.state === 'ERROR');
+  // The server flags only some failures; this computer knows its own last run skipped files.
+  const failingBackups = [
+    ...backupRoots.filter((root) => root.lastBackupError && !root.paused),
+    ...(placeData.backups ?? []).filter(
+      (backup) =>
+        backup.state === 'ERROR' &&
+        !backupRoots.some(
+          (root) => root.lastBackupError && root.remoteId === backup.remoteRootDriveItemId,
+        ),
+    ),
+  ];
   const problems = sync ? syncRequirements(syncRoots, sync, jobs).length : 0;
   const syncing = sync
     ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')

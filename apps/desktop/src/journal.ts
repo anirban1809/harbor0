@@ -14,8 +14,12 @@ export type Root = {
   needsReconcile?: boolean;
   shareId?: string;
   sharedBy?: string;
+  // The owner's display name when the folder was joined, for notices once access ends.
+  sharedByName?: string;
   sharedSequence?: number;
   lastSyncedAt?: string;
+  // Backup folders only: why the last run skipped files or failed; cleared by a clean run.
+  lastBackupError?: string;
 };
 export type LocalFile = {
   rootId: string;
@@ -114,6 +118,7 @@ export class Journal {
     // This removes only local bookkeeping. Neither copy of the files is deleted.
     this.db.exec('BEGIN');
     try {
+      this.abandonJobs(id);
       this.db.prepare('DELETE FROM jobs WHERE root_id=?').run(id);
       this.db.prepare('DELETE FROM changes WHERE root_id=?').run(id);
       this.db.prepare('DELETE FROM files WHERE root_id=?').run(id);
@@ -125,6 +130,7 @@ export class Journal {
     }
   }
   resetRootFiles(id: string) {
+    this.abandonJobs(id);
     this.db.prepare('DELETE FROM jobs WHERE root_id=?').run(id);
     this.db.prepare('DELETE FROM changes WHERE root_id=?').run(id);
     this.db.prepare('DELETE FROM files WHERE root_id=?').run(id);
@@ -241,6 +247,38 @@ export class Journal {
     this.db
       .prepare('UPDATE jobs SET payload=?,attempts=?,error=? WHERE id=?')
       .run(JSON.stringify(job.payload), job.attempts, job.error, job.id);
+  }
+  /**
+   * Uploads that will never complete because their file was deleted, replaced or is no longer
+   * synced. The server holds their size as reserved storage until each is cancelled.
+   */
+  abandonedUploads(): string[] {
+    return this.get<string[]>('abandonedUploads') ?? [];
+  }
+  abandonUpload(uploadId: string | undefined) {
+    if (uploadId)
+      this.set('abandonedUploads', [...new Set([...this.abandonedUploads(), uploadId])]);
+  }
+  uploadReleased(uploadId: string) {
+    this.set(
+      'abandonedUploads',
+      this.abandonedUploads().filter((id) => id !== uploadId),
+    );
+  }
+  private abandonJobs(rootId: string) {
+    const rows = this.db
+      .prepare(
+        "SELECT json_extract(payload, '$.upload.uploadId') AS uploadId FROM jobs WHERE root_id=? AND json_extract(payload, '$.upload.uploadId') IS NOT NULL",
+      )
+      .all(rootId) as { uploadId: string }[];
+    for (const row of rows) this.abandonUpload(row.uploadId);
+  }
+  /** Ends a job that did not complete, releasing any upload it had started. */
+  drop(id: string) {
+    const row = this.db.prepare('SELECT payload FROM jobs WHERE id=?').get(id) as
+      { payload: string } | undefined;
+    if (row) this.abandonUpload(JSON.parse(row.payload).upload?.uploadId);
+    this.finish(id);
   }
   finish(id: string) {
     this.db.prepare('DELETE FROM jobs WHERE id=?').run(id);

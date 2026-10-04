@@ -71,7 +71,7 @@ declare global {
         ) => void,
       ) => () => void;
       onAuthenticated: (callback: () => void) => () => void;
-      onSignedOut: (callback: () => void) => () => void;
+      onSignedOut: (callback: (reason: string | null) => void) => () => void;
     };
   }
 }

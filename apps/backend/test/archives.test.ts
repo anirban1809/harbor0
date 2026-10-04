@@ -270,3 +270,24 @@ it('uses equal-size nonfinal multipart parts even when records cross a boundary'
   expect(parts.slice(0, -1).every((size) => size === 1024)).toBe(true);
   expect(parts.at(-1)).toBeLessThanOrEqual(1024);
 });
+it('renames entries other systems cannot extract instead of failing the ZIP', async () => {
+  await upload('a:b.txt', 'colon');
+  await upload('a_b.txt', 'underscore');
+  await upload('why?.txt', 'question');
+  await upload('CON.txt', 'device');
+  await upload('trailing.', 'dot');
+  const id = await create();
+  expect(await worker.step(id)).toBe(true);
+  const entries = await content(id);
+  // Which of the two "a_b.txt" names gets numbered depends on listing order.
+  expect([entries['Project 🌍/a_b.txt'], entries['Project 🌍/a_b (2).txt']].sort()).toEqual([
+    'colon',
+    'underscore',
+  ]);
+  expect(entries).toMatchObject({
+    'Project 🌍/why_.txt': 'question',
+    'Project 🌍/_CON.txt': 'device',
+    'Project 🌍/trailing_': 'dot',
+  });
+  expect(Object.keys(entries)).toHaveLength(6);
+});

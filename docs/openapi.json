@@ -8714,6 +8714,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -9205,6 +9212,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -9690,6 +9704,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -10170,6 +10191,13 @@
                         "properties": {
                           "backupRootId": {
                             "type": "string"
+                          },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "EDITOR",
+                              "VIEWER"
+                            ]
                           },
                           "syncRemovedAt": {
                             "type": [
@@ -10670,6 +10698,13 @@
                       "properties": {
                         "backupRootId": {
                           "type": "string"
+                        },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
                         },
                         "syncRemovedAt": {
                           "type": [
@@ -11172,6 +11207,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -11658,6 +11700,13 @@
                       "properties": {
                         "backupRootId": {
                           "type": "string"
+                        },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
                         },
                         "syncRemovedAt": {
                           "type": [
@@ -12934,6 +12983,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -13418,6 +13474,13 @@
                       "properties": {
                         "backupRootId": {
                           "type": "string"
+                        },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
                         },
                         "syncRemovedAt": {
                           "type": [
@@ -13999,6 +14062,13 @@
                         "properties": {
                           "backupRootId": {
                             "type": "string"
+                          },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "EDITOR",
+                              "VIEWER"
+                            ]
                           },
                           "syncRemovedAt": {
                             "type": [
@@ -14920,6 +14990,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -15491,6 +15568,13 @@
                             "backupRootId": {
                               "type": "string"
                             },
+                            "access": {
+                              "type": "string",
+                              "enum": [
+                                "EDITOR",
+                                "VIEWER"
+                              ]
+                            },
                             "syncRemovedAt": {
                               "type": [
                                 "string",
@@ -16017,6 +16101,13 @@
                             "backupRootId": {
                               "type": "string"
                             },
+                            "access": {
+                              "type": "string",
+                              "enum": [
+                                "EDITOR",
+                                "VIEWER"
+                              ]
+                            },
                             "syncRemovedAt": {
                               "type": [
                                 "string",
@@ -16540,6 +16631,13 @@
                           "properties": {
                             "backupRootId": {
                               "type": "string"
+                            },
+                            "access": {
+                              "type": "string",
+                              "enum": [
+                                "EDITOR",
+                                "VIEWER"
+                              ]
                             },
                             "syncRemovedAt": {
                               "type": [
@@ -17468,6 +17566,13 @@
                       "properties": {
                         "backupRootId": {
                           "type": "string"
+                        },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
                         },
                         "syncRemovedAt": {
                           "type": [
@@ -23334,6 +23439,13 @@
                           "backupRootId": {
                             "type": "string"
                           },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "EDITOR",
+                              "VIEWER"
+                            ]
+                          },
                           "syncRemovedAt": {
                             "type": [
                               "string",
@@ -24731,6 +24843,13 @@
                               "backupRootId": {
                                 "type": "string"
                               },
+                              "access": {
+                                "type": "string",
+                                "enum": [
+                                  "EDITOR",
+                                  "VIEWER"
+                                ]
+                              },
                               "syncRemovedAt": {
                                 "type": [
                                   "string",
@@ -25234,6 +25353,13 @@
                             "properties": {
                               "backupRootId": {
                                 "type": "string"
+                              },
+                              "access": {
+                                "type": "string",
+                                "enum": [
+                                  "EDITOR",
+                                  "VIEWER"
+                                ]
                               },
                               "syncRemovedAt": {
                                 "type": [
@@ -29682,6 +29808,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -30503,6 +30636,13 @@
                         "properties": {
                           "backupRootId": {
                             "type": "string"
+                          },
+                          "access": {
+                            "type": "string",
+                            "enum": [
+                              "EDITOR",
+                              "VIEWER"
+                            ]
                           },
                           "syncRemovedAt": {
                             "type": [
@@ -32976,6 +33116,13 @@
                         "backupRootId": {
                           "type": "string"
                         },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
+                        },
                         "syncRemovedAt": {
                           "type": [
                             "string",
@@ -33471,6 +33618,13 @@
                             "properties": {
                               "backupRootId": {
                                 "type": "string"
+                              },
+                              "access": {
+                                "type": "string",
+                                "enum": [
+                                  "EDITOR",
+                                  "VIEWER"
+                                ]
                               },
                               "syncRemovedAt": {
                                 "type": [
@@ -34436,6 +34590,13 @@
                             "properties": {
                               "backupRootId": {
                                 "type": "string"
+                              },
+                              "access": {
+                                "type": "string",
+                                "enum": [
+                                  "EDITOR",
+                                  "VIEWER"
+                                ]
                               },
                               "syncRemovedAt": {
                                 "type": [
@@ -38676,6 +38837,13 @@
                       "properties": {
                         "backupRootId": {
                           "type": "string"
+                        },
+                        "access": {
+                          "type": "string",
+                          "enum": [
+                            "EDITOR",
+                            "VIEWER"
+                          ]
                         },
                         "syncRemovedAt": {
                           "type": [

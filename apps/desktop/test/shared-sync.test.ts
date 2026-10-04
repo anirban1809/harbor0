@@ -157,8 +157,19 @@ it('syncs real files across separate accounts, preserves conflicts and detaches 
       method: 'DELETE',
       body: { operationId: crypto.randomUUID() },
     });
-    await tick(bob);
+    await bob.engine.tick();
     expect(bob.journal.roots()).toEqual([]);
+    // The folder leaves the list with a notice that says why and where the files are.
+    expect(bob.engine.state.issues).toEqual([
+      expect.objectContaining({
+        code: 'SYNC_DETACHED',
+        message: expect.stringMatching(
+          new RegExp(
+            `stopped sharing “bob” with you\\. Your local files are still in ${bob.root.localPath}`,
+          ),
+        ),
+      }),
+    ]);
     expect(await readFile(path.join(bob.root.localPath, 'kept-local.txt'), 'utf8')).toBe(
       'not uploaded after revoke',
     );

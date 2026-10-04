@@ -17,7 +17,8 @@ type AuditItem = StagedItem & { purging?: boolean };
  * Lists every stored file version the account is charged for, page by page over the owner's
  * items. Bytes are counted as the quota ledger counts them: every version of every file, trash
  * included, except legacy content held only on devices. Items being permanently deleted are listed
- * without counted bytes, since their bytes left the ledger when the user deleted them.
+ * without counted bytes, since their bytes left the ledger when the user deleted them, unless a
+ * sent transfer still holds them.
  */
 export async function storageAudit(
   s: StorageService,
@@ -116,7 +117,8 @@ export async function storageAudit(
               : 'PREVIOUS_VERSION',
         versionNumber: v.versionNumber,
         sizeBytes: v.sizeBytes,
-        countedBytes: released || where.purging ? 0 : v.sizeBytes,
+        // A transfer's pin keeps a deleted file's bytes charged until the transfer releases them.
+        countedBytes: released || (where.purging && !pinned) ? 0 : v.sizeBytes,
         contentHash: v.contentHash,
         uploadedAt: v.createdAt,
         uploadedFrom: v.sourceDeviceId ? (deviceNames.get(v.sourceDeviceId) ?? null) : null,

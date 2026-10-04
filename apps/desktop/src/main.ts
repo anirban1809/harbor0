@@ -88,9 +88,18 @@ const securePath = () => path.join(app.getPath('userData'), 'credentials.bin');
 // Revoking this computer stops its sync and backups for good: the next sign-in starts fresh.
 // Signing it out only pauses them, so its folders are kept for when it signs in again.
 let revokedJournal: Journal | undefined;
+// Why the session ended when the user did not sign out here; the sign-in screen says so.
+let signedOutReason: string | null = null;
 function noteRevoked(error: unknown) {
   if (error instanceof ApiError && error.code === 'DEVICE_REVOKED' && accountReady)
     revokedJournal = journal;
+  if (isSessionError(error) && accountReady && !authTransition)
+    signedOutReason =
+      (error as ApiError).code === 'DEVICE_REVOKED'
+        ? 'This computer was signed out from another device and removed from your account. Your local files were kept; sign in to set up sync again.'
+        : /signed out/i.test((error as Error).message)
+          ? 'This computer was signed out from another device. Sign in again to resume syncing; your local files were kept.'
+          : 'Your session ended. Sign in again to continue.';
 }
 const session = new DesktopSession({
   async persist(saved) {
@@ -126,7 +135,7 @@ const session = new DesktopSession({
       stoppingSync = stoppingSync.then(() => {
         for (const root of revoked.roots()) revoked.removeRoot(root.id);
       });
-    window?.webContents.send('harbor:signed-out');
+    window?.webContents.send('harbor:signed-out', signedOutReason);
   },
   async renew(refreshToken) {
     if (!configured) throw new Error(configurationError);
@@ -135,12 +144,17 @@ const session = new DesktopSession({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
     });
-    const data = await response.json();
-    if (!response.ok) {
+    // A gateway error page is not JSON; it means the server is unavailable, not signed out.
+    const data = await response.json().catch(() => undefined);
+    if (!response.ok || !data) {
+      const unavailable = !data?.error?.code && (response.ok || response.status >= 500);
       const error = new RenewalError(
-        data.error?.code ?? 'REQUEST_FAILED',
-        data.error?.message ?? 'Could not renew your session. Try again.',
-        response.status,
+        data?.error?.code ?? (unavailable ? 'BACKEND_UNAVAILABLE' : 'REQUEST_FAILED'),
+        data?.error?.message ??
+          (unavailable
+            ? 'harbor0 is temporarily unavailable. Try again in a moment.'
+            : 'Could not renew your session. Try again.'),
+        response.ok ? 502 : response.status,
       );
       noteRevoked(error);
       throw error;
@@ -189,6 +203,7 @@ async function connected() {
       proof: deviceKey.prove(challenge, user.id),
     },
   });
+  signedOutReason = null;
   journal.set('deviceId', response.device.id);
   journal.set('deviceName', response.device.name ?? os.hostname());
   for (const root of journal.roots()) {
@@ -201,10 +216,18 @@ async function connected() {
   journal.set('publicId', response.device.devicePublicId);
   await engine?.stop();
   const activeJournal = journal;
-  engine = new SyncEngine(api, activeJournal, response.device.id, (state) => {
-    if (accountReady && journal === activeJournal)
-      window?.webContents.send('harbor:status', syncView(activeJournal, state as SyncRuntime));
-  });
+  engine = new SyncEngine(
+    api,
+    activeJournal,
+    response.device.id,
+    (state) => {
+      if (accountReady && journal === activeJournal)
+        window?.webContents.send('harbor:status', syncView(activeJournal, state as SyncRuntime));
+    },
+    (title, body) => {
+      if (accountReady && journal === activeJournal) notify(title, body);
+    },
+  );
   engine.state.paused = journal.get<boolean>('paused') ?? false;
   await engine.start();
   accountReady = true;
@@ -444,6 +467,7 @@ app
         notificationError,
         development,
         signedIn: session.signedIn && accountReady,
+        signedOutReason,
         live: live?.connected ?? false,
         roots: (accountReady ? journal.roots() : []).map((r) => ({
           ...r,
@@ -664,6 +688,12 @@ app
           : undefined;
         if (shared && (input.rootId || input.newFolderName || remoteId !== shared.item.id))
           throw new Error('Choose the invited folder to start shared sync.');
+        // Remembered so a later "stopped sharing" notice can name the owner.
+        const owner: { displayName?: string } | undefined = shared
+          ? (await api.request('/v1/sync/shares').catch(() => null))?.items?.find(
+              (item: { id: string }) => item.id === shared.share.id,
+            )?.owner
+          : undefined;
         const parent = shared
           ? { path: `Shared with me / ${shared.item.name}` }
           : await cloudLocation(api, remoteId);
@@ -674,7 +704,13 @@ app
           localPath,
           remoteId,
           cloudPath: parent.path,
-          ...(shared ? { shareId: shared.share.id, sharedBy: shared.share.ownerUserId } : {}),
+          ...(shared
+            ? {
+                shareId: shared.share.id,
+                sharedBy: shared.share.ownerUserId,
+                ...(owner?.displayName ? { sharedByName: owner.displayName } : {}),
+              }
+            : {}),
           mode: 'sync',
           paused: false,
           excluded: existing?.excluded ?? [],
@@ -759,6 +795,13 @@ app
       const issue = engine?.state.issues.find(
         (issue) => issue.id === input.id && stickyIssue(issue),
       );
+      // A folder that stopped syncing has no root left; its notice holds the local folder itself.
+      if (issue?.code === 'SYNC_DETACHED' && issue.conflictPath) {
+        await stat(issue.conflictPath);
+        const failed = await shell.openPath(issue.conflictPath);
+        if (failed) throw new Error(failed);
+        return { opened: true };
+      }
       const root = journal.roots().find((root) => root.id === issue?.rootId);
       if (!root || !issue?.conflictPath) throw new Error('The preserved copy was not found.');
       const filename = contained(root.localPath, issue.conflictPath);

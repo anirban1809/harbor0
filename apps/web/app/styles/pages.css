@@ -1026,6 +1026,16 @@
   height: 3px;
   margin-top: 2px;
 }
+.upload-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.upload-conflict [data-variant='link'] {
+  height: auto;
+  padding: 0;
+  font-size: 12px;
+}
 .upload-entry[data-phase='paused'] .progress-track > span {
   background: var(--text-3);
 }
@@ -1136,6 +1146,38 @@
 .activity-list time {
   font-size: var(--text-xs);
   color: var(--text-2);
+}
+.activity-notices {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-notices-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--text-sm);
+}
+.activity-notices-head [data-variant='link'] {
+  height: auto;
+  padding: 0;
+}
+.activity-notice {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.activity-notice:hover p {
+  text-decoration: underline;
 }
 .activity-drawer .drawer-body > .empty-state {
   padding-block: 56px;
@@ -1331,4 +1373,23 @@
   .sync-share-invite > .btn {
     margin-top: 0;
   }
+}
+
+/* Notifications page */
+.notifications-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+}
+.list-row[data-unread] .list-row-text strong::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  vertical-align: middle;
 }

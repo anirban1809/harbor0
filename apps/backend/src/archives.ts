@@ -67,14 +67,38 @@ export type Archive = {
   leaseUntil?: number;
 };
 const active = (state: State) => ['QUEUED', 'LISTING', 'BUILDING', 'FINALIZING'].includes(state);
-const safeName = (name: string) => {
+// Characters Windows or macOS refuse in filenames, and names Windows keeps for devices.
+const ILLEGAL = /[<>:"|?*]/g;
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+/** A name every OS can extract. Names that are paths themselves are refused, never rewritten. */
+export const zipName = (name: string) => {
   assert(
-    filename.safeParse(name).success && !name.includes(':'),
+    filename.safeParse(name).success,
     'UNSAFE_FILENAME',
     `Cannot archive this filename: ${name}`,
   );
-  return name;
+  // Windows drops trailing dots and spaces, which could merge two names.
+  const safe = name.replace(ILLEGAL, '_').replace(/[. ]+$/, (end) => '_'.repeat(end.length));
+  return RESERVED.test(safe) ? `_${safe}` : safe;
 };
+/** Claims `name` within one ZIP folder, numbering it like "a (2).txt" if another entry has it. */
+async function uniqueName(
+  tx: Transaction,
+  archiveId: string,
+  folderId: string,
+  name: string,
+  directory: boolean,
+) {
+  const dot = directory ? -1 : name.lastIndexOf('.');
+  const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${stem} (${n})${extension}`;
+    const key = `NAME#${folderId}#${candidate.toLowerCase()}`;
+    if (await tx.get(pk(archiveId), key)) continue;
+    await tx.put(pk(archiveId), key, { name: candidate });
+    return candidate;
+  }
+}
 
 export class ArchiveWorkflows {
   constructor(
@@ -88,13 +112,14 @@ export class ArchiveWorkflows {
       const { item, owner } = await s.authorized(tx, userId, folderId);
       assert(item.type === 'FOLDER', 'VALIDATION_ERROR', 'Choose a folder to download.');
       const id = randomUUID();
+      const root = zipName(item.name);
       const archive: Archive = {
         id,
         userId,
         deviceId,
         folderId,
         owner,
-        name: safeName(item.name) + '.zip',
+        name: root + '.zip',
         state: 'QUEUED',
         createdAt: now(),
         expiresAt: new Date(Date.now() + 86400_000).toISOString(),
@@ -119,12 +144,12 @@ export class ArchiveWorkflows {
       };
       await tx.put(pk(id), 'META', archive);
       await tx.put(pk(id), entryKey(0), {
-        path: item.name,
+        path: root,
         size: 0,
         directory: true,
         modified: item.updatedAt,
       } satisfies Entry);
-      await tx.put(pk(id), `WORK#${folderId}`, { id: folderId, path: item.name } satisfies Work);
+      await tx.put(pk(id), `WORK#${folderId}`, { id: folderId, path: root } satisfies Work);
       await s.job(tx, {
         id: `archive-${id}`,
         type: 'ARCHIVE_BUILD',
@@ -319,10 +344,12 @@ export class ArchiveWorkflows {
       }
       m.state = 'LISTING';
       for (const item of page.items) {
+        const directory = item.type === 'FOLDER';
+        const name = await uniqueName(tx, m.id, work.id, zipName(item.name), directory);
         const entry: Entry = {
-          path: work.path + '/' + safeName(item.name),
+          path: work.path + '/' + name,
           size: 0,
-          directory: item.type === 'FOLDER',
+          directory,
           modified: item.updatedAt,
         };
         if (entry.directory)

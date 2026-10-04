@@ -106,7 +106,14 @@ import { ActionsMenu, MenuItem, MenuSeparator } from '../components/ui/menu';
 import { Progress } from '../components/ui/progress';
 import { Segmented } from '../components/ui/segmented';
 import { Select } from '../components/ui/select';
-import { BrowserUpload } from '../lib/upload';
+import {
+  BrowserUpload,
+  isNameConflict,
+  uploadErrorMessage,
+  type UploadTarget,
+} from '../lib/upload';
+import { itemAccess } from '../lib/drive-access';
+import { describeNotification, newestFirst, type ServerNotification } from '../lib/notifications';
 import { finishedKeys, type FileUpload } from '../lib/upload-activity';
 import { UploadTray } from './upload-tray';
 import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
@@ -152,6 +159,8 @@ type UploadJob = {
   base: string | null;
   parent?: string | null;
   upload?: BrowserUpload;
+  /** A new file, a new version of an existing one, or a copy beside a same-named item. */
+  target?: UploadTarget;
   running?: boolean;
   stopped?: boolean;
   /** Waiting for a free upload slot. */
@@ -161,18 +170,6 @@ type UploadJob = {
 const UPLOAD_SLOTS = 4;
 const date = (s: string) =>
   new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-const notificationTitles: Record<string, string> = {
-  TRANSFER_RECEIVED: 'Someone sent you files',
-  TRANSFER_ACCEPTED: 'Your transfer was accepted',
-  TRANSFER_DECLINED: 'Your transfer was declined',
-  TRANSFER_CANCELLED: 'A transfer was cancelled',
-  TRANSFER_EXPIRED: 'A transfer expired',
-  SHARE_RECEIVED: 'Someone shared an item with you',
-};
-const sentence = (value: string) => {
-  const text = value.replaceAll('_', ' ').toLowerCase();
-  return text.charAt(0).toUpperCase() + text.slice(1);
-};
 // Select the name without its extension so typing replaces only the name.
 const selectBaseName = (input: HTMLInputElement) => {
   const dot = input.value.lastIndexOf('.');
@@ -301,6 +298,9 @@ function Workspace() {
   const batchFolders = useRef(new Map<string, Map<string, Promise<string>>>());
   const input = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
+  // Picks the file uploaded as a new version of `versionOf`.
+  const versionInput = useRef<HTMLInputElement>(null);
+  const versionOf = useRef<DriveItem | null>(null);
   const search = useRef<HTMLInputElement>(null);
   // While signed out, a focus refetch would flip the query back to pending and unmount the
   // sign-in form mid-entry (e.g. on returning from the email app with a code).
@@ -477,11 +477,31 @@ function Workspace() {
       )}
     </>
   );
-  const notices = useQuery<{ items: any[] }>({
+  // Always loaded so the bell can show unread notifications; pushed hints refresh it.
+  const notices = useQuery<{ items: ServerNotification[] }>({
     queryKey: ['notifications'],
-    enabled: !!user && section === 'Notifications',
+    enabled: !!user,
+    refetchInterval: live ? false : 60_000,
     queryFn: () => api.request('/v1/notifications'),
   });
+  const notifications = newestFirst(notices.data?.items ?? []);
+  const unreadNotices = notifications.filter((n) => !n.readAt);
+  async function readNotices(ids: string[]) {
+    await Promise.all(
+      ids.map((id) => api.request(`/v1/notifications/${id}/read`, { method: 'POST' })),
+    );
+    await cache.invalidateQueries({ queryKey: ['notifications'] });
+  }
+  function openNotice(n: ServerNotification) {
+    if (!n.readAt) void readNotices([n.id]).catch((e: Error) => setError(e.message));
+    const { href } = describeNotification(n);
+    if (href) {
+      resetPage();
+      router.push(href);
+    }
+  }
+  const markAllRead = () =>
+    void readNotices(unreadNotices.map((n) => n.id)).catch((e: Error) => setError(e.message));
   const versions = useQuery<{ items: any[] }>({
     queryKey: ['versions', modal?.item?.id],
     enabled: modal?.mode === 'versions',
@@ -531,11 +551,12 @@ function Workspace() {
         return;
       if (e.key === 'Escape') setSelected([]);
       const chosen = files.filter((f) => selected.includes(f.id));
-      if (e.key === 'F2' && chosen.length === 1 && section !== 'Trash')
+      const manage = chosen.every((f) => itemAccess(f).manage);
+      if (e.key === 'F2' && chosen.length === 1 && section !== 'Trash' && manage)
         setModal({ mode: 'rename', item: chosen[0] });
       if (e.key === 'Delete' && chosen.length) {
         if (section === 'Trash') setModal({ mode: 'permanent', items: chosen });
-        else if (chosen.length === 1) setModal({ mode: 'trash', item: chosen[0] });
+        else if (chosen.length === 1 && manage) setModal({ mode: 'trash', item: chosen[0] });
       }
     };
     window.addEventListener('keydown', listener);
@@ -692,20 +713,81 @@ function Workspace() {
       job.parent ??= await uploadParent(job);
       const upload = new BrowserUpload(api, user.id);
       job.upload = upload;
-      const item = await upload.run(job.file, job.parent, ({ loaded, phase, error }) =>
-        setUpload(key, { loaded, phase, error }),
+      const item = await upload.run(
+        job.file,
+        job.parent,
+        ({ loaded, phase, error }) => setUpload(key, { loaded, phase, error }),
+        job.target,
       );
       jobs.current.delete(key);
       addItem(item);
     } catch (e) {
-      setUpload(key, {
-        phase: (e as Error).name === 'AbortError' ? 'paused' : 'failed',
-        error: (e as Error).message,
-      });
+      if ((e as Error).name === 'AbortError') setUpload(key, { phase: 'paused' });
+      else {
+        // A taken name, or a file that changed under a replace, offers Replace or Keep both.
+        const conflict =
+          job.target?.kind === 'replace'
+            ? e instanceof ApiError && e.code === 'REVISION_CONFLICT'
+              ? 'file'
+              : undefined
+            : isNameConflict(e) && job.parent !== undefined
+              ? (await findByName(job.parent ?? null, job.file.name).catch(() => undefined))
+                  ?.type === 'FOLDER'
+                ? 'folder'
+                : 'file'
+              : undefined;
+        setUpload(key, { phase: 'failed', error: uploadErrorMessage(e), conflict });
+      }
     } finally {
       job.running = false;
       pumpUploads();
     }
+  }
+  /** The item in `parent` whose name matches, the way the server compares names. */
+  async function findByName(parent: string | null, name: string) {
+    const wanted = name.normalize('NFC').toLowerCase();
+    let cursor: string | undefined;
+    do {
+      const page = await api.list(parent, cursor);
+      const found = page.items.find((item) => item.name.normalize('NFC').toLowerCase() === wanted);
+      if (found) return found;
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+  }
+  async function replaceUploads(keys: string[]) {
+    await Promise.all(
+      keys.map(async (key) => {
+        const job = jobs.current.get(key);
+        if (!job) return;
+        // Always the latest revision, so a replace that lost a race can simply be tried again.
+        const existing: DriveItem | undefined = await (
+          job.target?.kind === 'replace'
+            ? api.request(`/v1/drive/items/${job.target.item.id}`).then((r) => r.item)
+            : findByName(job.parent ?? null, job.file.name)
+        ).catch(() => undefined);
+        if (existing?.type !== 'FILE') {
+          setUpload(key, {
+            conflict: existing ? 'folder' : undefined,
+            error: existing
+              ? 'A folder has this name, so it can’t be replaced. Keep both instead.'
+              : 'The file to replace is gone. Retry to upload it.',
+          });
+          if (!existing) job.target = undefined;
+          return;
+        }
+        job.target = { kind: 'replace', item: existing };
+        setUpload(key, { conflict: undefined });
+        resumeUploads([key]);
+      }),
+    );
+  }
+  function keepBothUploads(keys: string[]) {
+    for (const key of keys) {
+      const job = jobs.current.get(key);
+      if (job) job.target = { kind: 'keep-both' };
+      setUpload(key, { conflict: undefined });
+    }
+    resumeUploads(keys);
   }
   function addItem(item: DriveItem) {
     setAddedItems((old) => [
@@ -738,11 +820,15 @@ function Workspace() {
       })),
     );
   }
-  async function uploadEntries(entries: UploadEntry[]) {
+  async function uploadEntries(
+    entries: UploadEntry[],
+    target?: UploadTarget,
+    base: string | null = parentId,
+  ) {
     const batch = crypto.randomUUID();
     const queued = entries.map(({ file, folders }, i): FileUpload => {
       const key = `${batch}/${i}`;
-      jobs.current.set(key, { file, folders, batch, base: parentId, queued: true });
+      jobs.current.set(key, { file, folders, batch, base, target, queued: true });
       return {
         key,
         name: file.name,
@@ -789,9 +875,40 @@ function Workspace() {
   }
   function dismissUploads() {
     const finished = finishedKeys(progress);
-    for (const key of finished) jobs.current.delete(key);
+    // Failed uploads still hold reserved storage until they're cancelled on the server.
+    const pending = [...finished].map((key) => {
+      const job = jobs.current.get(key);
+      jobs.current.delete(key);
+      return job?.upload?.cancel();
+    });
     setProgress((old) => old.filter((u) => !finished.has(u.key)));
+    void Promise.all(pending).catch((e: Error) => setError(e.message));
   }
+  const uploadsRunning = progress.some((u) => ['queued', 'hashing', 'uploading'].includes(u.phase));
+  useEffect(() => {
+    if (!uploadsRunning) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploadsRunning]);
+  useEffect(() => {
+    // Leaving the page abandons unfinished uploads; release their storage instead of holding it a day.
+    const release = (e: PageTransitionEvent) => {
+      if (e.persisted) return;
+      for (const job of jobs.current.values()) {
+        const upload = job.upload;
+        if (!upload?.uploadId) continue;
+        upload.pause();
+        if (upload.resumeKey) localStorage.removeItem(upload.resumeKey);
+        void fetch(`/api/v1/uploads/${upload.uploadId}`, {
+          method: 'DELETE',
+          keepalive: true,
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('pagehide', release);
+    return () => window.removeEventListener('pagehide', release);
+  }, []);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const values = Object.fromEntries(new FormData(e.currentTarget)) as Record<string, string>;
@@ -913,12 +1030,23 @@ function Workspace() {
     setSelected([]);
     return Promise.all(
       targets.map((item) =>
-        trashChanges.remove([item], () =>
-          api.request(`/v1/drive/items/${item.id}/restore`, {
-            method: 'POST',
-            body: { ...operation(), baseRevision: item.revision },
-          }),
-        ),
+        trashChanges.remove([item], async () => {
+          try {
+            const { item: restored } = await api.request(`/v1/drive/items/${item.id}/restore`, {
+              method: 'POST',
+              body: { ...operation(), baseRevision: item.revision },
+            });
+            // The server puts an item whose folder is gone back at the top of My Drive.
+            if (item.parentId && !restored?.parentId)
+              setToast(`Restored “${item.name}” to My Drive because its folder is gone.`);
+          } catch (e) {
+            if (isNameConflict(e))
+              throw new Error(
+                `“${item.name}” can’t be restored because its folder already has an item with that name. Rename or move that item, then restore again.`,
+              );
+            throw e;
+          }
+        }),
       ),
     );
   }
@@ -1052,6 +1180,16 @@ function Workspace() {
             <ActivityNotifications
               feed={activity}
               onAllNotifications={() => navigate('Notifications')}
+              notices={unreadNotices.map((n) => ({
+                id: n.id,
+                title: describeNotification(n).title,
+                time: n.createdAt,
+              }))}
+              onOpenNotice={(id) => {
+                const n = unreadNotices.find((entry) => entry.id === id);
+                if (n) openNotice(n);
+              }}
+              onMarkAllRead={markAllRead}
             />
             <AccountMenu
               user={user}
@@ -1209,7 +1347,11 @@ function Workspace() {
               onReadOnlyChange={setDriveReadOnly}
               onUpload={() => input.current?.click()}
               onUploadFolder={() => folderInput.current?.click()}
-              onDropFiles={uploadEntries}
+              onUploadVersion={(item) => {
+                versionOf.current = item;
+                versionInput.current?.click();
+              }}
+              onDropFiles={(entries) => uploadEntries(entries)}
               onDownload={async (item, versionId) => {
                 if (item.type === 'FOLDER') await downloadFolder(item);
                 else await download({ driveItemId: item.id, ...(versionId ? { versionId } : {}) });
@@ -1285,15 +1427,17 @@ function Workspace() {
                       </Button>
                     </>
                   ) : (
-                    <Button
-                      size="sm"
-                      onClick={() =>
-                        setModal({ mode: 'send', item: files.find((f) => f.id === selected[0]) })
-                      }
-                    >
-                      <Send />
-                      Send
-                    </Button>
+                    files.every((f) => !selected.includes(f.id) || itemAccess(f).share) && (
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          setModal({ mode: 'send', item: files.find((f) => f.id === selected[0]) })
+                        }
+                      >
+                        <Send />
+                        Send
+                      </Button>
+                    )
                   )}
                   <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
                     Clear
@@ -1358,29 +1502,63 @@ function Workspace() {
                           >
                             {item.type === 'FOLDER' ? 'Download as ZIP' : 'Download'}
                           </MenuItem>
-                          <MenuItem onClick={() => setModal({ mode: 'send', item })}>
-                            Send to someone
-                          </MenuItem>
+                          {itemAccess(item).share && (
+                            <>
+                              <MenuItem onClick={() => setModal({ mode: 'send', item })}>
+                                Send to someone
+                              </MenuItem>
+                              {!item.backupRootId && (
+                                <MenuItem onClick={() => setModal({ mode: 'share', item })}>
+                                  Share access
+                                </MenuItem>
+                              )}
+                            </>
+                          )}
+                          {item.type === 'FILE' && itemAccess(item).edit && (
+                            <MenuItem
+                              onClick={() => {
+                                versionOf.current = item;
+                                versionInput.current?.click();
+                              }}
+                            >
+                              Upload new version
+                            </MenuItem>
+                          )}
                           <MenuSeparator />
                           <MenuItem onClick={() => setModal({ mode: 'details', item })}>
                             File details
                           </MenuItem>
-                          <MenuItem onClick={() => setModal({ mode: 'rename', item })}>
-                            Rename
-                          </MenuItem>
-                          <MenuItem onClick={() => setModal({ mode: 'move', item })}>Move</MenuItem>
-                          <MenuItem onClick={() => void toggleFavorite(item)}>
-                            {item.favorite ? 'Remove favorite' : 'Add to favorites'}
-                          </MenuItem>
+                          {itemAccess(item).manage && (
+                            <>
+                              <MenuItem onClick={() => setModal({ mode: 'rename', item })}>
+                                Rename
+                              </MenuItem>
+                              <MenuItem onClick={() => setModal({ mode: 'move', item })}>
+                                Move
+                              </MenuItem>
+                            </>
+                          )}
+                          {itemAccess(item).share && (
+                            <MenuItem onClick={() => void toggleFavorite(item)}>
+                              {item.favorite ? 'Remove favorite' : 'Add to favorites'}
+                            </MenuItem>
+                          )}
                           {item.type === 'FILE' && (
                             <MenuItem onClick={() => setModal({ mode: 'versions', item })}>
                               Version history
                             </MenuItem>
                           )}
-                          <MenuSeparator />
-                          <MenuItem tone="danger" onClick={() => setModal({ mode: 'trash', item })}>
-                            Move to trash
-                          </MenuItem>
+                          {itemAccess(item).manage && (
+                            <>
+                              <MenuSeparator />
+                              <MenuItem
+                                tone="danger"
+                                onClick={() => setModal({ mode: 'trash', item })}
+                              >
+                                Move to trash
+                              </MenuItem>
+                            </>
+                          )}
                         </>
                       )}
                     </ActionsMenu>
@@ -1488,10 +1666,38 @@ function Workspace() {
                         <button className="list-row-text" onClick={() => open(s.item)}>
                           <strong>{s.item.name}</strong>
                           <small>
-                            {s.permission === 'EDITOR' ? 'Can edit' : 'Can view'} ·{' '}
-                            {s.ownerUserId === user.id ? 'Shared by you' : 'Shared with you'}
+                            {s.ownerUserId === user.id
+                              ? `Shared with ${s.recipient ? `${s.recipient.displayName} (@${s.recipient.username})` : 'one person'}`
+                              : `Shared with you${s.owner ? ` by ${s.owner.displayName}` : ''}`}
+                            {(s.ownerUserId !== user.id || !s.recipient?.username) &&
+                              ` · ${s.permission === 'EDITOR' ? 'Can edit' : 'Can view'}`}
                           </small>
                         </button>
+                        {s.ownerUserId === user.id && s.recipient?.username && (
+                          <Select
+                            aria-label={`Access for ${s.recipient.displayName}`}
+                            value={s.permission}
+                            disabled={busy}
+                            onChange={(e) =>
+                              void act(
+                                () =>
+                                  api.request('/v1/shares', {
+                                    method: 'POST',
+                                    body: {
+                                      ...operation(),
+                                      driveItemId: s.driveItemId,
+                                      recipient: { type: 'USERNAME', value: s.recipient.username },
+                                      permission: e.target.value,
+                                    },
+                                  }),
+                                'Access updated.',
+                              )
+                            }
+                          >
+                            <option value="VIEWER">Can view</option>
+                            <option value="EDITOR">Can edit</option>
+                          </Select>
+                        )}
                         {s.ownerUserId === user.id && (
                           <Button
                             size="sm"
@@ -1642,27 +1848,50 @@ function Workspace() {
                   }
                 />
               ) : (
-                notices.data.items.map((n) => (
-                  <article className="list-row simple-row" key={n.id}>
-                    <Bell aria-hidden="true" />
-                    <div className="list-row-text">
-                      <strong>{notificationTitles[n.type] ?? sentence(n.type)}</strong>
-                      <small>{date(n.createdAt)}</small>
+                <>
+                  {unreadNotices.length > 0 && (
+                    <div className="notifications-head">
+                      <span className="muted">{unreadNotices.length} unread</span>
+                      <Button size="sm" variant="outline" onClick={markAllRead}>
+                        <Check />
+                        Mark all as read
+                      </Button>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={!!n.readAt}
-                      onClick={() =>
-                        void act(() =>
-                          api.request(`/v1/notifications/${n.id}/read`, { method: 'POST' }),
-                        )
-                      }
-                    >
-                      {n.readAt ? 'Read' : 'Mark read'}
-                    </Button>
-                  </article>
-                ))
+                  )}
+                  {notifications.map((n) => {
+                    const { title, href } = describeNotification(n);
+                    return (
+                      <article
+                        className="list-row simple-row"
+                        data-unread={!n.readAt || undefined}
+                        key={n.id}
+                      >
+                        <Bell aria-hidden="true" />
+                        {href ? (
+                          <button className="list-row-text" onClick={() => openNotice(n)}>
+                            <strong>{title}</strong>
+                            <small>{date(n.createdAt)}</small>
+                          </button>
+                        ) : (
+                          <div className="list-row-text">
+                            <strong>{title}</strong>
+                            <small>{date(n.createdAt)}</small>
+                          </div>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!!n.readAt}
+                          onClick={() =>
+                            void readNotices([n.id]).catch((e: Error) => setError(e.message))
+                          }
+                        >
+                          {n.readAt ? 'Read' : 'Mark read'}
+                        </Button>
+                      </article>
+                    );
+                  })}
+                </>
               )}
             </Card>
           )}
@@ -1766,12 +1995,28 @@ function Workspace() {
           e.target.value = '';
         }}
       />
+      <input
+        ref={versionInput}
+        type="file"
+        hidden
+        aria-label="Choose the new version"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const item = versionOf.current;
+          if (file && item)
+            void uploadEntries([{ file, folders: [] }], { kind: 'replace', item }, item.parentId);
+          versionOf.current = null;
+          e.target.value = '';
+        }}
+      />
       <UploadTray
         uploads={progress}
         onDismiss={dismissUploads}
         onPause={pauseUploads}
         onResume={resumeUploads}
         onCancel={cancelUploads}
+        onReplace={(keys) => void replaceUploads(keys)}
+        onKeepBoth={keepBothUploads}
       />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
@@ -1861,7 +2106,7 @@ function Workspace() {
                 >
                   Download
                 </Button>
-                {v.id !== modal.item?.currentVersionId && (
+                {v.id !== modal.item?.currentVersionId && itemAccess(modal.item!).edit && (
                   <Button
                     size="sm"
                     variant="outline"

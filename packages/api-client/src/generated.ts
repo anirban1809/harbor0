@@ -5301,6 +5301,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -5497,6 +5499,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -5694,6 +5698,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -5885,6 +5891,8 @@ export interface operations {
                     "application/json": {
                         items: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -6082,6 +6090,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -6279,6 +6289,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -6475,6 +6487,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -7023,6 +7037,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -7219,6 +7235,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -7420,6 +7438,8 @@ export interface operations {
                     "application/json": {
                         items: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -7798,6 +7818,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -8010,6 +8032,8 @@ export interface operations {
                             failure?: string;
                             item?: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -8214,6 +8238,8 @@ export interface operations {
                             failure?: string;
                             item?: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -8416,6 +8442,8 @@ export interface operations {
                             failure?: string;
                             item?: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -8793,6 +8821,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -11102,6 +11132,8 @@ export interface operations {
                     "application/json": {
                         items: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -11679,6 +11711,8 @@ export interface operations {
                             revokedAt: string | null;
                             item: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -11877,6 +11911,8 @@ export interface operations {
                             revokedAt: string | null;
                             item: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -13731,6 +13767,8 @@ export interface operations {
                         };
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -14086,6 +14124,8 @@ export interface operations {
                     "application/json": {
                         items: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -15147,6 +15187,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -15342,6 +15384,8 @@ export interface operations {
                             occurredAt: string;
                             item?: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -15727,6 +15771,8 @@ export interface operations {
                             revision?: number;
                             serverItem?: {
                                 backupRootId?: string;
+                                /** @enum {string} */
+                                access?: "EDITOR" | "VIEWER";
                                 syncRemovedAt?: string | null;
                                 /** @enum {string} */
                                 cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
@@ -17539,6 +17585,8 @@ export interface operations {
                     "application/json": {
                         item: {
                             backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
                             syncRemovedAt?: string | null;
                             /** @enum {string} */
                             cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";

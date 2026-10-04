@@ -21,7 +21,15 @@ export type Write = { key: Key; expected: number | null; row?: Row };
 export type Page = { rows: Row[]; cursor: string | null };
 export interface Repository {
   get(key: Key): Promise<Row | undefined>;
-  query(pk: string, prefix: string, limit?: number, cursor?: string, after?: string): Promise<Page>;
+  /** `descending` reads the highest sort keys first; `after` applies to ascending reads only. */
+  query(
+    pk: string,
+    prefix: string,
+    limit?: number,
+    cursor?: string,
+    after?: string,
+    descending?: boolean,
+  ): Promise<Page>;
   commit(writes: Write[], checks: Write[]): Promise<void>;
   due(now: string, cursor?: string): Promise<Page>;
   /** Every account PROFILE's storage fields; a full-table read, so callers cache the result. */
@@ -78,6 +86,7 @@ export class DynamoRepository implements Repository {
     limit = 100,
     cursor?: string,
     after?: string,
+    descending = false,
   ): Promise<Page> {
     const start = cursor ? decode(cursor) : undefined;
     if (start && (start.pk !== pk || !start.sk.startsWith(prefix)))
@@ -98,6 +107,7 @@ export class DynamoRepository implements Repository {
             : { ':pk': pk },
         Limit: limit,
         ExclusiveStartKey: start,
+        ScanIndexForward: !descending,
       }),
     );
     return {
@@ -213,13 +223,19 @@ export class MemoryRepository implements Repository {
     limit = 100,
     cursor?: string,
     after?: string,
+    descending = false,
   ): Promise<Page> {
     const start = cursor ? decode(cursor) : undefined;
     if (start && (start.pk !== pk || !start.sk.startsWith(prefix)))
       throw new DomainError('VALIDATION_ERROR', 'Invalid cursor.');
     const rows = [...this.rows.values()]
-      .filter((r) => r.pk === pk && r.sk.startsWith(prefix) && r.sk > (start?.sk ?? after ?? ''))
-      .sort((a, b) => a.sk.localeCompare(b.sk, 'en'));
+      .filter(
+        (r) =>
+          r.pk === pk &&
+          r.sk.startsWith(prefix) &&
+          (descending ? !start || r.sk < start.sk : r.sk > (start?.sk ?? after ?? '')),
+      )
+      .sort((a, b) => (descending ? -1 : 1) * a.sk.localeCompare(b.sk, 'en'));
     const selected = rows.slice(0, limit);
     return {
       rows: structuredClone(selected),

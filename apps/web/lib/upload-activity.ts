@@ -8,6 +8,8 @@ export type FileUpload = {
   loaded: number;
   phase: UploadPhase;
   error?: string;
+  /** Failed because the folder already has an item with this name: a file can be replaced. */
+  conflict?: 'file' | 'folder';
   group?: { key: string; name: string };
 };
 
@@ -25,6 +27,10 @@ export type UploadActivity = {
   filesFailed: number;
   /** The file keys this row covers, for pausing, resuming or cancelling them together. */
   keys: string[];
+  /** Failed files whose name is taken, to replace or keep both. */
+  conflictKeys: string[];
+  /** Every name conflict is with a file, so replacing is possible. */
+  replaceable: boolean;
 };
 
 const active = (phase: UploadPhase) => phase === 'hashing' || phase === 'uploading';
@@ -61,6 +67,8 @@ export function summarizeUploads(uploads: FileUpload[]): UploadActivity[] {
       filesDone: phases.filter((p) => p === 'done').length,
       filesFailed: phases.filter((p) => p === 'failed').length,
       keys: members.map((m) => m.key),
+      conflictKeys: members.filter((m) => m.phase === 'failed' && m.conflict).map((m) => m.key),
+      replaceable: members.every((m) => m.phase !== 'failed' || m.conflict !== 'folder'),
     };
   });
 }

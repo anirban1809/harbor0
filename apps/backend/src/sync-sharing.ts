@@ -91,6 +91,9 @@ export class SyncSharing {
         await this.service.notification(tx, share.recipientUserId, 'SYNC_SHARE_INVITED', {
           shareId: share.id,
           name: item.name,
+          itemId: item.id,
+          itemName: item.name,
+          actorName: await this.service.displayName(userId),
         });
         return { share };
       },
@@ -171,7 +174,13 @@ export class SyncSharing {
       'This invitation was replaced. Your local files are preserved.',
       403,
     );
-    const { item } = await this.service.authorized(tx, userId, share.driveItemId, true);
+    const { item: shared, access } = await this.service.authorized(
+      tx,
+      userId,
+      share.driveItemId,
+      true,
+    );
+    const item = await this.service.viewed(userId, shared, access, tx);
     const revision = await tx.get<{ sequence: number }>(
       userPK(share.ownerUserId),
       `SYNCFOLDERREV#${item.id}`,

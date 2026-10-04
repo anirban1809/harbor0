@@ -3,7 +3,7 @@ import { open, stat, lstat, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { ApiClient } from '@harbor/api-client';
+import { ApiClient, ApiError } from '@harbor/api-client';
 import type { DriveItem, CompletedPart } from '@harbor/contracts';
 import {
   prepareFolderDownload,
@@ -66,6 +66,14 @@ export async function hashFile(filename: string) {
     hash.update(chunk);
   return hash.digest('hex');
 }
+/** Cancels an unfinished upload, freeing its reserved storage; one already gone needs nothing. */
+export async function cancelUpload(api: ApiClient, uploadId: string) {
+  try {
+    await api.request(`/v1/uploads/${uploadId}`, { method: 'DELETE' });
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status >= 500 || error.status === 429) throw error;
+  }
+}
 export type UploadState = {
   operationId: string;
   uploadId?: string;
@@ -89,7 +97,7 @@ export async function uploadFile(
 ) {
   const info = await stat(filename);
   if (state.mtime !== undefined && (state.mtime !== info.mtimeMs || state.size !== info.size)) {
-    if (state.uploadId) await api.request(`/v1/uploads/${state.uploadId}`, { method: 'DELETE' });
+    if (state.uploadId) await cancelUpload(api, state.uploadId);
     Object.assign(state, {
       operationId: crypto.randomUUID(),
       uploadId: undefined,

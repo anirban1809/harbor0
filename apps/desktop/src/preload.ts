@@ -88,8 +88,9 @@ contextBridge.exposeInMainWorld('harbor', {
     ipcRenderer.on('harbor:authenticated', listener);
     return () => ipcRenderer.removeListener('harbor:authenticated', listener);
   },
-  onSignedOut: (callback: () => void) => {
-    const listener = () => callback();
+  onSignedOut: (callback: (reason: string | null) => void) => {
+    const listener = (_event: unknown, reason?: string | null) =>
+      callback(typeof reason === 'string' ? reason : null);
     ipcRenderer.on('harbor:signed-out', listener);
     return () => ipcRenderer.removeListener('harbor:signed-out', listener);
   },

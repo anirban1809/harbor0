@@ -29,7 +29,8 @@ import { LoadMoreFiles } from './load-more-files';
 import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { driveLocations, type DriveLocation } from '../lib/drive-locations';
 import { operation } from '@harbor/api-client';
-import { defaultDriveFilters, driveView } from '../lib/drive-view';
+import { defaultDriveFilters, driveView, needsWholeFolder } from '../lib/drive-view';
+import { canWriteIn, itemAccess, type ShareAccess } from '../lib/drive-access';
 import { isLive, onLive } from '../lib/live-updates';
 import { fileDate, fileKind, fileSize } from '../lib/file-metadata';
 import { loadUsage, usageLabel, type UsageMap } from '../lib/folder-usage';
@@ -102,6 +103,8 @@ type Props = {
   onDropFiles: (entries: UploadEntry[]) => Promise<unknown>;
   onUploadFolder?: () => void;
   onDownload: (item: DriveItem, versionId?: string) => Promise<unknown>;
+  /** Choose a file to upload as a new version of `item`. */
+  onUploadVersion?: (item: DriveItem) => void;
   onChanged: () => void;
   onManageStorage: () => void;
   onRemoveSync?: (item: DriveItem) => Promise<unknown>;
@@ -168,6 +171,7 @@ export function DriveWorkspace({
   onDropFiles,
   onUploadFolder,
   onDownload,
+  onUploadVersion,
   onChanged,
   onManageStorage,
   onRemoveSync,
@@ -210,6 +214,11 @@ export function DriveWorkspace({
   const [syncedFolders, setSyncedFolders] = useState<Item[]>([]);
   const separateFolders = !parentId && !query;
   const [loading, setLoading] = useState(true);
+  // The open folder's share access; undefined when the caller owns it.
+  const [folderAccess, setFolderAccess] = useState<ShareAccess>();
+  // Items read so far while every page loads for a sort or filter.
+  const [wholeFolder, setWholeFolder] = useState<number | null>(null);
+  const partial = useRef(false);
   const [loadError, setLoadError] = useState('');
   const [syncStatuses, setSyncStatuses] = useState<Record<string, SyncItemStatus>>({});
   const [syncStatusError, setSyncStatusError] = useState(false);
@@ -271,9 +280,17 @@ export function DriveWorkspace({
   const viewKey = JSON.stringify([userId, parentId, query, scope]);
   const pages =
     pageRequest.key === viewKey ? pageRequest.count : (session.views.get(viewKey)?.pages ?? 1);
+  partial.current = !!nextCursor;
   const loadMore = useCallback(() => {
-    setPageRequest({ key: viewKey, count: pages + 1 });
+    // A whole-folder read that failed is retried as a whole.
+    if (pages === Infinity) setRevision((value) => value + 1);
+    else setPageRequest({ key: viewKey, count: pages + 1 });
   }, [viewKey, pages]);
+  // Sorting or filtering part of a folder misleads, so a big folder loads in full first.
+  const loadWhole = !!nextCursor && !loading && !loadError && needsWholeFolder(filters);
+  useEffect(() => {
+    if (loadWhole && pages !== Infinity) setPageRequest({ key: viewKey, count: Infinity });
+  }, [loadWhole, pages, viewKey]);
   useEffect(() => {
     const controller = new AbortController();
     if (lastRefresh.current !== refreshKey || lastRevision.current !== revision) {
@@ -293,6 +310,7 @@ export function DriveWorkspace({
     if (!sameView) {
       setSyncStatuses({});
       setSyncStatusError(false);
+      setWholeFolder(null);
     }
     if (!sameView || cached) {
       setSyncedFolders(cached?.syncedFolders ?? []);
@@ -300,6 +318,7 @@ export function DriveWorkspace({
       setBackupRoots(cached?.backupRoots ?? []);
     }
     if (cached?.activeTab && parentId) setActiveTab(cached.activeTab);
+    if (!sameView || cached) setFolderAccess(cached?.folderAccess);
     if (!sameView || cached) setLoadedAt(cached?.loadedAt ?? 0);
     setSyncFoldersError(false);
     let knownFolders: Item[] = cached?.syncedFolders ?? (sameView ? syncedFolders : []);
@@ -319,14 +338,21 @@ export function DriveWorkspace({
       const result: Item[] = [];
       const seen = new Set<string>();
       let next: string | null = null;
+      const all = pages === Infinity;
       for (let page = 0; page < pages; page++) {
-        const data = await read(
-          path +
-            (next ? `${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(next)}` : ''),
-          { signal: controller.signal },
-        );
+        const params = [
+          // Reading a whole folder takes the largest pages after the first.
+          ...(all && next ? ['limit=500'] : []),
+          ...(next ? [`cursor=${encodeURIComponent(next)}`] : []),
+        ].join('&');
+        const data = await read(path + (params ? (path.includes('?') ? '&' : '?') + params : ''), {
+          signal: controller.signal,
+        });
         result.push(...data.items);
         next = data.nextCursor ?? null;
+        // Progress shows only while the list on screen is incomplete, not on background refreshes.
+        if (all && partial.current && !controller.signal.aborted)
+          setWholeFolder(next ? result.length : null);
         if (!next) break;
         if (seen.has(next)) throw new Error('Could not load the remaining files. Please retry.');
         seen.add(next);
@@ -404,12 +430,14 @@ export function DriveWorkspace({
           }),
         );
         let resolvedTab: DriveLocation | undefined;
+        let access: ShareAccess;
         if (parentId && !changingTab.current) {
-          const current = pendingFolder
+          const current: Pick<DriveItem, 'id' | 'parentId' | 'access'> = pendingFolder
             ? { id: parentId, parentId: null }
             : (await read(`/v1/drive/items/${parentId}`, { signal: controller.signal })).item;
           const category = await classify(current);
           resolvedTab = pendingFolder ? 'Sync' : category.location;
+          access = current.access;
           if (!controller.signal.aborted) setActiveTab(resolvedTab);
         }
         if (
@@ -428,9 +456,11 @@ export function DriveWorkspace({
           backupRoots: roots,
           nextCursor: driveResult.value.nextCursor,
           activeTab: resolvedTab,
+          folderAccess: access,
           pages,
           loadedAt: startedAt,
         });
+        setFolderAccess(access);
         setLoadedAt(startedAt);
         loadedView.current = viewKey;
         setNextCursor(driveResult.value.nextCursor);
@@ -450,6 +480,7 @@ export function DriveWorkspace({
         );
       } catch (error) {
         if (!controller.signal.aborted) {
+          setWholeFolder(null);
           if ((error as { code?: string }).code === 'SYNC_REMOVED') syncRemovedCallback.current?.();
           else setLoadError((error as Error).message);
         }
@@ -640,11 +671,15 @@ export function DriveWorkspace({
     filters.modified === defaultDriveFilters.modified
       ? pinned
       : noPinned;
-  const canModify = (item: Item) => !item.backupRootId && !catalogError;
+  const access = (item: Item) => itemAccess(item, folderAccess);
+  const mutable = (item: Item) => !item.backupRootId && !catalogError;
+  const canModify = (item: Item) => mutable(item) && access(item).manage;
+  const canShare = (item: Item) => mutable(item) && access(item).share;
   const canWriteHere =
     !loading &&
     !loadError &&
     !catalogError &&
+    canWriteIn(folderAccess) &&
     activeTab !== 'Backup' &&
     (activeTab === 'Cloud' || !!parentId);
   useEffect(() => {
@@ -800,7 +835,10 @@ export function DriveWorkspace({
   }
   function show(mode: string, targets: Item[]) {
     if (targets.some((item) => changesRef.current.get(item.id)?.pending)) return;
-    if (!['details', 'versions', 'disconnect-backup'].includes(mode) && !targets.every(canModify))
+    if (
+      !['details', 'versions', 'disconnect-backup'].includes(mode) &&
+      !targets.every(['send', 'share'].includes(mode) ? canShare : canModify)
+    )
       return;
     if (mode === 'trash' && !targets.every(canTrash)) return;
     if (mode === 'move' && targets.some(isSyncFolder)) return;
@@ -859,7 +897,7 @@ export function DriveWorkspace({
     onChanged();
   }
   async function favorite(targets: Item[]) {
-    if (!targets.every(canModify)) return;
+    if (!targets.every(canShare)) return;
     await optimistic(
       targets,
       (item) => ({ ...item, favorite: !item.favorite }),
@@ -1023,13 +1061,25 @@ export function DriveWorkspace({
             {item.type === 'FOLDER' ? 'Download as ZIP' : 'Download'}
           </MenuItem>
         )}
-        {canModify(item) && (
+        {canShare(item) && (
           <>
             <MenuItem onClick={() => show('send', [item])}>Send</MenuItem>
-            <MenuSeparator />
-            <MenuItem onClick={() => show('rename', [item])}>Rename</MenuItem>
-            {!isSyncFolder(item) && <MenuItem onClick={() => show('move', [item])}>Move</MenuItem>}
             {!isSyncFolder(item) && (
+              <MenuItem onClick={() => show('share', [item])}>Share access</MenuItem>
+            )}
+          </>
+        )}
+        {mutable(item) && access(item).edit && item.type === 'FILE' && onUploadVersion && (
+          <MenuItem onClick={() => onUploadVersion(item)}>Upload new version</MenuItem>
+        )}
+        {(canModify(item) || canShare(item)) && (
+          <>
+            <MenuSeparator />
+            {canModify(item) && <MenuItem onClick={() => show('rename', [item])}>Rename</MenuItem>}
+            {canModify(item) && !isSyncFolder(item) && (
+              <MenuItem onClick={() => show('move', [item])}>Move</MenuItem>
+            )}
+            {canShare(item) && !isSyncFolder(item) && (
               <MenuItem onClick={() => void favorite([item])}>
                 {item.favorite ? 'Remove favorite' : 'Add to favorites'}
               </MenuItem>
@@ -1292,10 +1342,9 @@ export function DriveWorkspace({
               <strong aria-live="polite">{selection.length} selected</strong>
               <div className="drive-selection-actions">
                 {[
-                  ...(!canOpenDeviceCopy || selection.every(canModify) ? ['Download'] : []),
-                  ...(selection.every(canModify)
-                    ? ['Send', ...(selectionHasSyncFolder ? [] : ['Move'])]
-                    : []),
+                  ...(!canOpenDeviceCopy || selection.every(mutable) ? ['Download'] : []),
+                  ...(selection.every(canShare) ? ['Send'] : []),
+                  ...(selection.every(canModify) && !selectionHasSyncFolder ? ['Move'] : []),
                 ].map((label) => (
                   <Button
                     key={label}
@@ -1331,7 +1380,7 @@ export function DriveWorkspace({
                 <ActionsMenu label="More selection actions" className="drive-selection-menu">
                   {!selectionHasSyncFolder && (
                     <MenuItem
-                      disabled={blocked || !selection.every(canModify)}
+                      disabled={blocked || !selection.every(canShare)}
                       onClick={() => void favorite(selection)}
                     >
                       <Star aria-hidden="true" /> Toggle favorites
@@ -1367,7 +1416,9 @@ export function DriveWorkspace({
               <span className="drive-item-count">
                 {loading
                   ? 'Loading…'
-                  : `${files.length}${nextCursor ? '+' : ''} ${files.length === 1 ? 'item' : 'items'}${folderTotal ? ` · ${folderTotal} in total` : ''}`}
+                  : wholeFolder !== null
+                    ? `Loading every item to sort and filter… ${wholeFolder.toLocaleString()} so far`
+                    : `${files.length}${nextCursor ? '+' : ''} ${files.length === 1 ? 'item' : 'items'}${folderTotal ? ` · ${folderTotal} in total` : ''}`}
               </span>
               <div className="drive-filters">
                 <Select
@@ -1618,7 +1669,7 @@ export function DriveWorkspace({
               )}
             </>
           )}
-          {nextCursor && !loading && (
+          {nextCursor && !loading && (pages !== Infinity || !!loadError) && (
             <LoadMoreFiles loading={refreshing} error={!!loadError} onLoad={loadMore} />
           )}
         </div>
@@ -1631,11 +1682,13 @@ export function DriveWorkspace({
           <div className="drive-drop-target" role="status">
             <ArrowUpFromLine size={32} />
             <strong>
-              {!canWriteHere
-                ? 'Uploads are unavailable in this location'
-                : pendingFolder
-                  ? 'This folder is still syncing'
-                  : `Drop files or folders to upload to ${location}`}
+              {!canWriteIn(folderAccess)
+                ? 'You can view this shared folder but not add to it'
+                : !canWriteHere
+                  ? 'Uploads are unavailable in this location'
+                  : pendingFolder
+                    ? 'This folder is still syncing'
+                    : `Drop files or folders to upload to ${location}`}
             </strong>
           </div>
         )}
@@ -1775,6 +1828,7 @@ export function DriveWorkspace({
                       </Button>
                     )}
                     {!modal.items[0].backupRootId &&
+                      access(modal.items[0]).edit &&
                       version.id !== modal.items[0].currentVersionId && (
                         <Button
                           size="sm"

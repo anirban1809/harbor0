@@ -47,14 +47,30 @@ export function createTransport(
       await refresh();
       response = await call();
     }
-    const json = await response.json();
-    if (!response.ok)
+    // A gateway or proxy in front of the API can answer with an HTML error page instead.
+    const text = await response.text();
+    let json: any;
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      json = undefined;
+    }
+    const error = json?.error;
+    if (!response.ok && error?.code)
       throw new ApiError(
-        json.error?.code ?? 'REQUEST_FAILED',
-        json.error?.message ?? 'The request failed.',
+        error.code,
+        error.message ?? 'The request failed.',
         response.status,
-        json.error?.requestId,
-        json.error?.details,
+        error.requestId,
+        error.details,
+      );
+    if (!response.ok && response.status < 500)
+      throw new ApiError('REQUEST_FAILED', 'The request failed.', response.status);
+    if (!response.ok || json === undefined)
+      throw new ApiError(
+        'BACKEND_UNAVAILABLE',
+        'harbor0 is temporarily unavailable. Try again in a moment.',
+        response.ok ? 502 : response.status,
       );
     return json;
   };

@@ -32,6 +32,7 @@ import {
     type SyncRuntime,
 } from './sync-state';
 import { storageSize } from './overview';
+import { storageText } from './storage-text';
 import { SyncShareDialog } from '../../web/components/sync-sharing';
 
 const bridge = window.harbor;
@@ -125,6 +126,7 @@ const issueText: Record<SyncIssue['code'], string> = {
         'This file was changed in more than one place. The local version has been preserved separately for review.',
     FOLDER_RECOVERED:
         'This folder was removed from sync elsewhere. The copy on this computer was kept under a new name and no longer syncs.',
+    SYNC_DETACHED: 'This folder no longer syncs. Your local files were kept.',
     SYNC_ERROR: 'A change could not be synchronized.',
 };
 export function SyncProblem({
@@ -152,7 +154,11 @@ export function SyncProblem({
                 <p>
                     {item && issue.code === 'PERMISSION_DENIED'
                         ? 'harbor0 does not have permission to read or change this item. Once its permissions are fixed, syncing retries automatically.'
-                        : issueText[issue.code]}
+                        : issue.code === 'STORAGE_QUOTA_EXCEEDED'
+                            ? storageText(issue, root)
+                            : issue.code === 'SYNC_DETACHED'
+                                ? issue.message
+                                : issueText[issue.code]}
                 </p>
                 {issue.code === 'SYNC_ERROR' && <p>{issue.message}</p>}
                 <div className="sync-problem-actions">
@@ -165,6 +171,26 @@ export function SyncProblem({
                         <Button variant="outline" size="sm" onClick={() => review(issue)}>
                             Review kept folder
                         </Button>
+                    )}
+                    {issue.code === 'SYNC_DETACHED' && (
+                        <>
+                            {issue.conflictPath && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => void bridge.reviewSyncConflict({ id: issue.id }).catch(() => {})}
+                                >
+                                    Open local folder
+                                </Button>
+                            )}
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void bridge.dismissSyncConflict({ id: issue.id }).catch(() => {})}
+                            >
+                                Dismiss
+                            </Button>
+                        </>
                     )}
                     {root && item && issue.code !== 'STORAGE_QUOTA_EXCEEDED' && (
                         <Button variant="outline" size="sm" onClick={() => action('open', root)}>
@@ -191,7 +217,7 @@ export function SyncProblem({
                             {stopLabel(root)}…
                         </Button>
                     )}
-                    {issue.code === 'STORAGE_QUOTA_EXCEEDED' && (
+                    {issue.code === 'STORAGE_QUOTA_EXCEEDED' && !issue.storage?.owner && !root?.shareId && (
                         <Button variant="outline" size="sm" onClick={storage}>
                             Manage storage
                         </Button>

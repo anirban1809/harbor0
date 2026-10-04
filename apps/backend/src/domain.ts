@@ -21,7 +21,7 @@ import {
   type ManifestEntry,
   type ShareGrant,
 } from '@harbor/contracts';
-import { assert, DomainError } from './errors';
+import { assert, DomainError, OwnerStorageFull } from './errors';
 import { DEVICE_CHALLENGE_SECONDS, verifyDeviceProof } from './device-identity';
 import { rowCursor, transact, Transaction, type Repository } from './repository';
 import type { ObjectStorage } from './storage';
@@ -42,6 +42,10 @@ import { TransferWorkflows, type StagedItem, type Save } from './workflows';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
+// Folders nest at most this deep, counting top-level folders as 1; files may sit in the deepest.
+const MAX_DEPTH = 32;
+// A blocked editor upload tells the owner at most this often.
+const STORAGE_BLOCKED_NOTICE_MS = 3600_000;
 const now = () => new Date().toISOString();
 const uid = () => randomUUID();
 export const userPK = (id: string) => `USER#${id}`;
@@ -50,6 +54,11 @@ const nameKey = (parent: string | null, name: string) =>
 const childKey = (item: DriveItem) =>
   `CHILD#${item.parentId ?? 'root'}#${item.normalizedName}#${item.id}`;
 const digest = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+type Access = 'EDITOR' | 'VIEWER';
+const activeGrant = (g?: ShareGrant): g is ShareGrant =>
+  !!g && !g.revokedAt && (!g.syncState || g.syncState === 'ACCEPTED');
+// Someone's own favorite of an item another account shares with them.
+const favoriteKey = (itemId: string) => `FAVORITE#${itemId}`;
 export type Account = User & {
   sequence: number;
   minCursor: number;
@@ -352,6 +361,7 @@ export class StorageService {
       return result;
     });
   }
+  /** Checks every ancestor of a destination and returns its depth (0 for the root). */
   async parent(tx: Transaction, userId: string, parentId: string | null, exclude?: string) {
     let current = parentId;
     const visited = new Set<string>();
@@ -363,7 +373,12 @@ export class StorageService {
         409,
       );
       visited.add(current);
-      assert(visited.size <= 32, 'PATH_TOO_DEEP', 'Folders can be nested up to 32 levels.', 400);
+      assert(
+        visited.size <= MAX_DEPTH,
+        'PATH_TOO_DEEP',
+        `Folders can be nested up to ${MAX_DEPTH} levels.`,
+        400,
+      );
       const p = await tx.get<StagedItem>(userPK(userId), `ITEM#${current}`);
       assert(
         !p?.syncRemovedAt,
@@ -387,6 +402,7 @@ export class StorageService {
       );
       current = p.parentId;
     }
+    return visited.size;
   }
   async owned(tx: Transaction, userId: string, itemId: string, includeTrash = false) {
     const item = await tx.get<StagedItem>(userPK(userId), `ITEM#${itemId}`);
@@ -449,7 +465,11 @@ export class StorageService {
     }
     if (old && old.parentId !== item.parentId)
       await tx.delete(pk, `ALLCHILD#${old.parentId ?? 'root'}#${old.id}`);
-    await tx.put(pk, `ALLCHILD#${item.parentId ?? 'root'}#${item.id}`, { id: item.id });
+    // The type lets depth checks walk folders without reading every file.
+    await tx.put(pk, `ALLCHILD#${item.parentId ?? 'root'}#${item.id}`, {
+      id: item.id,
+      type: item.type,
+    });
     await tx.put(pk, `ITEM#${item.id}`, item);
     await tx.put('ITEMOWNER', item.id, { userId: item.ownerUserId });
   }
@@ -482,7 +502,7 @@ export class StorageService {
     input: { parentId: string | null; name: string; operationId: string },
     backupWrite?: BackupWrite,
   ) {
-    return this.operation(
+    const result = await this.operation(
       userId,
       input.operationId,
       { action: 'folder', ...input, ...(backupWrite ? { backupWrite } : {}) },
@@ -495,13 +515,19 @@ export class StorageService {
           await this.checkDevice(userId, backupWrite.deviceId);
           await assertBackupWrite(tx, owner, input.parentId, backupWrite);
         }
-        await this.parent(tx, owner, input.parentId);
+        assert(
+          (await this.parent(tx, owner, input.parentId)) < MAX_DEPTH,
+          'PATH_TOO_DEEP',
+          `Folders can be nested up to ${MAX_DEPTH} levels.`,
+          400,
+        );
         const item = this.newItem(owner, input.parentId, input.name, 'FOLDER');
         await this.reserveName(tx, item);
         await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
         return { item };
       },
     );
+    return { item: await this.viewed(userId, result.item) };
   }
   async list(userId: string, parentId: string | null, limit = 100, cursor?: string) {
     const tx = new Transaction(this.repo);
@@ -547,14 +573,39 @@ export class StorageService {
       action?: 'trash' | 'restore';
     },
   ) {
+    const { item } = await this.changeItem(userId, itemId, input);
+    return { item: await this.viewed(userId, item) };
+  }
+  private changeItem(
+    userId: string,
+    itemId: string,
+    input: {
+      operationId: string;
+      baseRevision: number;
+      name?: string;
+      parentId?: string | null;
+      favorite?: boolean;
+      action?: 'trash' | 'restore';
+    },
+  ) {
     return this.operation(userId, input.operationId, { itemId, ...input }, async (tx) => {
       const locator = await tx.get<{ userId: string }>('ITEMOWNER', itemId);
       const ownerId = locator?.userId ?? userId;
       if (ownerId !== userId) {
-        await this.authorized(tx, userId, itemId, true);
-        const direct = await tx.get<ShareGrant>(userPK(userId), `ACCESS#${itemId}`);
+        const changes = input.name !== undefined || input.parentId !== undefined || !!input.action;
+        const { item: shared } = await this.authorized(tx, userId, itemId, changes);
+        if (!changes) {
+          // Favorites of shared items are the viewer's own; the owner's item stays as it is.
+          if (input.favorite !== undefined)
+            await this.setFavorite(tx, userId, shared, input.favorite);
+          return { item: shared };
+        }
+        // Renaming, moving or trashing an item changes its folder, which must be shared too.
+        const parent = shared.parentId
+          ? await tx.get<DriveItem>(userPK(ownerId), `ITEM#${shared.parentId}`)
+          : undefined;
         assert(
-          !direct?.syncState,
+          (await this.shareAccess(tx, userId, ownerId, parent)) === 'EDITOR',
           'FORBIDDEN',
           'Only the owner can change the shared folder itself.',
           403,
@@ -589,13 +640,14 @@ export class StorageService {
         try {
           await this.parent(tx, ownerId, item.parentId);
         } catch (e) {
-          if (e instanceof DomainError && e.code === 'PARENT_NOT_FOUND') item.parentId = null;
+          if (e instanceof DomainError && ['PARENT_NOT_FOUND', 'PATH_TOO_DEEP'].includes(e.code))
+            item.parentId = null;
           else throw e;
         }
         type = 'FILE_RESTORED';
       } else {
         assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'Restore this item before editing.', 404);
-        await this.parent(tx, ownerId, item.parentId);
+        const depth = await this.parent(tx, ownerId, item.parentId);
         if (input.name !== undefined) {
           item.name = input.name.normalize('NFC');
           item.normalizedName = normalizeName(input.name);
@@ -611,11 +663,15 @@ export class StorageService {
             );
             await this.authorized(tx, userId, input.parentId, true);
           }
-          await this.parent(tx, ownerId, input.parentId, item.id);
+          const destination = await this.parent(tx, ownerId, input.parentId, item.id);
+          // Moving no deeper than now keeps the tree within the limit it already met.
+          if (destination > depth) await this.assertSubtreeFits(ownerId, item, destination);
           item.parentId = input.parentId;
           type = 'ITEM_MOVED';
         }
-        if (input.favorite !== undefined) {
+        if (input.favorite !== undefined && ownerId !== userId)
+          await this.setFavorite(tx, userId, item, input.favorite);
+        else if (input.favorite !== undefined) {
           item.favorite = input.favorite;
           type = 'FAVORITE_CHANGED';
         }
@@ -628,11 +684,45 @@ export class StorageService {
       return { item };
     });
   }
+  /** Rejects putting `item` under a folder at `depth` when its subfolders would nest too deep. */
+  private async assertSubtreeFits(owner: string, item: DriveItem, depth: number) {
+    // Read outside the move's transaction, which a large tree would overflow.
+    const lookup = new Transaction(this.repo);
+    let level = item.type === 'FOLDER' ? [item.id] : [];
+    for (let at = depth + 1; level.length; at++) {
+      assert(
+        at <= MAX_DEPTH,
+        'PATH_TOO_DEEP',
+        `Moving this folder there would nest folders more than ${MAX_DEPTH} levels deep.`,
+        409,
+      );
+      const next: string[] = [];
+      for (const id of level) {
+        let cursor: string | undefined;
+        do {
+          const page = await this.repo.query(userPK(owner), `ALLCHILD#${id}#`, 100, cursor);
+          for (const row of page.rows) {
+            const child = row.data as { id: string; type?: DriveItem['type'] };
+            const type =
+              child.type ?? (await lookup.get<DriveItem>(userPK(owner), `ITEM#${child.id}`))?.type;
+            if (type === 'FOLDER') next.push(child.id);
+          }
+          cursor = page.cursor ?? undefined;
+        } while (cursor);
+      }
+      level = next;
+    }
+  }
   async metadata(userId: string, itemId: string) {
     const tx = new Transaction(this.repo);
-    const { item } = await this.authorized(tx, userId, itemId);
+    const { item, access } = await this.authorized(tx, userId, itemId);
     return {
-      item: { ...item, backupRootId: (await backupForItem(tx, item.ownerUserId, item.id))?.id },
+      item: await this.viewed(
+        userId,
+        { ...item, backupRootId: (await backupForItem(tx, item.ownerUserId, item.id))?.id },
+        access,
+        tx,
+      ),
     };
   }
   async browseSpecial(
@@ -702,16 +792,45 @@ export class StorageService {
     deviceId?: string,
     backupWrite?: BackupWrite,
   ) {
-    const initial = await this.operation(
+    const initial = await this.ownerStorage(userId, () =>
+      this.createUploadRecord(userId, input, deviceId, backupWrite),
+    );
+    const upload = await this.getUpload(userId, initial.upload.id);
+    if (upload.state === 'CREATED' && !upload.providerUploadId) {
+      const providerId = await this.storage.create(upload.objectKey);
+      let attached = false;
+      try {
+        attached = await transact(this.repo, async (tx) => {
+          const current = (await tx.get<Upload>(userPK(userId), `UPLOAD#${upload.id}`))!;
+          if (current.providerUploadId || current.state !== 'CREATED') return false;
+          current.providerUploadId = providerId;
+          current.state = 'UPLOADING';
+          await tx.put(userPK(userId), `UPLOAD#${upload.id}`, current);
+          return true;
+        });
+      } finally {
+        if (!attached) await this.storage.abort(upload.objectKey, providerId);
+      }
+    }
+    return {
+      upload: this.publicUpload(await this.getUpload(userId, upload.id)),
+      storage: (await this.me(userId)).storage,
+    };
+  }
+  private createUploadRecord(
+    userId: string,
+    input: UploadInput,
+    deviceId?: string,
+    backupWrite?: BackupWrite,
+  ) {
+    return this.operation(
       userId,
       input.operationId,
       { action: 'upload', ...input, ...(backupWrite ? { backupWrite } : {}) },
       async (tx) => {
-        const owner = input.driveItemId
-          ? (await this.authorized(tx, userId, input.driveItemId, !backupWrite)).owner
-          : input.parentId
-            ? (await this.authorized(tx, userId, input.parentId, !backupWrite)).owner
-            : userId;
+        const target = input.driveItemId ?? input.parentId;
+        const shared = target ? await this.authorized(tx, userId, target, !backupWrite) : undefined;
+        const owner = shared?.owner ?? userId;
         if (backupWrite) {
           assert(owner === userId, 'FORBIDDEN', 'Backup folders must belong to you.', 403);
           await this.checkDevice(userId, backupWrite.deviceId);
@@ -738,14 +857,7 @@ export class StorageService {
           );
         }
         const account = await this.account(tx, owner);
-        const available = storageUsage(account).availableBytes;
-        assert(
-          input.sizeBytes <= available,
-          'STORAGE_QUOTA_EXCEEDED',
-          'There is not enough available storage.',
-          409,
-          { requiredBytes: input.sizeBytes, availableBytes: available },
-        );
+        this.assertRoom(account, userId, input.sizeBytes, shared?.item);
         account.storageReservedBytes += input.sizeBytes;
         await tx.put(userPK(owner), 'PROFILE', account);
         const objectId = uid();
@@ -789,27 +901,6 @@ export class StorageService {
         return { upload };
       },
     );
-    const upload = await this.getUpload(userId, initial.upload.id);
-    if (upload.state === 'CREATED' && !upload.providerUploadId) {
-      const providerId = await this.storage.create(upload.objectKey);
-      let attached = false;
-      try {
-        attached = await transact(this.repo, async (tx) => {
-          const current = (await tx.get<Upload>(userPK(userId), `UPLOAD#${upload.id}`))!;
-          if (current.providerUploadId || current.state !== 'CREATED') return false;
-          current.providerUploadId = providerId;
-          current.state = 'UPLOADING';
-          await tx.put(userPK(userId), `UPLOAD#${upload.id}`, current);
-          return true;
-        });
-      } finally {
-        if (!attached) await this.storage.abort(upload.objectKey, providerId);
-      }
-    }
-    return {
-      upload: this.publicUpload(await this.getUpload(userId, upload.id)),
-      storage: (await this.me(userId)).storage,
-    };
   }
   publicUpload(u: Upload) {
     return {
@@ -888,6 +979,15 @@ export class StorageService {
     };
   }
   async completeUpload(userId: string, id: string, parts: CompletedPart[], contentHash: string) {
+    const { item } = await this.finishUpload(userId, id, parts, contentHash);
+    return { item: await this.viewed(userId, item) };
+  }
+  private async finishUpload(
+    userId: string,
+    id: string,
+    parts: CompletedPart[],
+    contentHash: string,
+  ): Promise<{ item: DriveItem }> {
     const fingerprint = digest({ parts, contentHash });
     let u = await transact(this.repo, async (tx) => {
       const u = await tx.get<Upload>(userPK(userId), `UPLOAD#${id}`);
@@ -1012,7 +1112,7 @@ export class StorageService {
     await queueEmail(tx, id, email);
   }
   /**
-   * Call when `account`'s usage grows, before saving it: emails the holder once for each
+   * Call whenever `account`'s usage changes, before saving it: emails the holder once for each
    * threshold crossed. Dropping below a threshold re-arms it for the next growth.
    */
   async storageAlert(tx: Transaction, account: Account) {
@@ -1175,32 +1275,134 @@ export class StorageService {
     const owner = locator.userId;
     const item = await this.owned(tx, owner, itemId);
     if (write) await assertBackupMutable(tx, owner, itemId);
-    if (owner === userId) return { item, owner };
+    if (owner === userId) return { item, owner, access: undefined };
     assert(
       !(await this.account(tx, owner)).deletedAt,
       'ITEM_NOT_FOUND',
       'Item was not found.',
       404,
     );
-    let current: DriveItem | undefined = item;
-    let permission: ShareGrant | undefined;
-    while (current) {
+    const access = await this.shareAccess(tx, userId, owner, item);
+    assert(
+      access && (!write || access === 'EDITOR'),
+      'FORBIDDEN',
+      'You do not have access to this item.',
+      403,
+    );
+    return { item, owner, access };
+  }
+  /**
+   * `userId`'s access to `owner`'s item through shares of it or an ancestor: EDITOR if any of
+   * those grants allows writes, VIEWER if they only allow reading.
+   */
+  async shareAccess(tx: Transaction, userId: string, owner: string, item?: DriveItem) {
+    let access: Access | undefined;
+    const seen = new Set<string>();
+    let current = item;
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
       const grant = await tx.get<ShareGrant>(userPK(userId), `ACCESS#${current.id}`);
-      if (
-        grant &&
-        !grant.revokedAt &&
-        (!grant.syncState || grant.syncState === 'ACCEPTED') &&
-        (!write || grant.permission === 'EDITOR')
-      ) {
-        permission = grant;
-        break;
+      if (activeGrant(grant)) {
+        if (grant.permission === 'EDITOR') return 'EDITOR';
+        access = 'VIEWER';
       }
       current = current.parentId
         ? await tx.get<DriveItem>(userPK(owner), `ITEM#${current.parentId}`)
         : undefined;
     }
-    assert(permission, 'FORBIDDEN', 'You do not have access to this item.', 403);
-    return { item, owner };
+    return access;
+  }
+  /** `item` as `userId` sees it: through a share, that is their access and their own favorite. */
+  async viewed<T extends DriveItem>(
+    userId: string,
+    item: T,
+    access?: Access,
+    tx = new Transaction(this.repo),
+  ): Promise<T> {
+    if (item.ownerUserId === userId) return item;
+    access ??= await this.shareAccess(tx, userId, item.ownerUserId, item);
+    if (!access) return item;
+    const favorite = !!(await tx.get(userPK(userId), favoriteKey(item.id)));
+    return { ...item, access, favorite };
+  }
+  private async setFavorite(tx: Transaction, userId: string, item: DriveItem, favorite: boolean) {
+    if (favorite)
+      await tx.put(userPK(userId), favoriteKey(item.id), {
+        id: item.id,
+        ownerUserId: item.ownerUserId,
+        createdAt: now(),
+      });
+    else if (await tx.get(userPK(userId), favoriteKey(item.id)))
+      await tx.delete(userPK(userId), favoriteKey(item.id));
+  }
+  /**
+   * Checks `account` has room for `bytes` more. Someone adding to another person's shared folder
+   * learns only that its owner is out of space, never how much space the owner has.
+   */
+  assertRoom(
+    account: Account,
+    actor: string,
+    bytes: number,
+    target?: DriveItem,
+    message = 'There is not enough available storage.',
+  ) {
+    const available = storageUsage(account).availableBytes;
+    if (bytes <= available) return;
+    if (account.id !== actor)
+      throw new OwnerStorageFull(account.id, {
+        ...(target ? { itemId: target.id, itemName: target.name } : {}),
+      });
+    throw new DomainError('STORAGE_QUOTA_EXCEEDED', message, 409, {
+      requiredBytes: bytes,
+      availableBytes: available,
+    });
+  }
+  /** Runs `fn`; when it is refused for the owner's storage, tells the owner (at most hourly). */
+  private async ownerStorage<T>(actor: string, fn: () => Promise<T>) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof OwnerStorageFull)
+        // The refusal is what the caller needs to see, even if the notice cannot be saved.
+        await this.storageBlocked(error.ownerId, actor, error.notice).catch(() => undefined);
+      throw error;
+    }
+  }
+  private async storageBlocked(owner: string, actor: string, notice: Record<string, unknown>) {
+    const actorName = await this.displayName(actor);
+    await transact(this.repo, async (tx) => {
+      const key = 'NOTICE#SHARED_UPLOAD_BLOCKED_BY_STORAGE';
+      const last = await tx.get<{ at: number }>(userPK(owner), key);
+      if (last && Date.now() - last.at < STORAGE_BLOCKED_NOTICE_MS) return;
+      await tx.put(
+        userPK(owner),
+        key,
+        { at: Date.now() },
+        { expiresAt: Math.floor((Date.now() + STORAGE_BLOCKED_NOTICE_MS) / 1000) + 86400 },
+      );
+      await this.notification(tx, owner, 'SHARED_UPLOAD_BLOCKED_BY_STORAGE', {
+        ...notice,
+        actorName,
+      });
+    });
+  }
+  /** A display name for notifications, read outside any transaction so it adds no conflicts. */
+  async displayName(userId: string) {
+    const row = await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' });
+    return (row?.data as Account | undefined)?.displayName ?? null;
+  }
+  private async itemName(owner: string, itemId: string) {
+    const row = await this.repo.get({ pk: userPK(owner), sk: `ITEM#${itemId}` });
+    return (row?.data as DriveItem | undefined)?.name ?? null;
+  }
+  /** Tells `to` about a transfer `actor` changed, naming its first item. */
+  async transferNotice(tx: Transaction, to: string, type: string, t: Transfer, actor: string) {
+    await this.notification(tx, to, type, {
+      transferId: t.id,
+      actorName: await this.displayName(actor),
+      itemName: t.displayNames?.[0] ?? null,
+      itemCount: t.displayNames?.length ?? null,
+    });
   }
   async download(
     userId: string,
@@ -1299,63 +1501,67 @@ export class StorageService {
     versionId: string,
     input: { operationId: string; baseRevision: number },
   ) {
-    return this.operation(
-      userId,
-      input.operationId,
-      { action: 'restoreVersion', itemId, versionId, ...input },
-      async (tx) => {
-        const item = await this.owned(tx, userId, itemId);
-        await assertBackupMutable(tx, userId, itemId);
-        assert(
-          item.revision === input.baseRevision,
-          'REVISION_CONFLICT',
-          'The file changed.',
-          409,
-          { serverItem: item },
-        );
-        const previous = await tx.get<FileVersion>(
-          userPK(userId),
-          `VERSION#${itemId}#${versionId}`,
-        );
-        assert(previous, 'ITEM_NOT_FOUND', 'Version was not found.', 404);
-        assert(
-          previous.cloudState !== 'RELEASED',
-          'SYNC_CONTENT_OFFLINE',
-          'This version is no longer stored in the cloud.',
-          409,
-        );
-        const current = (await tx.get<FileVersion>(
-          userPK(userId),
-          `VERSION#${itemId}#${item.currentVersionId}`,
-        ))!;
-        const account = await this.account(tx, userId);
-        assert(
-          previous.sizeBytes <= storageUsage(account).availableBytes,
-          'STORAGE_QUOTA_EXCEEDED',
-          'There is not enough storage for a restored version.',
-          409,
-        );
-        account.storageUsedBytes += previous.sizeBytes;
-        await this.storageAlert(tx, account);
-        await tx.put(userPK(userId), 'PROFILE', account);
-        const v = {
-          ...previous,
-          id: uid(),
-          versionNumber: current.versionNumber + 1,
-          createdAt: now(),
-        };
-        await tx.put(userPK(userId), `VERSION#${itemId}#${v.id}`, v);
-        await this.reference(tx, v.storageObjectId, 1);
-        item.currentVersionId = v.id;
-        item.cloudState = 'AVAILABLE';
-        item.sizeBytes = v.sizeBytes;
-        item.revision++;
-        item.updatedAt = now();
-        await tx.put(userPK(userId), `ITEM#${itemId}`, item);
-        await this.record(tx, userId, 'FILE_UPDATED', itemId, item);
-        return { item };
-      },
+    const result = await this.ownerStorage(userId, () =>
+      this.operation(
+        userId,
+        input.operationId,
+        { action: 'restoreVersion', itemId, versionId, ...input },
+        async (tx) => {
+          // Editors of a shared file may restore its versions; the owner is charged, as for uploads.
+          const { item, owner } = await this.authorized(tx, userId, itemId, true);
+          assert(
+            item.revision === input.baseRevision,
+            'REVISION_CONFLICT',
+            'The file changed.',
+            409,
+            { serverItem: item },
+          );
+          const previous = await tx.get<FileVersion>(
+            userPK(owner),
+            `VERSION#${itemId}#${versionId}`,
+          );
+          assert(previous, 'ITEM_NOT_FOUND', 'Version was not found.', 404);
+          assert(
+            previous.cloudState !== 'RELEASED',
+            'SYNC_CONTENT_OFFLINE',
+            'This version is no longer stored in the cloud.',
+            409,
+          );
+          const current = (await tx.get<FileVersion>(
+            userPK(owner),
+            `VERSION#${itemId}#${item.currentVersionId}`,
+          ))!;
+          const account = await this.account(tx, owner);
+          this.assertRoom(
+            account,
+            userId,
+            previous.sizeBytes,
+            item,
+            'There is not enough storage for a restored version.',
+          );
+          account.storageUsedBytes += previous.sizeBytes;
+          await this.storageAlert(tx, account);
+          await tx.put(userPK(owner), 'PROFILE', account);
+          const v = {
+            ...previous,
+            id: uid(),
+            versionNumber: current.versionNumber + 1,
+            createdAt: now(),
+          };
+          await tx.put(userPK(owner), `VERSION#${itemId}#${v.id}`, v);
+          await this.reference(tx, v.storageObjectId, 1);
+          item.currentVersionId = v.id;
+          item.cloudState = 'AVAILABLE';
+          item.sizeBytes = v.sizeBytes;
+          item.revision++;
+          item.updatedAt = now();
+          await tx.put(userPK(owner), `ITEM#${itemId}`, item);
+          await this.record(tx, owner, 'FILE_UPDATED', itemId, item);
+          return { item };
+        },
+      ),
     );
+    return { item: await this.viewed(userId, result.item) };
   }
   async permanentDelete(
     userId: string,
@@ -1383,6 +1589,7 @@ export class StorageService {
         account.storageUsedBytes -= bytes;
         account.purgingBytes = (account.purgingBytes ?? 0) + bytes;
         account.trashBytes = 0;
+        await this.storageAlert(tx, account);
         await tx.put(userPK(userId), 'PROFILE', account);
         await new DeletionWorkflows(this).scheduleEmpty(tx, userId);
         await this.record(tx, userId, 'PROFILE_UPDATED', userId);
@@ -1601,7 +1808,7 @@ export class StorageService {
         await tx.put(userPK(userId), `SENT#${t.id}`, { id: t.id });
         if (t.recipientUserId) {
           await tx.put(userPK(t.recipientUserId), `RECEIVED#${t.id}`, { id: t.id });
-          await this.notification(tx, t.recipientUserId, 'TRANSFER_RECEIVED', { transferId: t.id });
+          await this.transferNotice(tx, t.recipientUserId, 'TRANSFER_RECEIVED', t, userId);
           await this.recordContact(tx, userId, t.recipientUserId);
           await this.record(tx, t.recipientUserId, 'TRANSFER_CREATED', t.id);
         } else {
@@ -1647,7 +1854,7 @@ export class StorageService {
           await tx.put('TRANSFER', t.id, t);
           await tx.delete(`PENDING#${account.email}`, t.id);
           await tx.put(userPK(userId), `RECEIVED#${t.id}`, { id: t.id });
-          await this.notification(tx, userId, 'TRANSFER_RECEIVED', { transferId: t.id });
+          await this.transferNotice(tx, userId, 'TRANSFER_RECEIVED', t, t.senderUserId);
           await this.recordContact(tx, t.senderUserId, userId);
           await this.record(tx, userId, 'TRANSFER_CREATED', t.id);
         });
@@ -1741,7 +1948,10 @@ export class StorageService {
       await tx.put('TRANSFER', id, t);
       if (t.recipientUserId) await this.record(tx, t.recipientUserId, `TRANSFER_${t.state}`, id);
       await this.record(tx, t.senderUserId, `TRANSFER_${t.state}`, id);
-      await this.notification(tx, t.senderUserId, `TRANSFER_${t.state}`, { transferId: id });
+      // Only the other side needs telling: the sender of a cancel, the recipient otherwise.
+      const counterparty = action === 'cancel' ? t.recipientUserId : t.senderUserId;
+      if (counterparty)
+        await this.transferNotice(tx, counterparty, `TRANSFER_${t.state}`, t, userId);
       return { transfer: t };
     });
   }
@@ -1874,7 +2084,7 @@ export class StorageService {
     },
   ) {
     return this.operation(userId, input.operationId, { action: 'share', ...input }, async (tx) => {
-      await this.owned(tx, userId, input.driveItemId);
+      const item = await this.owned(tx, userId, input.driveItemId);
       await assertBackupMutable(tx, userId, input.driveItemId, true);
       const recipient = await this.resolveRecipient(tx, input.recipient);
       assert(
@@ -1900,7 +2110,16 @@ export class StorageService {
       await tx.put('SHARE', share.id, share);
       await tx.put(userPK(recipient.recipientUserId), `ACCESS#${input.driveItemId}`, share);
       await tx.put(userPK(userId), `SHARE#${share.id}`, share);
-      await this.notification(tx, share.recipientUserId, 'SHARE_RECEIVED', { shareId: share.id });
+      // Changing an existing share's permission is not news worth a second notification.
+      if (!activeGrant(prior))
+        await this.notification(tx, share.recipientUserId, 'SHARE_RECEIVED', {
+          shareId: share.id,
+          itemId: item.id,
+          itemName: item.name,
+          itemType: item.type,
+          permission: share.permission,
+          actorName: await this.displayName(userId),
+        });
       await this.record(tx, share.recipientUserId, 'SHARE_CHANGED', share.id);
       await this.record(tx, userId, 'SHARE_CHANGED', share.id);
       return { share };
@@ -1915,6 +2134,7 @@ export class StorageService {
         'Only the owner can remove access.',
         403,
       );
+      const wasActive = !share.revokedAt && share.syncState !== 'DECLINED';
       share.revokedAt = now();
       if (share.syncState) await syncMembershipChanged(tx, share.ownerUserId);
       await tx.put('SHARE', id, share);
@@ -1926,6 +2146,14 @@ export class StorageService {
         await tx.put(userPK(share.recipientUserId), `ACCESS#${share.driveItemId}`, share);
       await tx.put(userPK(userId), `SHARE#${id}`, share);
       await this.record(tx, share.recipientUserId, 'SHARE_CHANGED', id);
+      if (wasActive)
+        await this.notification(tx, share.recipientUserId, 'SHARE_REVOKED', {
+          shareId: id,
+          itemId: share.driveItemId,
+          itemName: await this.itemName(userId, share.driveItemId),
+          sync: !!share.syncState,
+          actorName: await this.displayName(userId),
+        });
       return { share };
     });
   }
@@ -1937,7 +2165,10 @@ export class StorageService {
       if (share.revokedAt || (share.syncState && share.syncState !== 'ACCEPTED')) continue;
       try {
         const item = await this.owned(tx, share.ownerUserId, share.driveItemId);
-        items.push({ ...share, item });
+        items.push({
+          ...share,
+          item: received ? await this.viewed(userId, item, undefined, tx) : item,
+        });
       } catch {
         /* Deleted shared items are inaccessible. */
       }
@@ -1945,9 +2176,30 @@ export class StorageService {
     return { items };
   }
   async sharedList(userId: string, parentId: string, limit: number, cursor?: string) {
-    const { owner, item } = await this.authorized(new Transaction(this.repo), userId, parentId);
+    const tx = new Transaction(this.repo);
+    const { owner, item, access } = await this.authorized(tx, userId, parentId);
     assert(item.type === 'FOLDER', 'PARENT_NOT_FOUND', 'Choose a folder.', 400);
-    return this.list(owner, parentId, limit, cursor);
+    const page = await this.list(owner, parentId, limit, cursor);
+    if (!access) return page;
+    // One read each of the viewer's grants and favorites serves the whole page.
+    const favorites = new Set(
+      (await tx.list<{ id: string }>(userPK(userId), 'FAVORITE#')).map((f) => f.id),
+    );
+    const editable = new Set(
+      access === 'EDITOR'
+        ? []
+        : (await tx.list<ShareGrant>(userPK(userId), 'ACCESS#'))
+            .filter((g) => activeGrant(g) && g.permission === 'EDITOR')
+            .map((g) => g.driveItemId),
+    );
+    return {
+      ...page,
+      items: page.items.map((i) => ({
+        ...i,
+        access: access === 'EDITOR' || editable.has(i.id) ? ('EDITOR' as const) : access,
+        favorite: favorites.has(i.id),
+      })),
+    };
   }
   async registerDevice(
     userId: string,
@@ -2357,10 +2609,10 @@ export class StorageService {
     const items: (DriveItem & { syncDevices: { id: string; name: string }[] })[] = [];
     for (const id of ids) {
       try {
-        const { item } = await this.authorized(tx, userId, id);
+        const { item, access } = await this.authorized(tx, userId, id);
         if (item.type === 'FOLDER' && !(await backupForItem(tx, item.ownerUserId, item.id)))
           items.push({
-            ...item,
+            ...(await this.viewed(userId, item, access, tx)),
             syncDevices: mappings
               .filter((mapping) => mapping.folderIds.includes(id))
               .flatMap((mapping) => {
@@ -2428,7 +2680,14 @@ export class StorageService {
     });
   }
   async notifications(userId: string, limit = 50, cursor?: string) {
-    const page = await this.repo.query(userPK(userId), 'NOTIFICATION#', limit, cursor);
+    const page = await this.repo.query(
+      userPK(userId),
+      'NOTIFICATION#',
+      limit,
+      cursor,
+      undefined,
+      true,
+    );
     return { items: page.rows.map((r) => r.data), nextCursor: page.cursor };
   }
   async markNotification(userId: string, id: string) {

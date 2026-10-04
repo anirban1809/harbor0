@@ -120,3 +120,31 @@ it('lists every counted version by location and adds up to the storage ledger', 
   expect(after.rows.some((r) => r.itemId === old.id)).toBe(false);
   expect(after.rows.reduce((n, r) => n + r.countedBytes, 0)).toBe(after.storage.usedBytes);
 });
+it('counts a deleted file’s bytes while a sent transfer still holds them', async () => {
+  const sent = await upload('for bob', 'gift.txt', null);
+  await service.createTransfer('alice', {
+    operationId: op(),
+    recipient: { type: 'USERNAME', value: 'bob' },
+    items: [{ driveItemId: sent.id }],
+  });
+  const trashed = (
+    await service.mutate('alice', sent.id, {
+      operationId: op(),
+      baseRevision: sent.revision,
+      action: 'trash',
+    })
+  ).item;
+  await service.permanentDelete('alice', sent.id, {
+    operationId: op(),
+    baseRevision: trashed.revision,
+  });
+  const deletion = new DeletionWorkflows(service);
+  for (let i = 0; i < 5; i++) if (await deletion.step('alice', sent.id)) break;
+  const { rows, storage: usage } = await audit(100);
+  expect(rows.find((r) => r.itemId === sent.id)).toMatchObject({
+    state: 'RETAINED_FOR_TRANSFER',
+    countedBytes: 7,
+  });
+  expect(usage.usedBytes).toBe(7);
+  expect(rows.reduce((n, r) => n + r.countedBytes, 0)).toBe(usage.usedBytes);
+});

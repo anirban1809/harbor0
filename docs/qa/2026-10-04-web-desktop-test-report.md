@@ -165,6 +165,32 @@ Checks after the fixes:
 
 ### P2: wrong behaviour that users will hit
 
+**Status 2026-10-05: all fixed except P2-14, which is deferred by decision (leave the rate limit and upload flow as they are for now).** Regression tests fail on the previous commit.
+
+- **P2-1** Abandoned uploads release their reservation.
+  - Web: dismissing a failed upload, an error that can't be retried, closing the tab, and cancel all call `DELETE /v1/uploads/{id}`. The tab also warns before closing mid-upload.
+  - Desktop: abandoned upload ids are kept in the journal and released at the start of each sync pass.
+- **P2-2** The new error `OWNER_STORAGE_FULL` (409, no byte details) is used when a non-owner hits the owner's limit, and the owner gets one notification per hour. Web and desktop name the owner as the one out of storage. Desktop messages now include the needed and free bytes. Sync retries right away when the change feed shows storage was freed.
+- **P2-3** Non-owners can't rename, move or trash a shared folder itself.
+- **P2-4** Each person has their own favourites.
+- **P2-5** Editors can restore old versions (charged to the owner).
+- **P2-6** On a name clash, the web upload tray offers "Replace" or "Keep both". There is also an "Upload new version" menu item.
+- **P2-7** The API returns a new `access` field on shared items. The web hides write actions for viewers, and editors can't change the shared folder itself.
+- **P2-8** "Share access" is in the file menus on web and desktop. Shared → Sent can remove access.
+  - *Gap:* `/v1/shares/sent` doesn't name who the item is shared with yet.
+- **P2-9** The ZIP sanitises entry names and de-duplicates them instead of failing.
+- **P2-10** Moves check the depth of the whole subtree being moved. Create, list and upload use the same depth limit.
+- **P2-11** The transport handles non-JSON errors (`BACKEND_UNAVAILABLE`). Desktop treats 5xx and network errors as an outage of the whole pass, with backoff. (Request timeouts already shipped in bba1a81.)
+- **P2-12** The `~id` suffix now goes before the extension, and `%` and `#` are kept. Files already synced keep their old-style local name.
+- **P2-13** Sorts that need the whole folder load the remaining pages first.
+- **P2-15** Desktop shows a persistent notice and an OS notification when a sync folder is detached (owner stopped sharing, folder deleted, or removed elsewhere). The sign-in screen explains a remote sign-out.
+- **P2-16** Notifications are newest first, go only to the other party, are de-duplicated on re-share, and include `SHARE_REVOKED`. Their data now has `actorName`, `itemName` and ids. The web shows specific text with links, an unread section in the drawer, and "Mark all as read".
+- **P3**
+  - Storage warnings re-arm when space is freed.
+  - The storage audit counts bytes held by transfers.
+  - "Back up now" checks free space before saying it's backing up.
+  - The desktop sidebar flags failed backup runs.
+
 | # | Bug | Where | Source |
 |---|---|---|---|
 | P2-1 | **Reserved storage is held for 24 h after an abandoned upload.** It happens when the user: dismisses failed uploads ("Dismiss finished uploads"); closes the tab mid-upload; hits a revision conflict or revoked access during an upload; or deletes or changes a file locally during its desktop upload. New uploads are then refused while the meter shows free space, and the Storage page shows a phantom "150 KB uploading". Nothing calls `DELETE /v1/uploads/{id}`. | Web + Desktop | `app-shell.tsx` `dismissUploads()` ~803, `apps/web/lib/upload.ts:180-183`, `apps/desktop/src/sync.ts:1096`, `transfers.ts:156,188` |

@@ -117,3 +117,17 @@ describe('transferRate', () => {
     ).toBe(1000);
   });
 });
+describe('upload name conflicts', () => {
+  it('offers replace only when every taken name is a file', () => {
+    const [row] = summarizeUploads([
+      file('a', { group: trip, phase: 'failed', conflict: 'file' }),
+      file('b', { group: trip, phase: 'done' }),
+      file('c', { group: trip, phase: 'failed', error: 'Network' }),
+    ]);
+    expect(row.conflictKeys).toEqual(['a']);
+    expect(row.replaceable).toBe(true);
+    const [folder] = summarizeUploads([file('d', { phase: 'failed', conflict: 'folder' })]);
+    expect(folder.conflictKeys).toEqual(['d']);
+    expect(folder.replaceable).toBe(false);
+  });
+});

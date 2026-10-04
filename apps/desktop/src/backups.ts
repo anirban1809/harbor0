@@ -5,7 +5,7 @@ import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src
 import { Journal, type Root, type LocalJob } from './journal';
 import type { DriveItem } from '@harbor/contracts';
 import { contained, internalPath, metadataSegment, safeParents, safeSegment } from './paths';
-import { downloadFile, hashFile } from './transfers';
+import { cancelUpload, downloadFile, hashFile } from './transfers';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
@@ -87,7 +87,7 @@ export class FolderBackups {
     const ready: string[] = [];
     for (const job of this.journal.jobs().filter((j) => j.rootId === root.id)) {
       if (this.ignored(root, job.relativePath)) {
-        this.journal.finish(job.id);
+        this.journal.drop(job.id);
         continue;
       }
       if (!manual && Date.now() < (job.payload.retryAfter ?? 0)) continue;
@@ -98,11 +98,11 @@ export class FolderBackups {
         info = await lstat(filename);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        this.journal.finish(job.id);
+        this.journal.drop(job.id);
         continue;
       }
       if (!info.isFile() || info.isSymbolicLink()) {
-        this.journal.finish(job.id);
+        this.journal.drop(job.id);
         continue;
       }
       if (job.kind === 'delete') {
@@ -166,6 +166,10 @@ export class FolderBackups {
       const ready = await this.changed(root, manual);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
+        // Nothing left that failed (deleted, or saved meanwhile): the folder is backed up.
+        const current = this.journal.roots().find((r) => r.id === root.id);
+        if (current?.lastBackupError && !this.journal.jobs().some((j) => j.rootId === root.id))
+          this.journal.root({ ...current, lastBackupError: undefined });
         await this.upToDate(root, url);
         return;
       }
@@ -253,9 +257,7 @@ export class FolderBackups {
               throw error;
             if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
             if (job.payload.upload?.uploadId) {
-              await this.api.request(`/v1/uploads/${job.payload.upload.uploadId}`, {
-                method: 'DELETE',
-              });
+              await cancelUpload(this.api, job.payload.upload.uploadId);
               job.payload.upload = { operationId: crypto.randomUUID() };
             }
             job.attempts++;
@@ -274,6 +276,9 @@ export class FolderBackups {
       body: run.error ? { error: run.error } : {},
     });
     this.journal.set(key, null);
+    const current = this.journal.roots().find((r) => r.id === root.id);
+    if (current && current.lastBackupError !== run.error)
+      this.journal.root({ ...current, lastBackupError: run.error });
   }
   /** Files whose current content is exactly what the cloud copy holds; everything else is left alone. */
   private async saved(root: Root, relative = '') {

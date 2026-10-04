@@ -104,12 +104,18 @@ export function UploadTray({
   onPause,
   onResume,
   onCancel,
+  onReplace,
+  onKeepBoth,
 }: {
   uploads: FileUpload[];
   onDismiss: () => void;
   onPause?: (keys: string[]) => void;
   onResume?: (keys: string[]) => void;
   onCancel?: (keys: string[]) => void;
+  /** Upload files whose name is taken as new versions of the existing files. */
+  onReplace?: (keys: string[]) => void;
+  /** Upload files whose name is taken under a numbered name instead. */
+  onKeepBoth?: (keys: string[]) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const totals = uploadTotals(uploads);
@@ -118,7 +124,7 @@ export function UploadTray({
   if (!uploads.length) return null;
   const activity = orderActivity(summarizeUploads(uploads));
   const finished = activity.filter((a) => a.phase === 'done' || a.phase === 'failed').length;
-  const failedKeys = uploads.filter((u) => u.phase === 'failed').map((u) => u.key);
+  const failedKeys = uploads.filter((u) => u.phase === 'failed' && !u.conflict).map((u) => u.key);
   const openKeys = uploads.filter((u) => u.phase !== 'done').map((u) => u.key);
 
   const title = running
@@ -202,12 +208,38 @@ export function UploadTray({
                     {transferring && (
                       <Bar value={a.loaded} max={a.size} label={`${a.name} progress`} />
                     )}
+                    {a.conflictKeys.length > 0 && (onReplace || onKeepBoth) && (
+                      <span className="upload-conflict">
+                        {onReplace && a.replaceable && (
+                          <Button
+                            variant="link"
+                            size="sm"
+                            aria-label={`Replace the existing ${a.conflictKeys.length === 1 ? 'file' : 'files'} with ${a.name}`}
+                            onClick={() => onReplace(a.conflictKeys)}
+                          >
+                            Replace
+                          </Button>
+                        )}
+                        {onKeepBoth && (
+                          <Button
+                            variant="link"
+                            size="sm"
+                            aria-label={`Keep both, uploading ${a.name} under a new name`}
+                            onClick={() => onKeepBoth(a.conflictKeys)}
+                          >
+                            Keep both
+                          </Button>
+                        )}
+                      </span>
+                    )}
                   </div>
                   <span className="upload-actions">
                     {a.phase === 'done' ? (
                       <Check size={16} className="upload-done" aria-label="Uploaded" />
                     ) : resumable ? (
-                      onResume && (
+                      onResume &&
+                      // Retrying a name conflict fails the same way; it offers Replace instead.
+                      !(a.phase === 'failed' && a.conflictKeys.length === a.filesFailed) && (
                         <Button
                           variant="ghost"
                           size="icon-sm"

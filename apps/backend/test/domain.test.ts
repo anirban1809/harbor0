@@ -881,3 +881,382 @@ describe('instant permanent deletion', () => {
     expect((await service.list('alice', null)).items.map((i) => i.name)).toEqual(['own.txt']);
   });
 });
+describe('shared folders for non-owners', () => {
+  const folder = async (name: string, parentId: string | null = null, owner = 'alice') =>
+    (await service.createFolder(owner, { operationId: op(), parentId, name })).item;
+  const share = async (driveItemId: string, permission: 'EDITOR' | 'VIEWER', to = 'bob') =>
+    (
+      await service.createShare('alice', {
+        operationId: op(),
+        driveItemId,
+        recipient: { type: 'USERNAME', value: to },
+        permission,
+      })
+    ).share;
+  async function uploadAs(
+    user: string,
+    name: string,
+    data: string,
+    parentId: string | null,
+    prior?: { id: string; revision: number },
+  ) {
+    const hash = createHash('sha256').update(data).digest('hex');
+    const r = await service.createUpload(user, {
+      operationId: op(),
+      parentId,
+      name,
+      sizeBytes: Buffer.byteLength(data),
+      mimeType: 'text/plain',
+      contentHash: hash,
+      ...(prior ? { driveItemId: prior.id, baseRevision: prior.revision } : {}),
+    });
+    const u = await service.getUpload(user, r.upload.id);
+    storage.uploads.get(u.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    return (await service.completeUpload(user, u.id, [{ partNumber: 1, etag: 'p' }], hash)).item;
+  }
+  const setQuota = (user: string, bytes: number) =>
+    transact(repo, async (tx) => {
+      const u = await service.account(tx, user);
+      u.storageQuotaBytes = bytes;
+      await tx.put(userPK(user), 'PROFILE', u);
+    });
+  const notices = async (user: string) =>
+    (await service.notifications(user, 50)).items as {
+      type: string;
+      data: Record<string, unknown>;
+    }[];
+
+  it('reports the caller’s access on shared items and never on the owner’s own', async () => {
+    const root = await folder('Team');
+    const inner = await folder('Inner', root.id);
+    const doc = await uploadAs('alice', 'doc.txt', 'doc', inner.id);
+    await share(root.id, 'VIEWER');
+    await share(inner.id, 'EDITOR');
+    expect((await service.metadata('bob', root.id)).item.access).toBe('VIEWER');
+    expect((await service.metadata('bob', doc.id)).item.access).toBe('EDITOR');
+    expect((await service.sharedList('bob', root.id, 100)).items).toMatchObject([
+      { id: inner.id, access: 'EDITOR' },
+    ]);
+    expect((await service.sharedList('bob', inner.id, 100)).items).toMatchObject([
+      { id: doc.id, access: 'EDITOR' },
+    ]);
+    expect((await service.shares('bob', true)).items.map((s) => s.item.access).sort()).toEqual([
+      'EDITOR',
+      'VIEWER',
+    ]);
+    const renamed = await service.mutate('bob', doc.id, {
+      operationId: op(),
+      baseRevision: doc.revision,
+      name: 'renamed.txt',
+    });
+    expect(renamed.item.access).toBe('EDITOR');
+    expect((await service.metadata('alice', doc.id)).item).not.toHaveProperty('access');
+    expect((await service.sharedList('alice', inner.id, 100)).items[0]).not.toHaveProperty(
+      'access',
+    );
+  });
+
+  it('lets editors change a shared folder’s contents but not the shared folder itself', async () => {
+    const root = await folder('Team');
+    const other = await folder('Elsewhere');
+    const child = await folder('Child', root.id);
+    await share(root.id, 'EDITOR');
+    for (const change of [
+      { name: 'Hijacked' },
+      { parentId: other.id },
+      { action: 'trash' as const },
+    ])
+      await expect(
+        service.mutate('bob', root.id, { operationId: op(), baseRevision: 1, ...change }),
+      ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+    expect((await service.metadata('alice', root.id)).item).toMatchObject({
+      name: 'Team',
+      revision: 1,
+      deletedAt: null,
+    });
+    const renamed = await service.mutate('bob', child.id, {
+      operationId: op(),
+      baseRevision: child.revision,
+      name: 'Renamed',
+    });
+    expect(renamed.item.name).toBe('Renamed');
+    await service.mutate('bob', child.id, {
+      operationId: op(),
+      baseRevision: renamed.item.revision,
+      action: 'trash',
+    });
+    expect((await service.sharedList('bob', root.id, 100)).items).toHaveLength(0);
+  });
+
+  it('keeps each person’s favorites their own', async () => {
+    const root = await folder('Team');
+    await share(root.id, 'EDITOR');
+    const { item } = await service.mutate('bob', root.id, {
+      operationId: op(),
+      baseRevision: 1,
+      favorite: true,
+    });
+    expect(item).toMatchObject({ favorite: true, revision: 1 });
+    expect((await service.metadata('alice', root.id)).item).toMatchObject({
+      favorite: false,
+      revision: 1,
+    });
+    expect((await service.metadata('bob', root.id)).item.favorite).toBe(true);
+    expect((await service.shares('bob', true)).items[0].item.favorite).toBe(true);
+    await service.mutate('bob', root.id, { operationId: op(), baseRevision: 1, favorite: false });
+    expect((await service.metadata('bob', root.id)).item.favorite).toBe(false);
+    // Viewers may favorite too, and an owner's favorite still changes the item.
+    const viewed = await folder('Viewed');
+    await share(viewed.id, 'VIEWER');
+    await service.mutate('bob', viewed.id, { operationId: op(), baseRevision: 1, favorite: true });
+    expect((await service.metadata('bob', viewed.id)).item.favorite).toBe(true);
+    const own = await service.mutate('alice', root.id, {
+      operationId: op(),
+      baseRevision: 1,
+      favorite: true,
+    });
+    expect(own.item).toMatchObject({ favorite: true, revision: 2 });
+    expect((await service.metadata('bob', root.id)).item.favorite).toBe(false);
+  });
+
+  it('lets editors, not viewers, restore an old version charged to the owner', async () => {
+    const root = await folder('Team');
+    const first = await uploadAs('alice', 'plan.txt', 'first', root.id);
+    const second = await uploadAs('alice', 'plan.txt', 'second!', root.id, first);
+    const { share: grant } = await service.createShare('alice', {
+      operationId: op(),
+      driveItemId: root.id,
+      recipient: { type: 'USERNAME', value: 'bob' },
+      permission: 'VIEWER',
+    });
+    await expect(
+      service.restoreVersion('bob', second.id, first.currentVersionId!, {
+        operationId: op(),
+        baseRevision: second.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+    await service.revokeShare('alice', grant.id, op());
+    await share(root.id, 'EDITOR');
+    const { item } = await service.restoreVersion('bob', second.id, first.currentVersionId!, {
+      operationId: op(),
+      baseRevision: second.revision,
+    });
+    expect(item).toMatchObject({ sizeBytes: 5, access: 'EDITOR' });
+    expect((await service.me('alice')).storage.usedBytes).toBe(5 + 7 + 5);
+    expect((await service.me('bob')).storage.usedBytes).toBe(0);
+  });
+
+  it('blames the owner’s full storage without revealing it, and tells the owner once', async () => {
+    const root = await folder('Team');
+    const first = await uploadAs('alice', 'plan.txt', 'first', root.id);
+    const second = await uploadAs('alice', 'plan.txt', 'second', root.id, first);
+    await share(root.id, 'EDITOR');
+    await setQuota('alice', 11);
+    const attempt = () =>
+      service.createUpload('bob', {
+        operationId: op(),
+        parentId: root.id,
+        name: 'big.txt',
+        sizeBytes: 100,
+        mimeType: 'text/plain',
+      });
+    const refused = await attempt().catch((e: unknown) => e);
+    expect(refused).toMatchObject({
+      code: 'OWNER_STORAGE_FULL',
+      status: 409,
+      message: 'The owner of this shared folder is out of storage.',
+    });
+    expect((refused as { details?: unknown }).details).toBeUndefined();
+    await expect(attempt()).rejects.toMatchObject({ code: 'OWNER_STORAGE_FULL' });
+    await expect(
+      service.restoreVersion('bob', second.id, first.currentVersionId!, {
+        operationId: op(),
+        baseRevision: second.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'OWNER_STORAGE_FULL' });
+    const blocked = (await notices('alice')).filter(
+      (n) => n.type === 'SHARED_UPLOAD_BLOCKED_BY_STORAGE',
+    );
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].data).toMatchObject({ actorName: 'Bob', itemId: root.id, itemName: 'Team' });
+    await expect(
+      service.createUpload('alice', {
+        operationId: op(),
+        parentId: root.id,
+        name: 'mine.txt',
+        sizeBytes: 100,
+        mimeType: 'text/plain',
+      }),
+    ).rejects.toMatchObject({
+      code: 'STORAGE_QUOTA_EXCEEDED',
+      details: { requiredBytes: 100, availableBytes: 0 },
+    });
+  });
+});
+describe('folder depth', () => {
+  const chain = async (prefix: string, levels: number, parentId: string | null = null) => {
+    const ids: string[] = [];
+    for (let i = 1; i <= levels; i++)
+      ids.push(
+        (
+          await service.createFolder('alice', {
+            operationId: op(),
+            parentId: ids.at(-1) ?? parentId,
+            name: `${prefix}${i}`,
+          })
+        ).item.id,
+      );
+    return ids;
+  };
+  it('creates, lists and uploads at the deepest level, but no folder below it', async () => {
+    const ids = await chain('L', 32);
+    expect((await service.list('alice', ids[31])).items).toEqual([]);
+    await uploaded('deep.txt', 'deep', ids[31]);
+    expect((await service.list('alice', ids[31])).items).toHaveLength(1);
+    await expect(
+      service.createFolder('alice', { operationId: op(), parentId: ids[31], name: 'Too deep' }),
+    ).rejects.toMatchObject({ code: 'PATH_TOO_DEEP' });
+  });
+  it('refuses to move a folder tree where its subfolders would pass the limit', async () => {
+    const a = await chain('A', 20);
+    const b = await chain('B', 13);
+    await expect(
+      service.mutate('alice', b[0], { operationId: op(), baseRevision: 1, parentId: a[19] }),
+    ).rejects.toMatchObject({ code: 'PATH_TOO_DEEP', status: 409 });
+    // 20 + 12 levels fit exactly, and a file may go anywhere a folder can be listed.
+    const fits = await service.mutate('alice', b[1], {
+      operationId: op(),
+      baseRevision: 1,
+      parentId: a[19],
+    });
+    expect(fits.item.parentId).toBe(a[19]);
+    const file = (await uploaded('f.txt', 'f')).item;
+    await service.mutate('alice', file.id, {
+      operationId: op(),
+      baseRevision: file.revision,
+      parentId: b[12],
+    });
+    expect((await service.list('alice', b[12])).items).toHaveLength(1);
+  });
+});
+describe('notifications', () => {
+  const notices = async (user: string, limit = 50, cursor?: string) =>
+    (await service.notifications(user, limit, cursor)) as {
+      items: { type: string; data: Record<string, unknown> }[];
+      nextCursor: string | null;
+    };
+  const send = async () =>
+    (
+      await service.createTransfer('alice', {
+        operationId: op(),
+        recipient: { type: 'USERNAME', value: 'bob' },
+        items: [{ driveItemId: (await uploaded(`${randomUUID()}.txt`)).item.id }],
+      })
+    ).transfer;
+
+  it('lists the newest first, page by page', async () => {
+    for (let i = 0; i < 3; i++) {
+      await send();
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const first = await notices('bob', 2);
+    const second = await notices('bob', 2, first.nextCursor!);
+    const ids = [...first.items, ...second.items].map((n) => n.data.transferId);
+    const sent = (await service.listTransfers('alice', 'sent')).items
+      .sort((x, y) => y.createdAt.localeCompare(x.createdAt))
+      .map((t) => t.id);
+    expect(ids).toEqual(sent);
+    expect(second.nextCursor).toBeNull();
+    expect(first.items[0].data).toMatchObject({ actorName: 'Alice', itemCount: 1 });
+  });
+
+  it('tells only the other side of a transfer what happened', async () => {
+    const cancelled = await send();
+    await service.transferAction('alice', cancelled.id, 'cancel', op());
+    expect((await notices('alice')).items).toEqual([]);
+    expect((await notices('bob')).items.find((n) => n.type === 'TRANSFER_CANCELLED')).toMatchObject(
+      {
+        data: { transferId: cancelled.id, actorName: 'Alice' },
+      },
+    );
+    const declined = await send();
+    await service.transferAction('bob', declined.id, 'decline', op());
+    expect((await notices('alice')).items.map((n) => n.type)).toEqual(['TRANSFER_DECLINED']);
+    expect((await notices('alice')).items[0].data.actorName).toBe('Bob');
+    expect((await notices('bob')).items.map((n) => n.type)).not.toContain('TRANSFER_DECLINED');
+  });
+
+  it('announces a share once, and its removal', async () => {
+    const shared = (
+      await service.createFolder('alice', { operationId: op(), parentId: null, name: 'Team' })
+    ).item;
+    const input = {
+      driveItemId: shared.id,
+      recipient: { type: 'USERNAME' as const, value: 'bob' },
+    };
+    const { share } = await service.createShare('alice', {
+      ...input,
+      operationId: op(),
+      permission: 'VIEWER',
+    });
+    await service.createShare('alice', { ...input, operationId: op(), permission: 'EDITOR' });
+    expect((await notices('bob')).items).toMatchObject([
+      {
+        type: 'SHARE_RECEIVED',
+        data: { shareId: share.id, itemId: shared.id, itemName: 'Team', actorName: 'Alice' },
+      },
+    ]);
+    await service.revokeShare('alice', share.id, op());
+    await service.revokeShare('alice', share.id, op());
+    expect((await notices('bob')).items.map((n) => n.type).sort()).toEqual([
+      'SHARE_RECEIVED',
+      'SHARE_REVOKED',
+    ]);
+    expect(
+      (await notices('bob')).items.find((n) => n.type === 'SHARE_REVOKED')!.data,
+    ).toMatchObject({
+      shareId: share.id,
+      itemName: 'Team',
+      actorName: 'Alice',
+    });
+  });
+});
+it('re-arms storage warnings once space is freed', async () => {
+  await transact(repo, async (tx) => {
+    const u = await service.account(tx, 'alice');
+    u.storageQuotaBytes = 100;
+    await tx.put(userPK('alice'), 'PROFILE', u);
+  });
+  const level = async () =>
+    (
+      (await repo.get({ pk: userPK('alice'), sk: 'PROFILE' }))!.data as {
+        storageAlertLevel?: number;
+      }
+    ).storageAlertLevel;
+  const { item } = await uploaded('big.txt', 'x'.repeat(90));
+  expect(await level()).toBe(80);
+  const trashed = (
+    await service.mutate('alice', item.id, {
+      operationId: op(),
+      baseRevision: item.revision,
+      action: 'trash',
+    })
+  ).item;
+  await service.emptyTrash('alice', { operationId: op() });
+  expect(await level()).toBe(0);
+  expect(trashed.deletedAt).not.toBeNull();
+  const again = (await uploaded('again.txt', 'y'.repeat(85))).item;
+  expect(await level()).toBe(80);
+  const deleted = (
+    await service.mutate('alice', again.id, {
+      operationId: op(),
+      baseRevision: again.revision,
+      action: 'trash',
+    })
+  ).item;
+  await service.permanentDelete('alice', again.id, {
+    operationId: op(),
+    baseRevision: deleted.revision,
+  });
+  expect(await level()).toBe(0);
+});

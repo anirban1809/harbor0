@@ -13,6 +13,15 @@ export type ActivityUpdate = {
   createdAt?: string;
 };
 type Entry = ActivityUpdate & { owner: string; time: string; read: boolean };
+/** An unread account notification from the server, e.g. a transfer or share from someone. */
+export type AccountNotice = { id: string; title: string; time: string };
+const when = (time: string) =>
+  new Date(time).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 
 export function useActivityFeed(accountId?: string) {
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -58,8 +67,15 @@ export function ActivityNotifications({
   actionCount = 0,
   open: controlledOpen,
   onOpenChange,
+  notices = [],
+  onOpenNotice,
+  onMarkAllRead,
 }: {
   feed: ReturnType<typeof useActivityFeed>;
+  /** Unread account notifications, newest first. */
+  notices?: AccountNotice[];
+  onOpenNotice?: (id: string) => void;
+  onMarkAllRead?: () => void;
   onAllNotifications?: () => void;
   requiredActions?: ReactNode;
   actionCount?: number;
@@ -69,10 +85,11 @@ export function ActivityNotifications({
   const [localOpen, setLocalOpen] = useState(false);
   const open = controlledOpen ?? localOpen;
   const setOpen = onOpenChange ?? setLocalOpen;
-  const unread = feed.entries.filter((entry) => !entry.read).length;
+  const unread = feed.entries.filter((entry) => !entry.read).length + notices.length;
+  const unreadActivity = feed.entries.some((entry) => !entry.read);
   useEffect(() => {
-    if (open && unread) feed.markRead();
-  }, [open, unread, feed.markRead]);
+    if (open && unreadActivity) feed.markRead();
+  }, [open, unreadActivity, feed.markRead]);
   return (
     <>
       <Button
@@ -111,7 +128,37 @@ export function ActivityNotifications({
         }
       >
         {requiredActions}
-        {!feed.entries.length && !actionCount ? (
+        {notices.length > 0 && (
+          <section className="activity-notices" aria-label="Unread notifications">
+            <div className="activity-notices-head">
+              <strong>Unread</strong>
+              {onMarkAllRead && (
+                <Button variant="link" size="sm" onClick={onMarkAllRead}>
+                  Mark all as read
+                </Button>
+              )}
+            </div>
+            <ol className="activity-list">
+              {notices.map((notice) => (
+                <li key={notice.id} data-status="info">
+                  <Bell size={17} aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="activity-notice"
+                    onClick={() => {
+                      setOpen(false);
+                      onOpenNotice?.(notice.id);
+                    }}
+                  >
+                    <p>{notice.title}</p>
+                    <time dateTime={notice.time}>{when(notice.time)}</time>
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+        {!feed.entries.length && !actionCount && !notices.length ? (
           <EmptyState
             compact
             icon={<Bell />}
@@ -119,34 +166,29 @@ export function ActivityNotifications({
             description="File activity and cloud copy updates will appear here."
           />
         ) : (
-          <ol className="activity-list">
-            {feed.entries.map((entry) => {
-              const Icon =
-                entry.status === 'error'
-                  ? CircleAlert
-                  : entry.status === 'success'
-                    ? CheckCircle2
-                    : entry.status === 'progress'
-                      ? LoaderCircle
-                      : Clock3;
-              return (
-                <li key={entry.id} data-status={entry.status}>
-                  <Icon size={17} aria-hidden="true" />
-                  <div>
-                    <p>{entry.message}</p>
-                    <time dateTime={entry.time}>
-                      {new Date(entry.time).toLocaleString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: 'numeric',
-                        minute: '2-digit',
-                      })}
-                    </time>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+          feed.entries.length > 0 && (
+            <ol className="activity-list">
+              {feed.entries.map((entry) => {
+                const Icon =
+                  entry.status === 'error'
+                    ? CircleAlert
+                    : entry.status === 'success'
+                      ? CheckCircle2
+                      : entry.status === 'progress'
+                        ? LoaderCircle
+                        : Clock3;
+                return (
+                  <li key={entry.id} data-status={entry.status}>
+                    <Icon size={17} aria-hidden="true" />
+                    <div>
+                      <p>{entry.message}</p>
+                      <time dateTime={entry.time}>{when(entry.time)}</time>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )
         )}
       </Drawer>
     </>

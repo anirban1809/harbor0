@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError } from '@harbor/api-client';
+import { ApiError, createTransport } from '@harbor/api-client';
 import { backoffDelay, retrying } from '../src/retry';
 import { RenewalError } from '../src/session';
 
@@ -92,5 +92,30 @@ describe('desktop request retries', () => {
       retrying(hung, instant, 5)('/v1/uploads', { method: 'POST', body: {} }),
     ).rejects.toMatchObject({ name: 'TimeoutError' });
     expect(hung).toHaveBeenCalledTimes(1);
+  });
+  it('retries with backoff through a gateway error page, which never surfaces as a JSON error', async () => {
+    const pages = [502, 503];
+    const fetch = vi.fn(async () => {
+      const status = pages.shift();
+      return status
+        ? new Response('<html>Bad Gateway</html>', {
+            status,
+            headers: { 'Content-Type': 'text/html' },
+          })
+        : Response.json({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const delays: number[] = [];
+    const transport = retrying(createTransport('https://api.test'), (retry) => {
+      delays.push(backoffDelay(retry, () => 0));
+      return 0;
+    });
+    try {
+      await expect(transport('/v1/users/me')).resolves.toEqual({ ok: true });
+      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(delays).toEqual([250, 500]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

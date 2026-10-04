@@ -46,3 +46,12 @@ export function driveView<T extends FileEntry>(
     return (direction === 'desc' ? -order : order) || a.name.localeCompare(b.name);
   });
 }
+/**
+ * Listings arrive by name, a page at a time. Any other order, or a filter, is only right once
+ * every page is loaded; name order alone is right page by page.
+ */
+export const needsWholeFolder = (filters: DriveFilters) =>
+  filters.sort !== 'name-asc' ||
+  filters.foldersFirst ||
+  filters.type !== 'all' ||
+  filters.modified !== 'all';

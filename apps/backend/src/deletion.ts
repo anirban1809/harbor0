@@ -66,6 +66,7 @@ export class DeletionWorkflows {
           account.trashBytes = Math.max(0, (account.trashBytes ?? 0) - budget);
           account.storageUsedBytes -= budget;
           account.purgingBytes = (account.purgingBytes ?? 0) + budget;
+          await s.storageAlert(tx, account);
           await tx.put(userPK(userId), 'PROFILE', account);
         }
       }
@@ -130,6 +131,7 @@ export class DeletionWorkflows {
     if (emptied(root, account)) {
       account.storageUsedBytes -= bytes;
       account.purgingBytes = (account.purgingBytes ?? 0) + bytes;
+      await this.service.storageAlert(tx, account);
     } else account.trashBytes = (account.trashBytes ?? 0) + bytes;
     await tx.put(userPK(userId), 'PROFILE', account);
   }
@@ -330,6 +332,7 @@ export class DeletionWorkflows {
           const account = await s.account(tx, userId);
           account.storageUsedBytes -= removed - covered;
           account.purgingBytes = (account.purgingBytes ?? 0) - covered;
+          await s.storageAlert(tx, account);
           await tx.put(userPK(userId), 'PROFILE', account);
           if (meta && covered)
             await tx.put(`PURGE#${id}`, 'META', { ...meta, budget: meta.budget! - covered });

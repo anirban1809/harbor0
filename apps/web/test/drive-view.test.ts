@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultDriveFilters, driveView, isSystemFile } from '../lib/drive-view';
+import { defaultDriveFilters, driveView, isSystemFile, needsWholeFolder } from '../lib/drive-view';
 import type { FileEntry } from '../lib/file-metadata';
 const items: FileEntry[] = [
   {
@@ -58,5 +58,14 @@ describe('Drive filtering and sorting', () => {
         Date.parse('2026-09-27T12:00:00Z'),
       ),
     ).toEqual([]);
+  });
+  it('loads the whole folder for any order but the server’s name order', () => {
+    expect(needsWholeFolder(defaultDriveFilters)).toBe(true);
+    const byName = { ...defaultDriveFilters, sort: 'name-asc', foldersFirst: false };
+    expect(needsWholeFolder(byName)).toBe(false);
+    expect(needsWholeFolder({ ...byName, foldersFirst: true })).toBe(true);
+    expect(needsWholeFolder({ ...byName, type: 'image' })).toBe(true);
+    expect(needsWholeFolder({ ...byName, modified: '7' })).toBe(true);
+    expect(needsWholeFolder({ ...byName, sort: 'size-desc' })).toBe(true);
   });
 });

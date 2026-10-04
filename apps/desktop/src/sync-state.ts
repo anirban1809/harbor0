@@ -8,6 +8,7 @@ export type SyncIssueCode =
   | 'AUTH_INVALID'
   | 'CONFLICT'
   | 'FOLDER_RECOVERED'
+  | 'SYNC_DETACHED'
   | 'SYNC_ERROR';
 export type SyncIssue = {
   id: string;
@@ -19,11 +20,16 @@ export type SyncIssue = {
   // Set when the problem belongs to one queued file rather than the whole folder.
   jobId?: string;
   scope?: 'item';
+  // A refused upload: its size and the free space, or that the shared folder's owner is full.
+  storage?: { requiredBytes?: number; availableBytes?: number; owner?: boolean };
   at: string;
 };
 // Kept until the user dismisses them; a later successful sync does not clear these.
 export const stickyIssue = (issue: SyncIssue) =>
-  issue.code === 'CONFLICT' || issue.code === 'FOLDER_RECOVERED';
+  issue.code === 'CONFLICT' || issue.code === 'FOLDER_RECOVERED' || issue.code === 'SYNC_DETACHED';
+// Notices of something that already happened; nothing is waiting on the user.
+const notice = (issue: SyncIssue) =>
+  issue.code === 'FOLDER_RECOVERED' || issue.code === 'SYNC_DETACHED';
 export type SyncProgress = {
   rootId: string;
   direction: 'upload' | 'download';
@@ -97,11 +103,7 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
 }
 export function globalSyncState(roots: SyncFolder[], state: SyncRuntime, jobs: SyncJob[]) {
   const ids = new Set(roots.map((root) => root.id));
-  if (
-    state.issues?.some(
-      (issue) => (ids.has(issue.rootId) || !issue.rootId) && issue.code !== 'FOLDER_RECOVERED',
-    )
-  )
+  if (state.issues?.some((issue) => (ids.has(issue.rootId) || !issue.rootId) && !notice(issue)))
     return 'Action required';
   if (state.paused) return 'Paused';
   if (!state.online) return 'Offline';
@@ -145,7 +147,19 @@ export function syncIssueCode(error: unknown, item = false): SyncIssueCode {
   if (code === 'ENOENT' || code === 'ENOTDIR') return item ? 'SYNC_ERROR' : 'FOLDER_MISSING';
   if (code === 'EACCES' || code === 'EPERM') return 'PERMISSION_DENIED';
   if (code === 'ENOSPC') return 'DISK_FULL';
-  if (code === 'STORAGE_QUOTA_EXCEEDED') return code;
+  if (code === 'STORAGE_QUOTA_EXCEEDED' || code === 'OWNER_STORAGE_FULL')
+    return 'STORAGE_QUOTA_EXCEEDED';
   if (code === 'AUTH_INVALID' || code === 'DEVICE_REVOKED') return 'AUTH_INVALID';
   return 'SYNC_ERROR';
+}
+/** What a refused upload needed; a shared folder's owner's free space is not theirs to see. */
+export function storageNeed(error: unknown, shared: boolean): SyncIssue['storage'] {
+  if (shared || (error as { code?: string })?.code === 'OWNER_STORAGE_FULL') return { owner: true };
+  const details = (error as { details?: Record<string, unknown> })?.details ?? {};
+  const bytes = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  return {
+    requiredBytes: bytes(details.requiredBytes),
+    availableBytes: bytes(details.availableBytes),
+  };
 }
