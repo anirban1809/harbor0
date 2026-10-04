@@ -455,7 +455,11 @@ export class SyncEngine {
   }
   private changeConfiguration(change: () => void) {
     const task = this.mutation.then(async () => {
-      // Finish the current transfer before detaching its mapping; no files are deleted.
+      // End the current pass now rather than waiting minutes for it: an unfinished transfer
+      // resumes from the journal after the restart, and no files are deleted.
+      this.tickController.abort(
+        Object.assign(new Error('Sync restarted to apply new settings.'), { name: 'AbortError' }),
+      );
       await this.stop();
       await this.work;
       try {
@@ -1080,6 +1084,8 @@ export class SyncEngine {
           this.state.active = null;
           this.emit();
         } catch (e) {
+          // An ended pass is not this file's failure; it simply runs again next pass.
+          if (this.tickController.signal.aborted) throw e;
           job.attempts++;
           job.error = (e as Error).message;
           if (this.interrupts(e)) {
@@ -1200,7 +1206,7 @@ export class SyncEngine {
         ? 'harbor0 is unavailable right now. Sync resumes automatically.'
         : (e as Error).message;
       // A pass ended by the watchdog simply starts again; there is nothing to fix.
-      const restarted = (e as Error | undefined)?.name === 'TimeoutError';
+      const restarted = this.tickController.signal.aborted;
       // An ended session returns the app to sign-in by itself; there is nothing to fix here.
       const sessionEnded =
         e instanceof ApiError &&

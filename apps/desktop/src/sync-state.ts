@@ -62,6 +62,8 @@ export type SyncRuntime = {
   recent: SyncActivityItem[];
   // The local change ledger by root id: a folder is up to date only when nothing is pending.
   changes?: Record<string, import('./journal').ChangeSummary>;
+  // Folders whose contents are still being compared with the cloud.
+  reconciling?: string[];
 };
 export type SyncFolder = Root & {
   localPathDisplayName: string;
@@ -79,6 +81,9 @@ export type SyncJob = {
   attempts: number;
 };
 export const WAITING = 'Waiting for another device';
+// The live status knows when a check ends; the folder list is only as fresh as its last load.
+const reconciling = (root: SyncFolder, state: SyncRuntime) =>
+  state.reconciling ? state.reconciling.includes(root.id) : !!root.needsReconcile;
 export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[]) {
   const issues =
     state.issues?.filter(
@@ -97,7 +102,7 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
   )
     return 'Syncing';
   if (state.waiting?.some((item) => item.rootId === root.id)) return WAITING;
-  return root.needsReconcile || state.confirmationPendingRoots?.includes(root.id)
+  return reconciling(root, state) || state.confirmationPendingRoots?.includes(root.id)
     ? 'Syncing'
     : 'Up to date';
 }
@@ -113,7 +118,8 @@ export function globalSyncState(roots: SyncFolder[], state: SyncRuntime, jobs: S
     state.confirmationPendingRoots?.some((id) => ids.has(id)) ||
     [...ids].some((id) => (state.changes?.[id]?.pending ?? 0) > 0) ||
     roots.some(
-      (root) => !root.paused && (root.needsReconcile || jobs.some((job) => job.rootId === root.id)),
+      (root) =>
+        !root.paused && (reconciling(root, state) || jobs.some((job) => job.rootId === root.id)),
     )
   )
     return 'Syncing';

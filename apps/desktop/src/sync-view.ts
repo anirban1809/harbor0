@@ -110,5 +110,10 @@ export function syncView(journal: Journal, state: SyncRuntime) {
     driveItems: [...driveItems.values()],
     folderIds,
     changes: Object.fromEntries(journal.changeSummaries()),
+    // Live, unlike the folder list the page loaded earlier.
+    reconciling: journal
+      .roots()
+      .filter((root) => root.needsReconcile)
+      .map((root) => root.id),
   };
 }

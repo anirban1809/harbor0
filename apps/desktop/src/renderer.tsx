@@ -682,6 +682,36 @@ function App() {
   const syncRoots = roots.filter((root) => root.mode === 'sync');
   const backupRoots = roots.filter((root) => root.mode === 'backup');
   const jobs = sync?.jobs ?? status.jobs ?? [];
+  // This computer's synced folders come from its own engine as well as the server: a folder
+  // just added is listed at once, and each shows its live state, not only where else it syncs.
+  const liveGroups = (() => {
+    const local = syncRoots.filter((root) => root.remoteId);
+    if (place?.place !== 'synced' || !sync || !status.deviceId || !local.length) return groups;
+    const result = groups.map((group) => ({ ...group, folders: [...group.folders] }));
+    let mine = result.find((group) => group.key === status.deviceId);
+    if (!mine) {
+      mine = {
+        key: status.deviceId,
+        name: status.deviceName || 'This computer',
+        device: placeData.devices?.find((device) => device.id === status.deviceId),
+        folders: [],
+      };
+      result.unshift(mine);
+    }
+    for (const root of local) {
+      const label = folderState(root, sync, jobs);
+      const percent = label === 'Syncing' ? sync.progress?.[root.id] : undefined;
+      const state = percent === undefined ? label : `${label} ${percent}%`;
+      const listed = mine.folders.find((folder) => folder.id === root.remoteId);
+      if (!listed)
+        mine.folders.push({ id: root.remoteId!, name: root.localPathDisplayName, detail: state });
+      else
+        listed.detail = listed.detail?.startsWith('Also on')
+          ? `${state} · ${listed.detail}`
+          : state;
+    }
+    return result;
+  })();
   const backupDesktop: BackupDesktop = {
     roots: backupRoots.map((root) => ({ ...root, progress: sync?.progress?.[root.id] })),
     backup: (id) => bridge.backupNow({ id }),
@@ -963,7 +993,7 @@ function App() {
           {section === 'My Drive' && place && !trail.length && !query && (
             <DevicePlace
               place={place.place}
-              groups={groups}
+              groups={liveGroups}
               groupKey={place.key ?? null}
               loading={!placeData.devices && !placeData.error}
               error={placeData.error}
@@ -1003,7 +1033,7 @@ function App() {
               }
               onOpenGroup={(key) => goToPlace({ place: place.place, key })}
               onOpenFolder={(key, folderId) => {
-                const folder = groups
+                const folder = liveGroups
                   .find((entry) => entry.key === key)
                   ?.folders.find((entry) => entry.id === folderId);
                 setPlace({ place: place.place, key });
