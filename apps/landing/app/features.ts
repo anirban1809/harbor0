@@ -96,7 +96,7 @@ export const features: Feature[] = [
       ['Trash', 'Deleted files wait in the trash until you restore or permanently remove them.'],
       [
         'Devices in one place',
-        'Synced Folders, Backups and Archives sit at the top of My Drive, sorted by the computer or phone each folder comes from.',
+        'Synced Folders, Backups and Archives sit at the top of My Drive, sorted by the computer each folder comes from.',
       ],
       ['Stable links', 'A folder keeps the same address when it is renamed or moved.'],
     ],

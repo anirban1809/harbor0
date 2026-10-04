@@ -14,7 +14,7 @@ const sections: LegalSection[] = [
   [
     'Agreeing to these terms',
     [
-      'These terms govern your use of harbor0 — the website, the web app, the desktop and mobile apps, and the API they use (together, the “service”). By creating an account or using the service, you agree to them. If you don’t agree, don’t use the service.',
+      'These terms govern your use of harbor0 — the website, the web app, the desktop app, and the API they use (together, the “service”). By creating an account or using the service, you agree to them. If you don’t agree, don’t use the service.',
       <>
         Our <Link href="/privacy">Privacy Policy</Link> explains what information we collect and how
         we use it.

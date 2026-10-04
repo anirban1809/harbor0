@@ -14,7 +14,7 @@ const sections: LegalSection[] = [
   [
     'This policy',
     [
-      'This policy explains what personal information harbor0 collects when you use the website, the web app, the desktop and mobile apps, and the API they use (together, the “service”), how we use it, and the choices you have.',
+      'This policy explains what personal information harbor0 collects when you use the website, the web app, the desktop app, and the API they use (together, the “service”), how we use it, and the choices you have.',
       <>
         It sits alongside our <Link href="/terms">Terms of Service</Link>. In short: your files are
         yours, we collect what we need to run the service, and we don’t sell your data or track you
@@ -37,8 +37,7 @@ const sections: LegalSection[] = [
         </li>
         <li>
           <strong>Devices</strong> — the name and platform of each device you sign in on, its
-          sessions, the folders you sync or back up from it, and, on iOS, a push token so the Files
-          app can learn about changes.
+          sessions, the folders you sync or back up from it.
         </li>
         <li>
           <strong>Activity</strong> — a record of actions on your account, such as uploads,
@@ -115,9 +114,6 @@ const sections: LegalSection[] = [
         <li>
           <strong>Cloudflare</strong> (United States) — storage for the contents of your files.
         </li>
-        <li>
-          <strong>Apple</strong> — push notifications to the iOS app, which carry no file contents.
-        </li>
       </ul>,
       'We’ll update this list before we add a provider that handles your personal information.',
     ],
@@ -131,7 +127,7 @@ const sections: LegalSection[] = [
   [
     'Security',
     [
-      'Data travels to and from harbor0 over encrypted connections, and is encrypted at rest by our storage providers. Sign-in sessions use secure, HTTP-only cookies in the browser, and the operating system’s secure credential store in the desktop and phone apps. Access to our infrastructure is limited to the people who need it.',
+      'Data travels to and from harbor0 over encrypted connections, and is encrypted at rest by our storage providers. Sign-in sessions use secure, HTTP-only cookies in the browser, and the operating system’s secure credential store in the desktop app. Access to our infrastructure is limited to the people who need it.',
       'Files are not end-to-end encrypted: harbor0 holds the keys, which is what lets us show previews, build ZIP downloads and deliver shares. No system is perfectly secure; if a breach affects your information, we’ll tell you without undue delay.',
     ],
   ],
