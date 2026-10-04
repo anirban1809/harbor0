@@ -10,7 +10,7 @@ export const metadata: Metadata = {
   description: 'harbor0 in the browser and on your Mac.',
 };
 
-// The published installer. Update from `.cloud/desktop-release.json` after each desktop release.
+// The published installer; `npm run release:desktop` updates it with each GitHub release.
 const mac = {
   version: '0.1.1',
   size: '290 MB',

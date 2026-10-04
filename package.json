@@ -36,6 +36,7 @@
     "cloud:validate": "tsx --env-file=.env.cloud scripts/validate-cloud.ts",
     "cloud:validate-web": "tsx --env-file=.env.cloud scripts/validate-live-web.ts",
     "build:web-static": "tsx scripts/build-web-static.ts",
+    "release:desktop": "tsx scripts/release-desktop.ts",
     "build:landing": "npm run build -w @harbor/landing",
     "build:admin": "npm run build -w @harbor/admin",
     "cloud:deploy-web": "tsx --env-file=.env.cloud scripts/deploy-web.ts",
