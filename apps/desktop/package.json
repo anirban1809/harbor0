@@ -1,6 +1,6 @@
 {
   "name": "@harbor/desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "main": "dist/main.cjs",
@@ -10,5 +10,5 @@
     "package": "npm run build && electron-builder"
   },
   "productName": "harbor0",
-  "description": "harbor0 \u2014 private storage, backup, sync, and sending"
+  "description": "harbor0 — private storage, backup, sync, and sending"
 }

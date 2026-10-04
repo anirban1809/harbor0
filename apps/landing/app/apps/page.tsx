@@ -12,10 +12,10 @@ export const metadata: Metadata = {
 
 // The published installer; `npm run release:desktop` updates it with each GitHub release.
 const mac = {
-  version: '0.1.1',
-  size: '290 MB',
-  url: 'https://app.harbor0.com/downloads/harbor0-0.1.1-mac-arm64.dmg',
-  sha256: '14cf11492cdf91c335d3051465691b2cecae27711cb6a19356a702dc77e4b755',
+  version: '0.1.2',
+  size: '288 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.2/harbor0-0.1.2-mac-arm64.dmg',
+  sha256: '4bfa8d5df0ec9ccb8157c2674443b3aebbe6102830827d576ef479a721e951d4',
 };
 
 const desktop = [
