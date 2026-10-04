@@ -9,9 +9,9 @@ import { syncView } from '../src/sync-view';
 import type { SyncRuntime } from '../src/sync-state';
 import { uploadFile } from '../src/transfers';
 
-vi.mock('chokidar', async () => {
+vi.mock('../src/local-watcher', async () => {
   const { EventEmitter } = await import('node:events');
-  return { default: { watch: () => Object.assign(new EventEmitter(), { close: async () => {} }) } };
+  return { watchTree: () => Object.assign(new EventEmitter(), { close: async () => {} }) };
 });
 vi.mock('../src/transfers', () => ({
   hashFile: vi.fn(async () => 'hash'),

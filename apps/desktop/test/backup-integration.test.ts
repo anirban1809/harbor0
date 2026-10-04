@@ -11,10 +11,10 @@ import { DevelopmentAuth } from '../../backend/src/auth';
 import { Journal, type Root } from '../src/journal';
 import { SyncEngine } from '../src/sync';
 import { FolderBackups, BACKUP_QUIET_MS } from '../src/backups';
-vi.mock('chokidar', async () => {
+vi.mock('../src/local-watcher', async () => {
   const { EventEmitter } = await import('node:events');
   return {
-    default: { watch: vi.fn(() => Object.assign(new EventEmitter(), { close: async () => {} })) },
+    watchTree: vi.fn(() => Object.assign(new EventEmitter(), { close: async () => {} })),
   };
 });
 it('backs up a real folder through HTTP routes, deduplicates content, keeps versions and restores the selected bytes', async () => {

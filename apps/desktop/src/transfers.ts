@@ -37,6 +37,28 @@ export async function downloadFolderZip(
 const TRANSFER_CONCURRENCY = 4;
 const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 const UPLOAD_BUFFER_BUDGET = 64 * 1024 * 1024;
+// Storage requests must end: a transfer slower than 32 KiB/s (or silent for a minute while
+// streaming) fails and resumes on the next attempt instead of holding up sync forever.
+const sizedTimeout = (bytes: number) =>
+  AbortSignal.timeout(Math.max(120_000, (bytes / (32 * 1024)) * 1000));
+function idleTimeout(ms = 60_000) {
+  const controller = new AbortController();
+  const abort = () =>
+    controller.abort(
+      Object.assign(new Error('Download stalled. It will resume automatically.'), {
+        name: 'TimeoutError',
+      }),
+    );
+  let timer = setTimeout(abort, ms);
+  return {
+    signal: controller.signal,
+    touch() {
+      clearTimeout(timer);
+      timer = setTimeout(abort, ms);
+    },
+    done: () => clearTimeout(timer),
+  };
+}
 
 export async function hashFile(filename: string) {
   const hash = createHash('sha256');
@@ -161,7 +183,11 @@ export async function uploadFile(
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
               if (attempt) url = (await api.parts(state.uploadId!, [n])).parts[0].uploadUrl;
-              const response = await fetch(url, { method: 'PUT', body: buffer });
+              const response = await fetch(url, {
+                method: 'PUT',
+                body: buffer,
+                signal: sizedTimeout(size),
+              });
               etag = response.ok ? response.headers.get('etag') : null;
               await response.body?.cancel();
               if (!etag) throw new Error('Storage upload failed. It will resume automatically.');
@@ -234,100 +260,109 @@ export async function downloadFile(
   if (offset < signed.sizeBytes || signed.sizeBytes === 0) {
     const parallel = signed.sizeBytes - offset > DOWNLOAD_CHUNK_BYTES * 2;
     const end = Math.min(offset + DOWNLOAD_CHUNK_BYTES, signed.sizeBytes) - 1;
-    const response = await fetch(signed.downloadUrl, {
-      headers: parallel
-        ? { Range: `bytes=${offset}-${end}` }
-        : offset
-          ? { Range: `bytes=${offset}-` }
-          : {},
-    });
-    if (!response.ok || !response.body) {
-      await response.body?.cancel();
-      throw new Error('Download interrupted. It will resume automatically.');
-    }
-    if (parallel && response.status === 206) {
-      const handle = await open(part, offset ? 'a' : 'w', 0o600);
-      try {
-        const first = await readRange(response, offset, end, signed.sizeBytes);
-        await handle.writeFile(first);
-        hash.update(first);
-        offset += first.length;
-        onProgress?.(offset, signed.sizeBytes);
-        while (offset < signed.sizeBytes) {
-          const ranges = Array.from(
-            {
-              length: Math.min(
-                TRANSFER_CONCURRENCY,
-                Math.ceil((signed.sizeBytes - offset) / DOWNLOAD_CHUNK_BYTES),
-              ),
-            },
-            (_, i) => {
-              const start = offset + i * DOWNLOAD_CHUNK_BYTES;
-              return { start, end: Math.min(start + DOWNLOAD_CHUNK_BYTES, signed.sizeBytes) - 1 };
-            },
-          );
-          const results = await Promise.allSettled(
-            ranges.map(async (range) => {
-              for (let attempt = 0; ; attempt++) {
-                try {
-                  const chunk = await fetch(signed.downloadUrl, {
-                    headers: { Range: `bytes=${range.start}-${range.end}` },
-                  });
-                  return await readRange(chunk, range.start, range.end, signed.sizeBytes);
-                } catch (error) {
-                  if (attempt === 2) throw error;
-                }
-              }
-            }),
-          );
-          // Commit only a contiguous prefix so interrupted downloads remain resumable.
-          for (const result of results) {
-            if (result.status === 'rejected') throw result.reason;
-            await handle.writeFile(result.value);
-            hash.update(result.value);
-            offset += result.value.length;
-            onProgress?.(offset, signed.sizeBytes);
-          }
-        }
-      } finally {
-        await handle.close();
-      }
-    } else {
-      // Servers that ignore Range can still send the complete file in one stream.
-      if (
-        response.status === 206 &&
-        response.headers.get('content-range') !==
-          `bytes ${offset}-${signed.sizeBytes - 1}/${signed.sizeBytes}`
-      ) {
-        await response.body.cancel();
-        throw new Error('Storage returned an unexpected download range.');
-      }
-      if (offset && response.status !== 206) offset = 0;
-      const streamHash = offset ? hash : createHash('sha256');
-      let loaded = offset;
-      const meter = new Transform({
-        transform(chunk, _encoding, callback) {
-          loaded += chunk.length;
-          streamHash.update(chunk);
-          onProgress?.(loaded, signed.sizeBytes);
-          callback(null, chunk);
-        },
+    const idle = idleTimeout();
+    try {
+      const response = await fetch(signed.downloadUrl, {
+        signal: idle.signal,
+        headers: parallel
+          ? { Range: `bytes=${offset}-${end}` }
+          : offset
+            ? { Range: `bytes=${offset}-` }
+            : {},
       });
-      await pipeline(
-        Readable.fromWeb(response.body as any),
-        meter,
-        createWriteStream(part, { flags: offset ? 'a' : 'w', mode: 0o600 }),
-      );
-      if (
-        (await stat(part)).size !== signed.sizeBytes ||
-        streamHash.digest('hex') !== signed.contentHash
-      ) {
-        await rm(part, { force: true });
-        throw new Error('Download integrity check failed. The original local file was kept.');
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        throw new Error('Download interrupted. It will resume automatically.');
       }
-      await beforeReplace?.();
-      await rename(part, destination);
-      return signed.contentHash;
+      if (parallel && response.status === 206) {
+        const handle = await open(part, offset ? 'a' : 'w', 0o600);
+        try {
+          const first = await readRange(response, offset, end, signed.sizeBytes, idle.touch);
+          idle.done();
+          await handle.writeFile(first);
+          hash.update(first);
+          offset += first.length;
+          onProgress?.(offset, signed.sizeBytes);
+          while (offset < signed.sizeBytes) {
+            const ranges = Array.from(
+              {
+                length: Math.min(
+                  TRANSFER_CONCURRENCY,
+                  Math.ceil((signed.sizeBytes - offset) / DOWNLOAD_CHUNK_BYTES),
+                ),
+              },
+              (_, i) => {
+                const start = offset + i * DOWNLOAD_CHUNK_BYTES;
+                return { start, end: Math.min(start + DOWNLOAD_CHUNK_BYTES, signed.sizeBytes) - 1 };
+              },
+            );
+            const results = await Promise.allSettled(
+              ranges.map(async (range) => {
+                for (let attempt = 0; ; attempt++) {
+                  try {
+                    const chunk = await fetch(signed.downloadUrl, {
+                      headers: { Range: `bytes=${range.start}-${range.end}` },
+                      signal: sizedTimeout(range.end - range.start + 1),
+                    });
+                    return await readRange(chunk, range.start, range.end, signed.sizeBytes);
+                  } catch (error) {
+                    if (attempt === 2) throw error;
+                  }
+                }
+              }),
+            );
+            // Commit only a contiguous prefix so interrupted downloads remain resumable.
+            for (const result of results) {
+              if (result.status === 'rejected') throw result.reason;
+              await handle.writeFile(result.value);
+              hash.update(result.value);
+              offset += result.value.length;
+              onProgress?.(offset, signed.sizeBytes);
+            }
+          }
+        } finally {
+          await handle.close();
+        }
+      } else {
+        // Servers that ignore Range can still send the complete file in one stream.
+        if (
+          response.status === 206 &&
+          response.headers.get('content-range') !==
+            `bytes ${offset}-${signed.sizeBytes - 1}/${signed.sizeBytes}`
+        ) {
+          await response.body.cancel();
+          throw new Error('Storage returned an unexpected download range.');
+        }
+        if (offset && response.status !== 206) offset = 0;
+        const streamHash = offset ? hash : createHash('sha256');
+        let loaded = offset;
+        const meter = new Transform({
+          transform(chunk, _encoding, callback) {
+            idle.touch();
+            loaded += chunk.length;
+            streamHash.update(chunk);
+            onProgress?.(loaded, signed.sizeBytes);
+            callback(null, chunk);
+          },
+        });
+        await pipeline(
+          Readable.fromWeb(response.body as any),
+          meter,
+          createWriteStream(part, { flags: offset ? 'a' : 'w', mode: 0o600 }),
+        );
+        if (
+          (await stat(part)).size !== signed.sizeBytes ||
+          streamHash.digest('hex') !== signed.contentHash
+        ) {
+          await rm(part, { force: true });
+          throw new Error('Download integrity check failed. The original local file was kept.');
+        }
+        await beforeReplace?.();
+        await rename(part, destination);
+        return signed.contentHash;
+      }
+    } finally {
+      idle.done();
     }
   }
   if ((await stat(part)).size !== signed.sizeBytes || hash.digest('hex') !== signed.contentHash) {
@@ -339,7 +374,13 @@ export async function downloadFile(
   return signed.contentHash;
 }
 
-async function readRange(response: Response, start: number, end: number, total: number) {
+async function readRange(
+  response: Response,
+  start: number,
+  end: number,
+  total: number,
+  touch?: () => void,
+) {
   if (
     response.status !== 206 ||
     !response.body ||
@@ -355,6 +396,7 @@ async function readRange(response: Response, start: number, end: number, total: 
       throw new Error('Download range exceeded its expected size.');
     buffer.set(chunk, offset);
     offset += chunk.length;
+    touch?.();
   }
   if (offset !== buffer.length)
     throw new Error('Download interrupted. It will resume automatically.');

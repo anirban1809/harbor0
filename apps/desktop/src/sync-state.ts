@@ -54,6 +54,8 @@ export type SyncRuntime = {
   progress?: Record<string, number>;
   issues: SyncIssue[];
   recent: SyncActivityItem[];
+  // The local change ledger by root id: a folder is up to date only when nothing is pending.
+  changes?: Record<string, import('./journal').ChangeSummary>;
 };
 export type SyncFolder = Root & {
   localPathDisplayName: string;
@@ -82,7 +84,11 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
   if (state.paused || root.paused) return 'Paused';
   if (!state.online) return 'Offline';
   if (jobs.some((job) => job.rootId === root.id && job.error)) return 'Action required';
-  if (state.active?.rootId === root.id || jobs.some((job) => job.rootId === root.id))
+  if (
+    state.active?.rootId === root.id ||
+    jobs.some((job) => job.rootId === root.id) ||
+    (state.changes?.[root.id]?.pending ?? 0) > 0
+  )
     return 'Syncing';
   if (state.waiting?.some((item) => item.rootId === root.id)) return WAITING;
   return root.needsReconcile || state.confirmationPendingRoots?.includes(root.id)
@@ -103,6 +109,7 @@ export function globalSyncState(roots: SyncFolder[], state: SyncRuntime, jobs: S
   if (
     (state.active && ids.has(state.active.rootId)) ||
     state.confirmationPendingRoots?.some((id) => ids.has(id)) ||
+    [...ids].some((id) => (state.changes?.[id]?.pending ?? 0) > 0) ||
     roots.some(
       (root) => !root.paused && (root.needsReconcile || jobs.some((job) => job.rootId === root.id)),
     )

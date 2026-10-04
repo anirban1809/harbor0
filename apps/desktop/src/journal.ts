@@ -24,7 +24,28 @@ export type LocalFile = {
   revision: number;
   hash: string | null;
   type: 'FILE' | 'FOLDER';
+  // The local file's size and modification time when it last matched the cloud copy, so a
+  // scan can tell an untouched file from an edit without reading it.
+  sizeBytes?: number;
+  mtimeMs?: number;
 };
+/** One detected local change. It stays pending until the job carrying it has finished. */
+export type ChangeRecord = {
+  id: string;
+  rootId: string;
+  relativePath: string;
+  kind: 'upsert' | 'delete';
+  source: string;
+  detectedAt: number;
+  syncedAt: number | null;
+};
+export type ChangeSummary = {
+  pending: number;
+  lastDetectedAt: number | null;
+  lastSyncedAt: number | null;
+};
+// Finished changes are kept this long for diagnostics, then pruned.
+const CHANGE_HISTORY_MS = 7 * 24 * 3600_000;
 export type LocalJob = {
   id: string;
   rootId: string;
@@ -45,7 +66,17 @@ export class Journal {
  CREATE TABLE IF NOT EXISTS files(root_id TEXT NOT NULL,relative_path TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(root_id,relative_path));
  CREATE INDEX IF NOT EXISTS files_item ON files(root_id,json_extract(data, '$.itemId'));
  CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,root_id TEXT NOT NULL,relative_path TEXT NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL DEFAULT '{}',attempts INTEGER NOT NULL DEFAULT 0,error TEXT,created_at INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS changes(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,root_id TEXT NOT NULL,relative_path TEXT NOT NULL,kind TEXT NOT NULL,source TEXT NOT NULL,detected_at INTEGER NOT NULL,synced_at INTEGER);
+ CREATE INDEX IF NOT EXISTS changes_pending ON changes(root_id,synced_at);
+ CREATE INDEX IF NOT EXISTS changes_job ON changes(job_id);
  `);
+    this.db.prepare('DELETE FROM changes WHERE synced_at < ?').run(Date.now() - CHANGE_HISTORY_MS);
+    // Changes whose job is gone (an older version, a crash between statements) cannot finish.
+    this.db
+      .prepare(
+        'UPDATE changes SET synced_at=? WHERE synced_at IS NULL AND job_id NOT IN (SELECT id FROM jobs)',
+      )
+      .run(Date.now());
   }
   get<T>(key: string): T | undefined {
     const row = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as
@@ -84,6 +115,7 @@ export class Journal {
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM jobs WHERE root_id=?').run(id);
+      this.db.prepare('DELETE FROM changes WHERE root_id=?').run(id);
       this.db.prepare('DELETE FROM files WHERE root_id=?').run(id);
       this.db.prepare('DELETE FROM roots WHERE id=?').run(id);
       this.db.exec('COMMIT');
@@ -94,6 +126,7 @@ export class Journal {
   }
   resetRootFiles(id: string) {
     this.db.prepare('DELETE FROM jobs WHERE root_id=?').run(id);
+    this.db.prepare('DELETE FROM changes WHERE root_id=?').run(id);
     this.db.prepare('DELETE FROM files WHERE root_id=?').run(id);
   }
   file(rootId: string, relativePath: string): LocalFile | undefined {
@@ -157,10 +190,22 @@ export class Journal {
     relativePath: string,
     kind: 'upsert' | 'delete',
     entry?: { type: 'FILE' | 'FOLDER'; sizeBytes: number; updatedAt: string },
-  ) {
+    source = 'local',
+  ): string {
     const existing = this.db
       .prepare('SELECT id FROM jobs WHERE root_id=? AND relative_path=? AND kind=?')
       .get(rootId, relativePath, kind);
+    const jobId = (existing?.id as string | undefined) ?? crypto.randomUUID();
+    // Repeated events for a change that is still waiting are the same change.
+    const open = this.db
+      .prepare('SELECT 1 FROM changes WHERE job_id=? AND synced_at IS NULL')
+      .get(jobId);
+    if (!open)
+      this.db
+        .prepare(
+          'INSERT INTO changes(id,job_id,root_id,relative_path,kind,source,detected_at) VALUES(?,?,?,?,?,?,?)',
+        )
+        .run(crypto.randomUUID(), jobId, rootId, relativePath, kind, source, Date.now());
     if (existing) {
       // A fresh local change retries immediately instead of waiting out an earlier failure.
       this.db
@@ -170,13 +215,14 @@ export class Journal {
         this.db
           .prepare("UPDATE jobs SET payload=json_set(payload, '$.entry', json(?)) WHERE id=?")
           .run(JSON.stringify(entry), existing.id as string);
-      return;
+      return jobId;
     }
     this.db
       .prepare(
         'INSERT INTO jobs(id,root_id,relative_path,kind,created_at,payload) VALUES(?,?,?,?,?,?)',
       )
-      .run(crypto.randomUUID(), rootId, relativePath, kind, Date.now(), JSON.stringify({ entry }));
+      .run(jobId, rootId, relativePath, kind, Date.now(), JSON.stringify({ entry }));
+    return jobId;
   }
   jobs(): LocalJob[] {
     return (this.db.prepare('SELECT * FROM jobs ORDER BY created_at,id').all() as any[]).map(
@@ -198,6 +244,32 @@ export class Journal {
   }
   finish(id: string) {
     this.db.prepare('DELETE FROM jobs WHERE id=?').run(id);
+    this.db
+      .prepare('UPDATE changes SET synced_at=? WHERE job_id=? AND synced_at IS NULL')
+      .run(Date.now(), id);
+  }
+  changeSummaries(): Map<string, ChangeSummary> {
+    const rows = this.db
+      .prepare(
+        `SELECT root_id AS rootId, SUM(synced_at IS NULL) AS pending,
+                MAX(detected_at) AS lastDetectedAt, MAX(synced_at) AS lastSyncedAt
+         FROM changes GROUP BY root_id`,
+      )
+      .all() as (ChangeSummary & { rootId: string })[];
+    return new Map(
+      rows.map(({ rootId, ...summary }) => [rootId, { ...summary, pending: summary.pending ?? 0 }]),
+    );
+  }
+  changes(rootId: string, limit = 100): ChangeRecord[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT id, root_id AS rootId, relative_path AS relativePath, kind, source,
+                  detected_at AS detectedAt, synced_at AS syncedAt
+           FROM changes WHERE root_id=? ORDER BY detected_at DESC LIMIT ?`,
+        )
+        .all(rootId, limit) as ChangeRecord[]
+    ).map((row) => ({ ...row }));
   }
   close() {
     this.db.close();

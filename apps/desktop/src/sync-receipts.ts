@@ -17,11 +17,14 @@ type Candidate = { rootId: string; itemId: string; isRoot: boolean };
 const AUDIT_RETRY = 15_000;
 const AUDIT_IDLE = 3_600_000;
 const AUDIT_BATCH = 25;
+const AUDIT_BATCH_MIN = 5;
 // The outbox survives restarts. Audits also recover copies completed before receipts existed.
 export class SyncReceipts {
   private candidates: Candidate[] = [];
   private nextAuditAt = 0;
   private passFound = false;
+  // Shrinks while the server is slow to answer, so a large folder still gets through.
+  private batchSize = AUDIT_BATCH;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -78,7 +81,7 @@ export class SyncReceipts {
             .map((file) => ({ rootId: root.id, itemId: file.itemId, isRoot: false })),
         ]);
     }
-    const batch = this.candidates.slice(0, AUDIT_BATCH);
+    const batch = this.candidates.slice(0, this.batchSize);
     if (!batch.length) {
       this.passEnded();
       return;
@@ -93,7 +96,9 @@ export class SyncReceipts {
       );
       if (!Array.isArray(response.items)) return;
       statuses = response.items;
+      this.batchSize = Math.min(AUDIT_BATCH, this.batchSize * 2);
     } catch (error) {
+      if (signal?.aborted) return;
       if (
         error instanceof ApiError &&
         ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND', 'ITEM_DELETING', 'SYNC_REMOVED'].includes(error.code)
@@ -104,7 +109,13 @@ export class SyncReceipts {
           if (root) this.reconcile(root);
         }
         this.candidates.splice(0, batch.length);
+        return;
       }
+      // Never retry the same batch forever: move on, and audit this one again next pass.
+      this.passFound = true;
+      this.candidates.splice(0, batch.length);
+      if (!this.candidates.length) this.passEnded();
+      this.batchSize = Math.max(AUDIT_BATCH_MIN, Math.floor(this.batchSize / 2));
       return;
     }
     for (const candidate of batch) {

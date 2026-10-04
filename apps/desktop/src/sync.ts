@@ -11,10 +11,10 @@ import {
   type SyncIssue,
   type SyncActivityItem,
 } from './sync-state';
-import chokidar, { type FSWatcher } from 'chokidar';
+import { watchTree, type TreeWatcher } from './local-watcher';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { DriveItem } from '@harbor/contracts';
-import { Journal, type Root, type LocalJob } from './journal';
+import { Journal, type Root, type LocalJob, type LocalFile } from './journal';
 import {
   contained,
   internalPath,
@@ -25,6 +25,11 @@ import {
   conflictName,
 } from './paths';
 import { uploadFile, downloadFile, hashFile, type UploadState } from './transfers';
+// Watchers can miss events (sleep, a full event buffer, edits while the app was closed),
+// so every folder is also compared against the journal on this schedule.
+export const LOCAL_SCAN_INTERVAL = 5 * 60_000;
+// A pass waiting this long on one server request is aborted and started again.
+export const STALL_TIMEOUT = 3 * 60_000;
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
 const retryDelay = (attempts: number) => Math.min(300_000, 2000 * 2 ** Math.min(attempts, 10));
 // Remote checks start every 2s and back off to 30s while nothing changes;
@@ -33,10 +38,24 @@ export const REMOTE_POLL_MIN = 2000;
 export const REMOTE_POLL_MAX = 30_000;
 // With live updates connected, polling is only a safety net for missed messages.
 export const REMOTE_POLL_LIVE = 5 * 60_000;
+async function localStat(file: string) {
+  try {
+    const info = await lstat(file);
+    return { sizeBytes: info.size, mtimeMs: info.mtimeMs };
+  } catch {
+    return {};
+  }
+}
 export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
-  private watchers = new Map<string, FSWatcher>();
+  private watchers = new Map<string, TreeWatcher>();
+  private scannedAt = new Map<string, number>();
+  private api: ApiClient;
+  private tickController = new AbortController();
+  // Start times of the server requests still waiting for an answer.
+  private inflight = new Set<{ at: number }>();
+  private watchdog?: ReturnType<typeof setInterval>;
   private timer?: ReturnType<typeof setInterval>;
   private wakeTimer?: ReturnType<typeof setTimeout>;
   private queueEmitTimer?: ReturnType<typeof setTimeout>;
@@ -77,13 +96,28 @@ export class SyncEngine {
     recent: [],
   };
   constructor(
-    private api: ApiClient,
+    api: ApiClient,
     private journal: Journal,
     private deviceId: string,
     private changed: (state: unknown) => void,
   ) {
+    // Every request of a pass shares its signal, so the watchdog can end a pass that hangs.
+    this.api = new ApiClient(async (endpoint, init = {}) => {
+      const request = { at: Date.now() };
+      this.inflight.add(request);
+      try {
+        return await api.request(endpoint, {
+          ...init,
+          signal: init.signal
+            ? AbortSignal.any([init.signal, this.tickController.signal])
+            : this.tickController.signal,
+        });
+      } finally {
+        this.inflight.delete(request);
+      }
+    });
     this.receipts = new SyncReceipts(api, journal);
-    this.backups = new FolderBackups(api, journal);
+    this.backups = new FolderBackups(this.api, journal);
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
     // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
     this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
@@ -119,7 +153,19 @@ export class SyncEngine {
       if (await this.checkRoot(root)) await this.watch(root);
     }
     this.timer = setInterval(() => void this.run(), REMOTE_POLL_MIN);
+    this.watchdog = setInterval(() => this.checkStalled(), 15_000);
     void this.tick();
+  }
+  /** A pass stuck on the server for STALL_TIMEOUT is aborted; the next one starts fresh. */
+  private checkStalled() {
+    const oldest = Math.min(...[...this.inflight].map((request) => request.at));
+    if (!this.running || Date.now() - oldest < STALL_TIMEOUT) return;
+    this.inflight.clear();
+    this.tickController.abort(
+      Object.assign(new Error('Sync stopped responding and was restarted.'), {
+        name: 'TimeoutError',
+      }),
+    );
   }
   async stop() {
     this.stopped = true;
@@ -131,8 +177,10 @@ export class SyncEngine {
     if (this.queueEmitTimer) clearTimeout(this.queueEmitTimer);
     this.queueEmitTimer = undefined;
     if (this.timer) clearInterval(this.timer);
+    if (this.watchdog) clearInterval(this.watchdog);
     await Promise.all([...this.watchers.values()].map((w) => w.close()));
     this.watchers.clear();
+    this.scannedAt.clear();
     await this.work;
     await this.publishWork;
   }
@@ -142,62 +190,148 @@ export class SyncEngine {
       root.excluded.some((p) => relative === p || relative.startsWith(p + '/'))
     );
   }
+  private relativeTo(root: Root, full: string) {
+    return path.relative(root.localPath, full).split(path.sep).join('/');
+  }
   async watch(root: Root) {
-    const watcher = chokidar.watch(root.localPath, {
-      ignoreInitial: false,
-      followSymlinks: false,
-      // Short settle: uploadFile re-checks size and mtime before completing, so a file
-      // still being written restarts its upload instead of syncing partial content.
-      awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
-      ignored: (p) =>
-        this.ignored(root, path.relative(root.localPath, p).split(path.sep).join('/')),
-    });
+    const watcher = watchTree(root.localPath, (full) =>
+      this.ignored(root, this.relativeTo(root, full)),
+    );
     const queue =
       (kind: 'upsert' | 'delete', changed = false) =>
       (full: string, info?: Stats) => {
-        const relative = path.relative(root.localPath, full).split(path.sep).join('/');
-        const current = this.journal.roots().find((entry) => entry.id === root.id);
-        if (current && relative && !this.ignored(current, relative)) {
-          this.journal.enqueue(
-            root.id,
-            relative,
-            kind,
-            info
-              ? {
-                  type: info.isDirectory() ? 'FOLDER' : 'FILE',
-                  sizeBytes: info.size,
-                  updatedAt: info.mtime.toISOString(),
-                }
-              : undefined,
-          );
-          if (current.mode === 'backup' && changed) {
-            const job = this.journal
-              .jobs()
-              .find((j) => j.rootId === root.id && j.relativePath === relative && j.kind === kind);
-            if (job) {
-              job.payload.observedAt = Date.now();
-              this.journal.saveJob(job);
-            }
-          }
-          // Batch large directory scans while still showing new files promptly,
-          // including when paused (when no sync tick will run).
-          if (!this.queueEmitTimer)
-            this.queueEmitTimer = setTimeout(() => {
-              this.queueEmitTimer = undefined;
-              this.emit();
-            }, 50);
-          this.hurry();
-          this.scheduleTick();
-        }
+        if (this.observe(root.id, this.relativeTo(root, full), kind, info, 'watch', changed))
+          this.changesFound();
       };
     watcher
       .on('add', queue('upsert'))
-      .on('change', queue('upsert', true))
       .on('addDir', queue('upsert'))
+      .on('change', queue('upsert', true))
       .on('unlink', queue('delete'))
-      .on('unlinkDir', queue('delete'))
-      .on('error', (error) => this.issue(root.id, error));
+      .on('error', (error) => {
+        this.issue(root.id, error);
+        // The next pass watches again and rescans whatever was missed meanwhile.
+        void watcher.close();
+        if (this.watchers.get(root.id) === watcher) {
+          this.watchers.delete(root.id);
+          this.scannedAt.delete(root.id);
+        }
+        this.scheduleTick();
+      });
     this.watchers.set(root.id, watcher);
+  }
+  private changesFound() {
+    // Batch large scans while still showing new files promptly, including when paused.
+    if (!this.queueEmitTimer)
+      this.queueEmitTimer = setTimeout(() => {
+        this.queueEmitTimer = undefined;
+        this.emit();
+      }, 50);
+    this.hurry();
+    this.scheduleTick();
+  }
+  /**
+   * Record one local change in the journal unless the journal already matches the disk.
+   * Returns whether anything was queued.
+   */
+  private observe(
+    rootId: string,
+    relative: string,
+    kind: 'upsert' | 'delete',
+    info: Stats | undefined,
+    source: string,
+    changed = false,
+  ) {
+    const root = this.journal.roots().find((entry) => entry.id === rootId);
+    if (!root || !relative || relative.startsWith('..') || this.ignored(root, relative))
+      return false;
+    const known = this.journal.file(root.id, relative);
+    const pending = this.journal
+      .jobs()
+      .some((job) => job.rootId === root.id && job.relativePath === relative && job.kind === kind);
+    if (kind === 'upsert' && info && !pending && known) {
+      if (info.isDirectory() && known.type === 'FOLDER') return false;
+      if (
+        info.isFile() &&
+        known.type === 'FILE' &&
+        known.sizeBytes === info.size &&
+        known.mtimeMs === info.mtimeMs
+      )
+        return false;
+    }
+    if (kind === 'delete') {
+      // Backups keep what was saved; nothing to do for a file the cloud never had.
+      if (root.mode === 'backup' || (!known && !pending)) return false;
+      if (known?.type === 'FOLDER')
+        for (const child of this.journal.files(root.id))
+          if (child.relativePath.startsWith(relative + '/'))
+            this.journal.enqueue(root.id, child.relativePath, 'delete', undefined, source);
+    }
+    this.journal.enqueue(
+      root.id,
+      relative,
+      kind,
+      info
+        ? {
+            type: info.isDirectory() ? 'FOLDER' : 'FILE',
+            sizeBytes: info.size,
+            updatedAt: info.mtime.toISOString(),
+          }
+        : undefined,
+      source,
+    );
+    if (root.mode === 'backup' && changed) {
+      const job = this.journal
+        .jobs()
+        .find((j) => j.rootId === root.id && j.relativePath === relative && j.kind === kind);
+      if (job) {
+        job.payload.observedAt = Date.now();
+        this.journal.saveJob(job);
+      }
+    }
+    return true;
+  }
+  /** Compare the whole folder with the journal: catches anything the watcher missed. */
+  private async scanLocal(root: Root) {
+    const seen = new Set<string>();
+    let found = false;
+    const walk = async (relative: string) => {
+      let entries;
+      try {
+        entries = await readdir(relative ? contained(root.localPath, relative) : root.localPath, {
+          withFileTypes: true,
+        });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (this.stopped || this.state.paused) return;
+        const name = relative ? `${relative}/${entry.name}` : entry.name;
+        if (this.ignored(root, name) || entry.isSymbolicLink()) continue;
+        if (!entry.isDirectory() && !entry.isFile()) continue;
+        let info: Stats;
+        try {
+          info = await lstat(contained(root.localPath, name));
+        } catch {
+          continue;
+        }
+        seen.add(name);
+        if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
+        if (entry.isDirectory()) await walk(name);
+      }
+    };
+    await walk('');
+    if (this.stopped || this.state.paused) return;
+    // The folder itself was checked this pass, so a missing entry was really removed.
+    for (const file of this.journal.files(root.id))
+      if (
+        !seen.has(file.relativePath) &&
+        this.observe(root.id, file.relativePath, 'delete', undefined, 'scan')
+      )
+        found = true;
+    this.scannedAt.set(root.id, Date.now());
+    if (found) this.emit();
   }
   // The next tick checks the server instead of waiting out the idle backoff.
   private hurry() {
@@ -239,6 +373,7 @@ export class SyncEngine {
         if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
       // Resuming is also the user's way to retry failed work now.
       this.rootRetry.clear();
+      this.scannedAt.clear();
       this.hurry();
       for (const job of this.journal.jobs())
         if (job.payload.retryAt) {
@@ -562,36 +697,41 @@ export class SyncEngine {
     if (root.mode === 'backup' || root.paused || this.state.paused || this.stopped) return;
     const seen = new Set<string>();
     this.forgetWaiting(root.id);
-    const walk = async (parent: string | null) => {
+    // The listing gives each item's path directly, so nothing is looked up item by item.
+    const walk = async (parent: string | null, parentPath: string) => {
       let cursor: string | undefined;
       do {
         const page = await this.api.list(parent, cursor);
+        const pendingPaths = new Set(
+          this.journal
+            .jobs()
+            .filter((job) => job.rootId === root.id)
+            .map((job) => job.relativePath),
+        );
         for (const item of page.items) {
           if (this.stopped || this.state.paused) return;
           seen.add(item.id);
-          const relative = await this.relative(root, item);
-          if (relative === null || this.ignored(root, relative)) continue;
+          const segment = safeSegment(item.name, item.id);
+          const relative = parentPath ? `${parentPath}/${segment}` : segment;
+          if (this.ignored(root, relative)) continue;
           const known = this.journal.fileByItem(root.id, item.id);
-          const pending = this.journal
-            .jobs()
-            .some((job) => job.rootId === root.id && job.relativePath === relative);
-          // A shared-folder scan can be triggered by an unrelated sibling edit.
-          // Do not overwrite this device's queued edits/deletes when this item is unchanged.
-          if (!(
-            pending &&
+          const unchanged =
             known?.revision === item.revision &&
             known.relativePath === relative &&
-            item.cloudState !== 'REQUESTED'
-          ))
-            await this.remoteItem(root, item);
-          if (item.type === 'FOLDER') await walk(item.id);
+            item.cloudState !== 'REQUESTED';
+          // A shared-folder scan can be triggered by an unrelated sibling edit.
+          // Do not overwrite this device's queued edits/deletes when this item is unchanged.
+          // An item that matches the journal and the disk needs no work at all.
+          if (!(unchanged && (pendingPaths.has(relative) || (await this.matchesDisk(root, known)))))
+            await this.remoteItem(root, item, relative);
+          if (item.type === 'FOLDER') await walk(item.id, relative);
         }
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
     };
     const rootItem = (await this.api.request(`/v1/drive/items/${root.remoteId}`)).item;
     if (rootItem) this.receipts.queue(root, '.', rootItem, null);
-    await walk(root.remoteId);
+    await walk(root.remoteId, '');
     // Paused or unavailable folders can miss feed events while other folders advance
     // the device cursor. Check tracked items absent from the current subtree.
     for (const known of this.journal.files(root.id)) {
@@ -694,6 +834,7 @@ export class SyncEngine {
     return this.work;
   }
   private async runTick() {
+    this.tickController = new AbortController();
     this.running = true;
     this.state.running = true;
     // Local work runs every tick; server checks only when due.
@@ -759,6 +900,12 @@ export class SyncEngine {
           this.journal.resetRootFiles(root.id);
         }
         if (!this.watchers.has(root.id)) await this.watch(root);
+        // A folder being removed or restored has no settled local copy to compare.
+        if (
+          (!root.archive || root.archive === 'pending') &&
+          Date.now() - (this.scannedAt.get(root.id) ?? 0) >= LOCAL_SCAN_INTERVAL
+        )
+          await this.scanLocal(root);
         available.add(root.id);
         this.currentRootId = root.id;
         // Keep a problem visible while its file or folder is still waiting to retry.
@@ -964,12 +1111,15 @@ export class SyncEngine {
       }
       this.state.online = !(e instanceof TypeError);
       this.state.message = (e as Error).message;
+      // A pass ended by the watchdog simply starts again; there is nothing to fix.
+      const restarted = (e as Error | undefined)?.name === 'TimeoutError';
       // An ended session returns the app to sign-in by itself; there is nothing to fix here.
       const sessionEnded =
         e instanceof ApiError &&
         (e.status === 401 || ['AUTH_INVALID', 'DEVICE_REVOKED'].includes(e.code));
       if (
         !(e instanceof TypeError) &&
+        !restarted &&
         !sessionEnded &&
         !(e instanceof ApiError && e.code === 'SYNC_CURSOR_EXPIRED') &&
         !this.state.issues.some(
@@ -1172,7 +1322,11 @@ export class SyncEngine {
         )
           return;
       }
-    } else if (known?.hash === hash) return;
+    } else if (known?.hash === hash) {
+      // Touched but identical: remember its size and time so scans skip it from now on.
+      this.journal.putFile({ ...known, sizeBytes: info.size, mtimeMs: info.mtimeMs });
+      return;
+    }
     const state = (job.payload.upload ??= { operationId: job.id }) as UploadState;
     // Reuse this checksum only when the file remained stable during hashing.
     // uploadFile checks these attributes again before using it.
@@ -1261,6 +1415,8 @@ export class SyncEngine {
       revision: item.revision,
       hash: state.hash!,
       type: 'FILE',
+      sizeBytes: state.size,
+      mtimeMs: state.mtime,
     });
     this.receipts.queue(root, job.relativePath, item, state.hash!);
     this.activity(root, job.relativePath, 'upload', item);
@@ -1296,7 +1452,19 @@ export class SyncEngine {
     }
     return false;
   }
-  async remoteItem(root: Root, eventItem: DriveItem) {
+  /** The journal's copy is still the one on disk: same size and time, or a folder present. */
+  private async matchesDisk(root: Root, known: LocalFile) {
+    try {
+      const info = await lstat(contained(root.localPath, known.relativePath));
+      return known.type === 'FOLDER'
+        ? info.isDirectory()
+        : info.isFile() && info.size === known.sizeBytes && info.mtimeMs === known.mtimeMs;
+    } catch {
+      return false;
+    }
+  }
+  /** `listedPath`: the item came from a fresh listing at this path, so it need not be fetched. */
+  async remoteItem(root: Root, eventItem: DriveItem, listedPath?: string) {
     if (this.stopped || this.state.paused || root.paused || root.mode !== 'sync') return;
     if (root.remoteId === eventItem.id) {
       if (!eventItem.deletedAt) this.receipts.queue(root, '.', eventItem, null);
@@ -1337,14 +1505,16 @@ export class SyncEngine {
       return;
     }
     // Resolve the latest metadata when processing historical feed entries.
-    let item: DriveItem;
-    try {
-      item = (await this.api.request(`/v1/drive/items/${eventItem.id}`)).item;
-    } catch (e) {
-      if (e instanceof ApiError && ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(e.code)) return;
-      throw e;
-    }
-    const relative = await this.relative(root, item);
+    let item: DriveItem = eventItem;
+    if (listedPath === undefined)
+      try {
+        item = (await this.api.request(`/v1/drive/items/${eventItem.id}`)).item;
+      } catch (e) {
+        if (e instanceof ApiError && ['ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(e.code))
+          return;
+        throw e;
+      }
+    const relative = listedPath ?? (await this.relative(root, item));
     if (relative === null || this.ignored(root, relative)) return;
     const destination = await safeParents(root.localPath, relative);
     if (known && known.relativePath !== relative) {
@@ -1404,6 +1574,7 @@ export class SyncEngine {
           revision: item.revision,
           hash,
           type: 'FILE',
+          ...(await localStat(destination)),
         });
         this.receipts.queue(root, relative, item, hash);
         this.waiting.delete(item.id);
@@ -1464,6 +1635,7 @@ export class SyncEngine {
       revision: item.revision,
       hash,
       type: 'FILE',
+      ...(await localStat(destination)),
     });
     this.receipts.queue(root, relative, item, hash);
     this.waiting.delete(item.id);

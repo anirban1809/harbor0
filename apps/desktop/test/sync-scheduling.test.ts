@@ -2,15 +2,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import chokidar from 'chokidar';
+import { watchTree } from '../src/local-watcher';
 import { ApiClient } from '@harbor/api-client';
 import { Journal, type Root } from '../src/journal';
 import { SyncEngine } from '../src/sync';
 
-vi.mock('chokidar', async () => {
+vi.mock('../src/local-watcher', async () => {
   const { EventEmitter } = await import('node:events');
   return {
-    default: { watch: vi.fn(() => Object.assign(new EventEmitter(), { close: async () => {} })) },
+    watchTree: vi.fn(() => Object.assign(new EventEmitter(), { close: async () => {} })),
   };
 });
 let directory: string;
@@ -63,7 +63,7 @@ afterEach(async () => {
 it('coalesces watcher bursts and starts work without waiting for the periodic poll', async () => {
   journal.root(root);
   await engine.watch(root);
-  const watcher = vi.mocked(chokidar.watch).mock.results.at(-1)!.value;
+  const watcher = vi.mocked(watchTree).mock.results.at(-1)!.value;
   for (let i = 0; i < 10; i++) watcher.emit('add', path.join(directory, `file-${i}`));
   expect(journal.jobCount()).toBe(10);
   await vi.advanceTimersByTimeAsync(50);
@@ -80,7 +80,7 @@ it('publishes new queued files immediately even while sync is paused', async () 
   journal.root(root);
   await engine.watch(root);
   engine.pause(true);
-  const watcher = vi.mocked(chokidar.watch).mock.results.at(-1)!.value;
+  const watcher = vi.mocked(watchTree).mock.results.at(-1)!.value;
   watcher.emit('add', path.join(directory, 'waiting.txt'));
   await vi.advanceTimersByTimeAsync(50);
   expect(updates.at(-1)).toMatchObject({ paused: true, queued: 1, active: null });
@@ -93,7 +93,7 @@ it('ignores late watcher events for removed folders while keeping other folders 
   journal.root(root);
   await engine.watch(root);
   engine.pause(true);
-  const watcher = vi.mocked(chokidar.watch).mock.results.at(-1)!.value;
+  const watcher = vi.mocked(watchTree).mock.results.at(-1)!.value;
   journal.root({ ...root, excluded: ['removed'] });
   watcher.emit('change', path.join(directory, 'removed', 'local-edit.txt'));
   watcher.emit('change', path.join(directory, 'active.txt'));
@@ -111,7 +111,7 @@ it('schedules another pass for changes arriving during a running sync', async ()
   });
   const work = engine.tick();
   await vi.waitFor(() => expect(checks).toBe(1));
-  const watcher = vi.mocked(chokidar.watch).mock.results.at(-1)!.value;
+  const watcher = vi.mocked(watchTree).mock.results.at(-1)!.value;
   watcher.emit('add', path.join(directory, 'arrived-during-sync'));
   release!();
   await work;

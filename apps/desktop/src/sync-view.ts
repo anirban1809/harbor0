@@ -109,5 +109,6 @@ export function syncView(journal: Journal, state: SyncRuntime) {
     })),
     driveItems: [...driveItems.values()],
     folderIds,
+    changes: Object.fromEntries(journal.changeSummaries()),
   };
 }

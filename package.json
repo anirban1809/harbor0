@@ -83,7 +83,6 @@
     "aws-cdk-lib": "^2.270.0",
     "aws-jwt-verify": "^5.2.1",
     "better-sqlite3": "^13.0.3",
-    "chokidar": "^5.0.0",
     "clsx": "^2.1.1",
     "constructs": "^10.8.1",
     "hash-wasm": "^4.12.0",

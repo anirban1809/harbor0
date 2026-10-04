@@ -220,14 +220,15 @@ export class SyncRelay {
   async statuses(userId: string, ids: string[], deviceId?: string, recursive = true) {
     const device = deviceId ? await this.service.checkDevice(userId, deviceId) : undefined;
     const tx = new Transaction(this.service.repo);
-    const mappingCache = new Map<string, SyncMapping[]>();
+    // Promises, so children visited in parallel share one lookup per owner.
+    const mappingCache = new Map<string, Promise<SyncMapping[]>>();
     let visited = 0;
     const cache = new Map<string, SyncItemStatus | null>();
     const visit = async (item: DriveItem): Promise<SyncItemStatus | null> => {
       if (cache.has(item.id)) return cache.get(item.id)!;
       const owner = item.ownerUserId;
-      if (!mappingCache.has(owner)) mappingCache.set(owner, await this.mappings(tx, owner));
-      const mappings = mappingCache.get(owner)!;
+      if (!mappingCache.has(owner)) mappingCache.set(owner, this.mappings(tx, owner));
+      const mappings = await mappingCache.get(owner)!;
       const deviceKey = device
         ? digest(
             owner === userId ? syncDeviceKey(device) : `account:${userId}:${syncDeviceKey(device)}`,
@@ -272,9 +273,11 @@ export class SyncRelay {
         let progressing = false;
         do {
           const page = await this.service.list(owner, item.id, 100, cursor);
-          for (const child of page.items) {
+          // Each child is a separate read; one at a time, a large folder took longer than
+          // clients wait for an answer.
+          const children = await Promise.all(page.items.map(visit));
+          for (const childStatus of children) {
             hasChildren = true;
-            const childStatus = await visit(child);
             if (childStatus?.state === 'UNKNOWN') unknown = true;
             if (childStatus && childStatus.state !== 'SYNCED') status.pendingItems++;
             if (childStatus?.state === 'SYNCING' || childStatus?.state === 'SYNCED')

@@ -12,15 +12,13 @@ import { Journal, type Root } from '../src/journal';
 import { SyncEngine } from '../src/sync';
 
 // Trigger watcher jobs deterministically; use real files, engine, API, permissions and hashes.
-vi.mock('chokidar', () => ({
-  default: {
-    watch: () => ({
-      on() {
-        return this;
-      },
-      async close() {},
-    }),
-  },
+vi.mock('../src/local-watcher', () => ({
+  watchTree: () => ({
+    on() {
+      return this;
+    },
+    async close() {},
+  }),
 }));
 it('syncs real files across separate accounts, preserves conflicts and detaches safely on revocation', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-shared-sync-'));
