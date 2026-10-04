@@ -52,7 +52,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-it('loads only one page initially, then appends more without hiding existing files', async () => {
+it('shows the first page at once, then loads the rest of a big folder without hiding it', async () => {
+  // The default sort (newest first) is only right over the whole folder, so later pages load
+  // in the background; name order alone would page on demand instead.
   const second = deferred<{ items: DriveItem[]; nextCursor: null }>();
   const request = vi.fn(async (path: string) => {
     if (path.includes('cursor=second')) return second.promise;
@@ -61,8 +63,6 @@ it('loads only one page initially, then appends more without hiding existing fil
   });
   render(createElement(DriveWorkspace, { ...defaults, request }));
   await screen.findByRole('button', { name: 'first.txt' });
-  expect(request.mock.calls.some(([path]) => path.includes('cursor='))).toBe(false);
-  fireEvent.click(screen.getByRole('button', { name: 'Load more files' }));
   await waitFor(() =>
     expect(request.mock.calls.some(([path]) => path.includes('cursor=second'))).toBe(true),
   );
@@ -70,6 +70,7 @@ it('loads only one page initially, then appends more without hiding existing fil
   expect(screen.queryByLabelText('Loading files')).toBeNull();
   await act(async () => second.resolve({ items: [item('second')], nextCursor: null }));
   expect(await screen.findByRole('button', { name: 'second.txt' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'first.txt' })).toBeTruthy();
 });
 
 it('uses cached folders after remount and preserves them if background refresh fails', async () => {
