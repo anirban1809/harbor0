@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { MemoryRepository, transact } from '../src/repository';
+import { MemoryRepository, Transaction, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
-import { StorageService, type Upload, type StoredObject, userPK } from '../src/domain';
+import { StorageService, type Job, type Upload, type StoredObject, userPK } from '../src/domain';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
 import type { Identity } from '@harbor/contracts';
@@ -137,6 +137,67 @@ describe('quota and upload recovery', () => {
     });
     await service.runJobs();
     expect((await service.me('alice')).storage.reservedBytes).toBe(0);
+  });
+  it('corrects a wrong declared hash from the stored bytes so the file stays downloadable', async () => {
+    const data = 'actual bytes';
+    const wrong = 'a'.repeat(64);
+    const r = await service.createUpload('alice', {
+      operationId: op(),
+      parentId: null,
+      name: 'lying.txt',
+      sizeBytes: data.length,
+      mimeType: 'text/plain',
+      contentHash: wrong,
+    });
+    const u = await service.getUpload('alice', r.upload.id);
+    storage.uploads.get(u.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    const { item } = await service.completeUpload(
+      'alice',
+      u.id,
+      [{ partNumber: 1, etag: 'part-1' }],
+      wrong,
+    );
+    expect((await service.download('alice', { driveItemId: item.id })).contentHash).toBe(wrong);
+    await service.runJobs();
+    const actual = createHash('sha256').update(data).digest('hex');
+    expect((await service.download('alice', { driveItemId: item.id })).contentHash).toBe(actual);
+    const object = await new Transaction(repo).get<StoredObject>('OBJECT', u.objectId);
+    expect(object!.contentHash).toBe(actual);
+  });
+  it('verifies large uploads in resumable slices and leaves a correct hash alone', async () => {
+    const data = Buffer.alloc(17 * 1048576, 7);
+    const hash = createHash('sha256').update(data).digest('hex');
+    const r = await service.createUpload('alice', {
+      operationId: op(),
+      parentId: null,
+      name: 'big.bin',
+      sizeBytes: data.length,
+      mimeType: 'application/octet-stream',
+      contentHash: hash,
+    });
+    const u = await service.getUpload('alice', r.upload.id);
+    const upload = storage.uploads.get(u.providerUploadId!)!;
+    const parts = [];
+    for (let p = 1; p * u.partSizeBytes - u.partSizeBytes < data.length; p++) {
+      upload.parts.set(p, data.subarray((p - 1) * u.partSizeBytes, p * u.partSizeBytes));
+      parts.push({ partNumber: p, etag: `part-${p}` });
+    }
+    await service.completeUpload('alice', u.id, parts, hash);
+    const job = (await new Transaction(repo).get<Job>('JOB', `verify-${u.objectId}`))!;
+    const read = storage.readRange.bind(storage);
+    let reads = 0;
+    storage.readRange = async (...args) => {
+      reads++;
+      return read(...args);
+    };
+    // The first slice uses up the run's time; the second run resumes from the saved state.
+    expect(await service.verifyUpload(job, Date.now() + 1)).toBe(false);
+    expect(job.offset).toBe(16 * 1048576);
+    expect(reads).toBe(1);
+    expect(await service.verifyUpload(job, Infinity)).toBe(true);
+    expect(reads).toBe(2);
+    const object = await new Transaction(repo).get<StoredObject>('OBJECT', u.objectId);
+    expect(object!.contentHash).toBe(hash);
   });
 });
 describe('filesystem consistency', () => {

@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createSHA256 } from 'hash-wasm';
 import {
     SIGNUP_QUOTA,
     PART_SIZE,
@@ -83,6 +84,7 @@ export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
     !!item.deletedAt && !!account.trashEmptiedAt && item.deletedAt <= account.trashEmptiedAt;
 // A deleted account keeps its data this long before the purge job removes it.
 export const ACCOUNT_PURGE_DELAY_MS = 30 * 86400_000;
+const VERIFY_SLICE_BYTES = 16 * 1048576;
 // Device rows identify token sessions; devicePublicId identifies an installation.
 // `revokedAt` ends a session (sign-out); `revoked` marks a device the user revoked.
 type DeviceSession = Device & { revocationVersion?: number; revoked?: boolean; };
@@ -172,6 +174,7 @@ export type Job = {
     | 'ARCHIVE_BUILD'
     | 'ARCHIVE_EXPIRE'
     | 'UPLOAD_EXPIRE'
+    | 'UPLOAD_VERIFY'
     | 'OBJECT_DELETE'
     | 'EMAIL'
     | 'TRANSFER_BUILD'
@@ -190,6 +193,9 @@ export type Job = {
     /** Legacy invitation jobs carry the recipient and sender instead of `email`. */
     to?: string;
     sender?: string;
+    /** UPLOAD_VERIFY progress: bytes hashed so far and the saved SHA-256 state. */
+    offset?: number;
+    hashState?: string;
     dueAt: string;
     attempts: number;
 };
@@ -1090,6 +1096,15 @@ export class StorageService {
                 references: 1,
                 createdAt: now(),
             } satisfies StoredObject);
+            await this.job(tx, {
+                id: `verify-${u.objectId}`,
+                type: 'UPLOAD_VERIFY',
+                userId: owner,
+                entityId: u.objectId,
+                key: `VERSION#${item.id}#${version.id}`,
+                dueAt: now(),
+                attempts: 0,
+            });
             await this.reserveName(tx, item, old);
             const account = await this.account(tx, owner);
             account.storageReservedBytes -= u.expectedSizeBytes;
@@ -1107,6 +1122,44 @@ export class StorageService {
     }
     async job(tx: Transaction, job: Job) {
         await tx.put('JOB', job.id, job, { gpk: 'JOB', gsk: job.dueAt });
+    }
+    /**
+     * Hashes a finished upload's stored bytes, resuming across runs. The uploading client declares
+     * the SHA-256 that downloads are checked against; when it is wrong, the stored bytes win and
+     * the version's hash is corrected, so the file stays downloadable on every device.
+     */
+    async verifyUpload(job: Job, until: number) {
+        const object = await new Transaction(this.repo).get<StoredObject>('OBJECT', job.entityId!);
+        if (!object) return true;
+        const hash = await createSHA256();
+        hash.init();
+        if (job.hashState) hash.load(Buffer.from(job.hashState, 'base64'));
+        let offset = job.offset ?? 0;
+        while (offset < object.sizeBytes) {
+            if (Date.now() >= until) {
+                job.offset = offset;
+                job.hashState = Buffer.from(hash.save()).toString('base64');
+                return false;
+            }
+            const bytes = await this.storage.readRange(
+                object.key,
+                offset,
+                Math.min(VERIFY_SLICE_BYTES, object.sizeBytes - offset),
+            );
+            hash.update(bytes);
+            offset += bytes.length;
+        }
+        const actual = hash.digest('hex');
+        if (actual === object.contentHash) return true;
+        await transact(this.repo, async (tx) => {
+            const current = await tx.get<StoredObject>('OBJECT', object.id);
+            if (current) await tx.put('OBJECT', object.id, { ...current, contentHash: actual });
+            const version = await tx.get<FileVersion>(userPK(job.userId!), job.key!);
+            if (version?.storageObjectId === object.id)
+                await tx.put(userPK(job.userId!), job.key!, { ...version, contentHash: actual });
+        });
+        console.warn(JSON.stringify({ event: 'upload_hash_corrected', objectId: object.id }));
+        return true;
     }
     async email(tx: Transaction, id: string, email: Email) {
         await queueEmail(tx, id, email);
@@ -2916,6 +2969,8 @@ export class StorageService {
                     );
                 if (job.type === 'ACCOUNT_DELETE') complete = await this.purgeAccount(job.userId!);
                 if (job.type === 'BACKUP_CHECK') await this.backupCheck(job);
+                if (job.type === 'UPLOAD_VERIFY')
+                    complete = await this.verifyUpload(job, Math.min(deadline, Date.now() + 120_000));
                 if (job.type === 'TRANSFER_BUILD') complete = await workflows.build(job.entityId!);
                 if (job.type === 'TRANSFER_SAVE') complete = await workflows.saveBatch(job.entityId!);
                 if (job.type === 'TRANSFER_RELEASE') complete = await workflows.release(job.entityId!);
