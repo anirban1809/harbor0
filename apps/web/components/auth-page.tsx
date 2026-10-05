@@ -118,6 +118,9 @@ export function AuthPage({
   useEffect(() => {
     setError(undefined);
     setPassword('');
+    // The page stays mounted across steps, so an access-request result would otherwise
+    // cover the sign-in form it points to. The email carries over.
+    setRequested(undefined);
     // Focus the first empty field of each step.
     const fields = formRef.current?.querySelectorAll<HTMLInputElement>('input:not([type=hidden])');
     Array.from(fields ?? [])
