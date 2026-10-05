@@ -21,13 +21,20 @@ it('sends upstream bodies as strings so a 401 answer stays a 401', async () => {
     }),
   );
   expect(response.status).toBe(401);
-  expect(response.headers.getSetCookie()).toEqual([
+  // No inline renewal: the refresh cookie stays for the client's single renewal.
+  expect(response.headers.getSetCookie()).toEqual([]);
+  const renewal = await POST(
+    new Request(origin + '/api/v1/auth/renew', {
+      method: 'POST',
+      headers: { Origin: origin, Cookie: 'harbor_refresh=ended' },
+    }),
+  );
+  expect(renewal.status).toBe(401);
+  expect(renewal.headers.getSetCookie()).toEqual([
     expect.stringMatching(/^harbor_access=; .*Max-Age=0/),
     expect.stringMatching(/^harbor_refresh=; .*Max-Age=0/),
   ]);
-  // Refresh attempt, the request itself, and the retry's refresh attempt.
   expect(calls.map(([url, init]) => [new URL(url).pathname, typeof init.body])).toEqual([
-    ['/v1/auth/refresh', 'string'],
     ['/v1/realtime/tickets', 'string'],
     ['/v1/auth/refresh', 'string'],
   ]);

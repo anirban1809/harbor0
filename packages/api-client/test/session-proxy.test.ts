@@ -41,38 +41,42 @@ describe('same-origin browser session gateway', () => {
     for (const c of cookies) expect(c).toMatch(/HttpOnly; SameSite=Strict; Max-Age=\d+; Secure/);
     expect(r.headers.get('cache-control')).toContain('no-store');
   });
-  it('rotates a cookie session, retries with its new access token, and hides raw refresh endpoints', async () => {
-    const calls: Request[] = [];
-    const upstream = async (r: Request) => {
-      calls.push(r);
-      if (r.url.endsWith('/auth/refresh')) {
-        expect(await r.json()).toEqual({ refreshToken: 'refresh-old' });
-        return Response.json({
-          accessToken: 'access-new',
-          refreshToken: 'refresh-new',
-          expiresIn: 900,
-        });
-      }
-      return r.headers.get('authorization') === 'Bearer access-new'
-        ? Response.json({ user: { id: 'u' } })
-        : Response.json({ error: { code: 'AUTH_INVALID' } }, { status: 401 });
-    };
+  it('hides raw refresh endpoints and only renews through the cookie', async () => {
+    const upstream = vi.fn();
+    for (const path of ['auth/refresh', 'auth/session'])
+      expect(
+        (
+          await proxyBrowserRequest(request(path, { refreshToken: 'injected' }), {
+            ...opts,
+            upstream,
+          })
+        ).status,
+      ).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+  it('answers 401 without renewing inline, keeping the refresh cookie for the client to renew', async () => {
+    const upstream = vi.fn(async (r: Request) => {
+      expect(r.url).toBe('https://backend.example.test/v1/users/me');
+      return Response.json({ error: { code: 'AUTH_INVALID' } }, { status: 401 });
+    });
     const r = await proxyBrowserRequest(
-      request('users/me', undefined, 'harbor_access=expired; harbor_refresh=refresh-old'),
+      request('users/me', undefined, 'harbor_access=rejected; harbor_refresh=refresh'),
       { ...opts, upstream },
     );
+    expect(r.status).toBe(401);
+    expect(upstream).toHaveBeenCalledTimes(1);
+    expect(r.headers.getSetCookie()).toEqual([
+      'harbor_access=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Secure',
+    ]);
+  });
+  it('forwards cookieless requests so public routes keep working', async () => {
+    const upstream = vi.fn(async (r: Request) => {
+      expect(r.headers.get('authorization')).toBeNull();
+      return Response.json({ open: true });
+    });
+    const r = await proxyBrowserRequest(request('beta'), { ...opts, upstream });
     expect(r.status).toBe(200);
-    expect(calls).toHaveLength(3);
-    expect(r.headers.getSetCookie().join(';')).toContain('harbor_refresh=refresh-new');
-    expect(
-      (
-        await proxyBrowserRequest(request('auth/refresh', { refreshToken: 'injected' }), {
-          ...opts,
-          upstream,
-        })
-      ).status,
-    ).toBe(404);
-    expect(calls).toHaveLength(3);
+    expect(r.headers.getSetCookie()).toEqual([]);
   });
   it('uses the cookie for logout and clears both credentials', async () => {
     const upstream = async (r: Request) => {
@@ -90,34 +94,56 @@ describe('same-origin browser session gateway', () => {
     expect(r.status).toBe(200);
     expect(r.headers.getSetCookie().every((c) => c.includes('Max-Age=0'))).toBe(true);
   });
-  it('restores a browser session using only the persistent refresh cookie', async () => {
+  const renew = (cookie: string, upstream: (r: Request) => Promise<Response>) =>
+    proxyBrowserRequest(request('auth/renew', {}, cookie), { ...opts, upstream });
+  it('renews a session from the refresh cookie alone', async () => {
     const upstream = vi.fn(async (r: Request) => {
-      if (r.url.endsWith('/auth/refresh'))
-        return Response.json({ accessToken: 'renewed', refreshToken: 'rotated', expiresIn: 900 });
-      expect(r.headers.get('authorization')).toBe('Bearer renewed');
-      return Response.json({ user: { id: 'u' } });
+      expect(r.url).toBe('https://backend.example.test/v1/auth/refresh');
+      expect(await r.json()).toEqual({ refreshToken: 'saved' });
+      return Response.json({ accessToken: 'renewed', refreshToken: 'rotated', expiresIn: 900 });
     });
-    const r = await proxyBrowserRequest(request('users/me', undefined, 'harbor_refresh=saved'), {
-      ...opts,
-      upstream,
-    });
+    const r = await renew('harbor_refresh=saved', upstream);
     expect(r.status).toBe(200);
-    expect(upstream).toHaveBeenCalledTimes(2);
-    expect(r.headers.getSetCookie().find((c) => c.startsWith('harbor_refresh='))).toContain(
-      'Max-Age=2592000',
+    expect(await r.json()).toEqual({ renewed: true });
+    const cookies = r.headers.getSetCookie();
+    expect(cookies.find((c) => c.startsWith('harbor_access='))).toContain('renewed; Path=/');
+    expect(cookies.find((c) => c.startsWith('harbor_refresh='))).toContain(
+      'rotated; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000',
     );
   });
-  it('clears browser credentials when the refresh session has expired', async () => {
+  it('skips renewal when another tab already renewed', async () => {
+    const upstream = vi.fn();
+    const r = await renew('harbor_access=fresh; harbor_refresh=rotated', upstream);
+    expect(await r.json()).toEqual({ renewed: false });
+    expect(upstream).not.toHaveBeenCalled();
+    expect(r.headers.getSetCookie()).toEqual([]);
+  });
+  it('clears browser credentials when the refresh session has ended', async () => {
     const upstream = vi.fn(async () =>
       Response.json({ error: { code: 'AUTH_INVALID' } }, { status: 401 }),
     );
-    const r = await proxyBrowserRequest(request('users/me', undefined, 'harbor_refresh=expired'), {
-      ...opts,
-      upstream,
-    });
+    const r = await renew('harbor_refresh=expired', upstream);
     expect(r.status).toBe(401);
     expect(r.headers.getSetCookie()).toHaveLength(2);
     expect(r.headers.getSetCookie().every((c) => c.includes('Max-Age=0'))).toBe(true);
+  });
+  it('keeps the refresh cookie when renewal is throttled or the backend fails', async () => {
+    for (const status of [429, 500]) {
+      const r = await renew('harbor_refresh=saved', async () =>
+        Response.json({ error: { code: 'RATE_LIMITED' } }, { status }),
+      );
+      expect(r.status).toBe(503);
+      expect(r.headers.getSetCookie()).toEqual([]);
+    }
+  });
+  it('refuses cross-origin renewal', async () => {
+    const upstream = vi.fn();
+    const r = await proxyBrowserRequest(
+      request('auth/renew', {}, 'harbor_refresh=saved', 'https://attacker.test'),
+      { ...opts, upstream },
+    );
+    expect(r.status).toBe(403);
+    expect(upstream).not.toHaveBeenCalled();
   });
   it('clears revoked device cookies without exposing or renewing credentials', async () => {
     const upstream = vi.fn(async () =>

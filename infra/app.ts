@@ -146,7 +146,9 @@ const client = new cognito.CfnUserPoolClient(stack, 'Client', {
   idTokenValidity: 15,
   refreshTokenValidity: 30,
   tokenValidityUnits: { accessToken: 'minutes', idToken: 'minutes', refreshToken: 'days' },
-  refreshTokenRotation: { feature: 'ENABLED', retryGracePeriodSeconds: 10 },
+  // The longest Cognito allows: a renewal whose response never reached the client (a closed
+  // tab, a dropped connection) can be repeated with the old token for a minute.
+  refreshTokenRotation: { feature: 'ENABLED', retryGracePeriodSeconds: 60 },
   readAttributes: ['email', 'email_verified', 'preferred_username', 'name'],
   writeAttributes: ['email', 'preferred_username', 'name'],
   supportedIdentityProviders: ['COGNITO'],

@@ -6,7 +6,6 @@ type ProxyOptions = {
   secureCookies: boolean;
   upstream?: (request: Request) => Promise<Response> | Response;
 };
-const publicActions = new Set(['signup', 'confirm', 'resend', 'login', 'forgot', 'reset']);
 const json = (data: unknown, status: number) =>
   Response.json(data, {
     status,
@@ -41,11 +40,9 @@ export async function proxyBrowserRequest(req: Request, options: ProxyOptions): 
       return [part.slice(0, offset).trim(), value];
     }),
   );
-  let access = cookies.get('harbor_access');
-  let refresh = cookies.get('harbor_refresh');
+  const access = cookies.get('harbor_access');
+  const refresh = cookies.get('harbor_refresh');
   let rotated: Tokens | undefined;
-  const isPublic =
-    endpoint.startsWith('/v1/auth/') && publicActions.has(endpoint.slice('/v1/auth/'.length));
   const upstream = options.upstream ?? fetch;
   const call = (path: string, method: string, body?: string, token?: string) =>
     upstream(
@@ -58,50 +55,11 @@ export async function proxyBrowserRequest(req: Request, options: ProxyOptions): 
         body,
       }),
     );
-  const renew = async () => {
-    if (!refresh) return false;
-    const response = await call(
-      '/v1/auth/refresh',
-      'POST',
-      JSON.stringify({ refreshToken: refresh }),
-    );
-    if (!response.ok) return false;
-    rotated = (await response.json()) as Tokens;
-    access = rotated.accessToken;
-    refresh = rotated.refreshToken;
-    return true;
-  };
   const cookie = (name: string, value: string, age: number) =>
     `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${options.secureCookies ? '; Secure' : ''}`;
-  try {
-    if (Number(req.headers.get('content-length') ?? 0) > 1024 * 1024)
-      return error('VALIDATION_ERROR', 'Request is too large.', 413);
-    const text = ['GET', 'HEAD'].includes(req.method) ? undefined : await req.text();
-    if (text && new TextEncoder().encode(text).length > 1024 * 1024)
-      return error('VALIDATION_ERROR', 'Request is too large.', 413);
-    if (!access && !isPublic) await renew();
-    const send = () =>
-      call(
-        endpoint + url.search,
-        req.method,
-        endpoint === '/v1/auth/logout' ? JSON.stringify({ refreshToken: refresh ?? '' }) : text,
-        access,
-      );
-    let response = await send();
-    if (response.status === 401 && !isPublic && (await renew())) response = await send();
-    const data = await response.json();
-    if (endpoint === '/v1/auth/login' && response.ok) rotated = data;
-    const { accessToken: _access, refreshToken: _refresh, idToken: _id, ...safe } = data;
-    const result = json(safe, response.status);
-    result.headers.set('X-Request-ID', response.headers.get('X-Request-ID') ?? '');
-    const clear =
-      endpoint === '/v1/auth/logout' ||
-      response.status === 401 ||
-      safe.error?.code === 'DEVICE_REVOKED';
-    if (clear) {
-      result.headers.append('Set-Cookie', cookie('harbor_access', '', 0));
-      result.headers.append('Set-Cookie', cookie('harbor_refresh', '', 0));
-    } else if (rotated) {
+  const withCookies = (result: Response, clear: string[]) => {
+    for (const name of clear) result.headers.append('Set-Cookie', cookie(name, '', 0));
+    if (rotated) {
       result.headers.append(
         'Set-Cookie',
         cookie('harbor_access', rotated.accessToken, Math.max(1, rotated.expiresIn - 30)),
@@ -112,6 +70,55 @@ export async function proxyBrowserRequest(req: Request, options: ProxyOptions): 
       );
     }
     return result;
+  };
+  const expired = () => error('AUTH_INVALID', 'Your session expired. Sign in again.', 401);
+  try {
+    // Cognito rotates the refresh token on every use, so renewing inside ordinary requests
+    // raced: parallel requests each spent the same cookie, and whichever response landed last
+    // won. The browser renews through this one endpoint instead, one renewal at a time.
+    if (endpoint === '/v1/auth/renew') {
+      if (req.method !== 'POST') return error('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+      // Another tab renewed first: its cookies came with this request.
+      if (access) return json({ renewed: false }, 200);
+      if (!refresh) return withCookies(expired(), ['harbor_refresh']);
+      const response = await call(
+        '/v1/auth/refresh',
+        'POST',
+        JSON.stringify({ refreshToken: refresh }),
+      );
+      // Throttling or an outage says nothing about the session: keep the cookie to retry with.
+      if (response.status !== 401 && !response.ok)
+        return error(
+          'BACKEND_UNAVAILABLE',
+          'harbor0 is temporarily unavailable. Your local files are safe.',
+          503,
+        );
+      if (!response.ok) return withCookies(expired(), ['harbor_access', 'harbor_refresh']);
+      rotated = (await response.json()) as Tokens;
+      return withCookies(json({ renewed: true }, 200), []);
+    }
+    if (Number(req.headers.get('content-length') ?? 0) > 1024 * 1024)
+      return error('VALIDATION_ERROR', 'Request is too large.', 413);
+    const text = ['GET', 'HEAD'].includes(req.method) ? undefined : await req.text();
+    if (text && new TextEncoder().encode(text).length > 1024 * 1024)
+      return error('VALIDATION_ERROR', 'Request is too large.', 413);
+    // Without an access cookie, signed-in routes answer 401 and the client renews and retries.
+    const response = await call(
+      endpoint + url.search,
+      req.method,
+      endpoint === '/v1/auth/logout' ? JSON.stringify({ refreshToken: refresh ?? '' }) : text,
+      access,
+    );
+    const data = await response.json();
+    if (endpoint === '/v1/auth/login' && response.ok) rotated = data;
+    const { accessToken: _access, refreshToken: _refresh, idToken: _id, ...safe } = data;
+    const result = json(safe, response.status);
+    result.headers.set('X-Request-ID', response.headers.get('X-Request-ID') ?? '');
+    if (endpoint === '/v1/auth/logout' || safe.error?.code === 'DEVICE_REVOKED')
+      return withCookies(result, ['harbor_access', 'harbor_refresh']);
+    // A rejected access token is spent, but the refresh cookie may still renew the session.
+    if (response.status === 401 && access) return withCookies(result, ['harbor_access']);
+    return withCookies(result, []);
   } catch {
     return error(
       'BACKEND_UNAVAILABLE',

@@ -122,8 +122,8 @@ import { registerBrowser } from '../lib/device-key';
 import {
   guardTransport,
   setSignedIn,
-  useDeploymentCheck,
   useSessionEnd,
+  useUpdateAvailable,
 } from '../lib/session-guard';
 const api = new ApiClient(guardTransport(createTransport('/api')));
 const loadPreview: PreviewLoader = async (item, signal) => {
@@ -313,7 +313,8 @@ function Workspace() {
   const user = me.data?.user;
   const sessionEnd = useSessionEnd();
   useEffect(() => setSignedIn(!!user), [user?.id]);
-  useDeploymentCheck(!!user);
+  const updateAvailable = useUpdateAvailable(!!user);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const live = useLiveUpdates(api, user?.id);
   // Link this sign-in to the browser's key so the browser is listed once among devices.
   useEffect(() => {
@@ -1223,6 +1224,21 @@ function Workspace() {
             {!online && (
               <Alert tone="warning">
                 You’re offline. Changes will sync when your connection returns.
+              </Alert>
+            )}
+            {updateAvailable && !updateDismissed && (
+              <Alert
+                tone="info"
+                className="banner"
+                action={
+                  <Button variant="link" onClick={() => window.location.reload()}>
+                    Reload
+                  </Button>
+                }
+                dismissLabel="Dismiss update notice"
+                onDismiss={() => setUpdateDismissed(true)}
+              >
+                A new version of harbor0 is available.
               </Alert>
             )}
             {pageError && !sessionEnd && (
@@ -2376,11 +2392,10 @@ function FolderPicker() {
   );
 }
 function SessionEndedDialog() {
+  // An expired session's cookies were cleared when its renewal was refused. Signing out here
+  // would use whatever cookies the browser holds now, which may be a newer sign-in from another
+  // tab, so this only sends the user to the sign-in page.
   const reason = useSessionEnd();
-  useEffect(() => {
-    // Clear the session cookies now, so the user is signed out even if they never press OK.
-    if (reason) void api.request('/v1/auth/logout', { method: 'POST', body: {} }).catch(() => {});
-  }, [reason]);
   const leave = () => {
     clearBrowserCaches();
     const here = window.location.pathname + window.location.search;
@@ -2393,11 +2408,7 @@ function SessionEndedDialog() {
         if (!open) leave();
       }}
       title="You’ve been signed out"
-      description={
-        reason === 'updated'
-          ? 'Harbor0 was updated. Sign in again to keep using the latest version.'
-          : 'Your session has expired. Sign in again to continue.'
-      }
+      description="Your session has expired. Sign in again to continue."
     >
       <DialogActions>
         <Button onClick={leave}>OK</Button>
