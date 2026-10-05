@@ -30,11 +30,17 @@ const desktop = [
   ['Sign-in', 'Your password is never saved. The session is encrypted with the system keychain.'],
 ];
 const install = [
-  ['Download', 'Get the disk image with the button above.'],
-  ['Install', 'Open the disk image and drag harbor0 into Applications.'],
+  [
+    'Install',
+    'Download the disk image with the button above, open it, and drag harbor0 into Applications.',
+  ],
   [
     'First open',
-    'The beta build is not yet signed with Apple, so macOS blocks it once. Open System Settings → Privacy & Security and choose Open Anyway.',
+    'The beta build is not yet signed with Apple, so macOS stops it with “harbor0” Not Opened. Click Done, not Move to Bin.',
+  ],
+  [
+    'Open Anyway',
+    'In System Settings → Privacy & Security, scroll to Security and click Open Anyway next to harbor0, confirm with your password or Touch ID, then click Open. You only do this once.',
   ],
 ];
 const sync = features.find(({ id }) => id === 'sync')!;
