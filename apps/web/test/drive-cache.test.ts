@@ -112,7 +112,7 @@ it('shows a new folder immediately and rolls it back on a failed background save
   expect(await screen.findByRole('button', { name: 'Instant folder' })).toBeTruthy();
   expect(screen.queryByRole('textbox', { name: 'Folder name' })).toBeNull();
   await act(async () => save.reject(new Error('Storage unavailable')));
-  await screen.findByText(/Could not save.*Instant folder/);
+  await screen.findByText(/Could not create “Instant folder”. Storage unavailable/);
   expect(screen.queryByRole('button', { name: 'Instant folder' })).toBeNull();
 });
 

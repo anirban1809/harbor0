@@ -29,6 +29,7 @@ import { LoadMoreFiles } from './load-more-files';
 import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { driveLocations, type DriveLocation } from '../lib/drive-locations';
 import { operation } from '@harbor/api-client';
+import { retryTransient, settleBounded } from '../lib/bulk-requests';
 import { defaultDriveFilters, driveView, needsWholeFolder } from '../lib/drive-view';
 import { canWriteIn, itemAccess, type ShareAccess } from '../lib/drive-access';
 import { isLive, onLive } from '../lib/live-updates';
@@ -860,6 +861,8 @@ export function DriveWorkspace({
     transform: (item: Item) => Item,
     save: (item: Item) => Promise<{ item?: Item } | unknown>,
     done?: string,
+    // What failed, for a subject such as “IMG_0001.jpg” or “12 items”.
+    action: (subject: string) => string = (subject) => `save ${subject}`,
   ) {
     if (targets.some((item) => changesRef.current.get(item.id)?.pending)) return;
     setError('');
@@ -869,24 +872,30 @@ export function DriveWorkspace({
     setChanges(new Map(changesRef.current));
     session.data.clear();
     session.views.clear();
-    const results = await Promise.allSettled(
-      targets.map(async (item) => {
-        try {
-          const result = (await save(item)) as { item?: Item } | undefined;
-          const next = result?.item ? { ...transform(item), ...result.item } : transform(item);
-          changesRef.current.set(item.id, { item: next, pending: false });
-        } catch (error) {
-          // Only this item is rolled back, including in a partially successful batch.
-          changesRef.current.delete(item.id);
-          throw new Error(`Could not save “${item.name}”. ${(error as Error).message}`);
-        } finally {
-          mutationEpoch.current++;
-          setChanges(new Map(changesRef.current));
-        }
-      }),
-    );
-    const errors = results.flatMap((result) =>
-      result.status === 'rejected' ? [result.reason.message] : [],
+    const results = await settleBounded(targets, async (item) => {
+      try {
+        const result = (await retryTransient(() => save(item))) as { item?: Item } | undefined;
+        const next = result?.item ? { ...transform(item), ...result.item } : transform(item);
+        changesRef.current.set(item.id, { item: next, pending: false });
+      } catch (error) {
+        // Only this item is rolled back, including in a partially successful batch.
+        changesRef.current.delete(item.id);
+        throw error;
+      } finally {
+        mutationEpoch.current++;
+        setChanges(new Map(changesRef.current));
+      }
+    });
+    // One sentence per distinct reason, so a bulk action that failed for one cause reads once.
+    const failures = new Map<string, Item[]>();
+    results.forEach((result, index) => {
+      if (result.status !== 'rejected') return;
+      const reason = (result.reason as Error).message;
+      failures.set(reason, [...(failures.get(reason) ?? []), targets[index]]);
+    });
+    const errors = [...failures].map(
+      ([reason, failed]) =>
+        `Could not ${action(failed.length === 1 ? `“${failed[0].name}”` : `${failed.length} items`)}. ${reason}`,
     );
     if (errors.length) setError(errors.join(' '));
     else if (done) setNotice(done);
@@ -906,6 +915,8 @@ export function DriveWorkspace({
           method: item.favorite ? 'DELETE' : 'PUT',
           body: { ...operation(), baseRevision: item.revision },
         }),
+      undefined,
+      (subject) => `update favorites for ${subject}`,
     );
   }
   function openItem(item: Item) {
@@ -972,6 +983,12 @@ export function DriveWorkspace({
           : mode === 'move'
             ? `Moved ${targets.length === 1 ? `“${targets[0].name}”` : `${targets.length} items`} to ${moveTrail.at(-1)?.name ?? 'My Drive'}.`
             : undefined,
+        (subject) =>
+          mode === 'trash'
+            ? `move ${subject} to trash`
+            : mode === 'move'
+              ? `move ${subject}`
+              : `rename ${subject}`,
       );
       return;
     }
@@ -1559,18 +1576,22 @@ export function DriveWorkspace({
               setCreating(false);
               setFilters(defaultDriveFilters);
               if (query) onClearSearch();
+              // Retries reuse the operation, so a lost response can't create a second folder.
+              const create = operation();
               void optimistic(
                 [temporary],
                 (item) => item,
                 async () => {
                   const { item } = await request('/v1/drive/folders', {
                     method: 'POST',
-                    body: { ...operation(), parentId, name },
+                    body: { ...create, parentId, name },
                   });
                   focusId.current = item.id;
                   setSelected([item.id]);
                   return { item: { ...item, localOnly: false, location: activeTab } };
                 },
+                undefined,
+                (subject) => `create ${subject}`,
               );
             }}
           >
