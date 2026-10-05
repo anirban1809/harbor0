@@ -10,7 +10,12 @@ files:
 mac:
   target: [dmg]
   category: public.app-category.productivity
-  hardenedRuntime: true
+  # Without an Apple Developer ID the app is ad-hoc signed: an unsigned or partly signed bundle is
+  # reported as "damaged" once downloaded, while an ad-hoc one can be opened with Open Anyway.
+  # The hardened runtime only matters for notarization, and with ad-hoc signing it would block
+  # Electron's frameworks from loading; turn it back on with a real identity.
+  identity: '-'
+  hardenedRuntime: false
 win:
   target: [nsis]
 linux:

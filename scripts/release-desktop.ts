@@ -29,8 +29,7 @@ async function run(command: string, commandArgs: string[], cwd: string) {
     const child = spawn(command, commandArgs, {
       cwd,
       stdio: 'inherit',
-      // The beta build is unsigned; don't let electron-builder pick up a keychain identity.
-      env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+      env: process.env,
     });
     child.on('error', reject);
     child.on('exit', (code) =>
@@ -103,6 +102,12 @@ try {
     'npx',
     ['tsx', 'scripts/package-desktop-release.ts', '--mac', 'dmg', '--arm64'],
     worktree,
+  );
+  // A bundle whose signature doesn't seal its resources is reported as "damaged" once downloaded.
+  execFileSync(
+    'codesign',
+    ['--verify', '--deep', '--strict', 'apps/desktop/release/mac-arm64/harbor0.app'],
+    { cwd: worktree, stdio: 'inherit' },
   );
   await mkdir(path.dirname(installer), { recursive: true });
   await copyFile(path.join(worktree, 'apps/desktop/release', name), installer);
