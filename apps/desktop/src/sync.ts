@@ -1737,6 +1737,36 @@ export class SyncEngine {
     }
   }
   /** `listedPath`: the item came from a fresh listing at this path, so it need not be fetched. */
+  /** Removes a synced item's local copy, keeping local edits the cloud has not seen. */
+  private async removeLocal(root: Root, known: LocalFile) {
+    const full = contained(root.localPath, known.relativePath);
+    if (known.type === 'FILE') {
+      await this.preserve(root, known.relativePath, known.hash);
+      await rm(full, { force: true });
+    } else {
+      // Files the cloud already has go with the folder; anything else (unsynced work) is kept
+      // in a copy beside the old location, which is excluded from further syncing.
+      try {
+        await this.removeSynced(root, known.relativePath);
+        if ((await readdir(full)).every(metadataSegment)) await rm(full, { recursive: true });
+        else {
+          const kept = path.posix.join(
+            path.posix.dirname(known.relativePath),
+            recoveredName(path.basename(full), new Date()),
+          );
+          await rename(full, contained(root.localPath, kept));
+          this.recovered(root, known.relativePath, kept);
+        }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+      for (const child of this.journal
+        .files(root.id)
+        .filter((f) => f.relativePath.startsWith(known.relativePath + '/')))
+        this.journal.deleteFile(root.id, child.relativePath);
+    }
+    this.journal.deleteFile(root.id, known.relativePath);
+  }
   async remoteItem(root: Root, eventItem: DriveItem, listedPath?: string) {
     if (this.stopped || this.state.paused || root.paused || root.mode !== 'sync') return;
     if (root.remoteId === eventItem.id) {
@@ -1748,34 +1778,7 @@ export class SyncEngine {
     if (eventItem.deletedAt && known && known.revision >= eventItem.revision) return;
     if (eventItem.deletedAt) {
       this.waiting.delete(eventItem.id);
-      if (!known) return;
-      const full = contained(root.localPath, known.relativePath);
-      if (known.type === 'FILE') {
-        await this.preserve(root, known.relativePath, known.hash);
-        await rm(full, { force: true });
-      } else {
-        // Files the cloud already has go with the folder; anything else (unsynced work) is kept
-        // in a copy beside the old location, which is excluded from further syncing.
-        try {
-          await this.removeSynced(root, known.relativePath);
-          if ((await readdir(full)).every(metadataSegment)) await rm(full, { recursive: true });
-          else {
-            const kept = path.posix.join(
-              path.posix.dirname(known.relativePath),
-              recoveredName(path.basename(full), new Date()),
-            );
-            await rename(full, contained(root.localPath, kept));
-            this.recovered(root, known.relativePath, kept);
-          }
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-        }
-        for (const child of this.journal
-          .files(root.id)
-          .filter((f) => f.relativePath.startsWith(known.relativePath + '/')))
-          this.journal.deleteFile(root.id, child.relativePath);
-      }
-      this.journal.deleteFile(root.id, known.relativePath);
+      if (known) await this.removeLocal(root, known);
       return;
     }
     // Resolve the latest metadata when processing historical feed entries.
@@ -1789,7 +1792,13 @@ export class SyncEngine {
         throw e;
       }
     const relative = listedPath ?? (await this.relative(root, item));
-    if (relative === null || this.ignored(root, relative)) return;
+    if (relative === null) {
+      // Moved out of this sync folder: its local copy goes, as if the item had been deleted.
+      this.waiting.delete(item.id);
+      if (known) await this.removeLocal(root, known);
+      return;
+    }
+    if (this.ignored(root, relative)) return;
     const destination = await safeParents(root.localPath, relative);
     if (known && known.relativePath !== relative) {
       const previous = contained(root.localPath, known.relativePath);

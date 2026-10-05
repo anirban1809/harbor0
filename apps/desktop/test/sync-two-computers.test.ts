@@ -138,3 +138,43 @@ it('treats a rename whose content also changed as a new file and a deletion', as
   await tick(first);
   expect((await cloud.list(folder.id)).items.map((i) => i.name)).toEqual(['b.txt']);
 });
+
+it('removes the local copy of a file or folder moved out of the sync folder in the cloud', async () => {
+  const { computers, folder, cloud } = await twoComputers();
+  const [first, second] = computers;
+  await mkdir(path.join(first.localPath, 'Docs'));
+  await writeFile(path.join(first.localPath, 'Docs', 'a.txt'), 'a');
+  await writeFile(path.join(first.localPath, 'notes.txt'), 'notes');
+  await writeFile(path.join(first.localPath, 'draft.txt'), 'draft');
+  for (const relative of ['Docs', 'Docs/a.txt', 'notes.txt', 'draft.txt'])
+    first.journal.enqueue(first.root.id, relative, 'upsert');
+  await tick(first);
+  await tick(second);
+  expect((await readdir(second.localPath)).sort()).toEqual(['Docs', 'draft.txt', 'notes.txt']);
+
+  // The second computer has an edit to draft.txt the cloud has not seen yet.
+  await writeFile(path.join(second.localPath, 'draft.txt'), 'unsynced edit');
+  const outside = (await cloud.createFolder('Elsewhere')).item;
+  for (const item of (await cloud.list(folder.id)).items)
+    await cloud.request(`/v1/drive/items/${item.id}/move`, {
+      method: 'POST',
+      body: { operationId: crypto.randomUUID(), baseRevision: item.revision, parentId: outside.id },
+    });
+  await tick(first);
+  await tick(second);
+
+  expect(await readdir(first.localPath)).toEqual([]);
+  // Only the unsynced edit stays behind, as a conflict copy.
+  const left = await readdir(second.localPath);
+  expect(left).toHaveLength(1);
+  expect(left[0]).toMatch(/^draft \(Conflict/);
+  expect(await readFile(path.join(second.localPath, left[0]), 'utf8')).toBe('unsynced edit');
+  expect(first.journal.files(first.root.id)).toEqual([]);
+  expect(second.journal.files(second.root.id).map((f) => f.relativePath)).toEqual(left);
+  // The moved items are untouched in the cloud.
+  expect((await cloud.list(outside.id)).items.map((i) => i.name).sort()).toEqual([
+    'Docs',
+    'draft.txt',
+    'notes.txt',
+  ]);
+});
