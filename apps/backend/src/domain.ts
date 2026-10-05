@@ -36,6 +36,7 @@ import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { ArchiveWorkflows } from './archives';
 import { abandonCloudCopy } from './cloud-copies';
 import type { Email, StorageAlertLevel } from './emails';
+import { SIGNUP_ALERT_RECIPIENTS } from './emails';
 import type { StaffDeletionReason } from '../../../packages/contracts/src/admin';
 import { DeletionWorkflows } from './deletion';
 import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
@@ -282,6 +283,16 @@ export class StorageService {
                 name: user.displayName,
                 quotaBytes: user.storageQuotaBytes,
             });
+            for (const to of SIGNUP_ALERT_RECIPIENTS)
+                await this.email(tx, `signup-${user.id}-${to}`, {
+                    template: 'NEW_SIGNUP',
+                    to,
+                    email,
+                    username: normalized,
+                    name: user.displayName,
+                    quotaBytes: user.storageQuotaBytes,
+                    at: user.createdAt,
+                });
             return user;
         });
     }

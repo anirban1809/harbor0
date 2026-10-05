@@ -122,11 +122,13 @@ describe('account emails', () => {
     await service.runJobs(async (email) => void sent.push(email));
     expect(sent).toEqual([
       expect.objectContaining({ template: 'WELCOME', to: 'alice@example.test' }),
+      expect.objectContaining({ template: 'NEW_SIGNUP', to: 'anirban12321@gmail.com', email: 'alice@example.test' }),
+      expect.objectContaining({ template: 'NEW_SIGNUP', to: 'contact@harbor0.com', email: 'alice@example.test' }),
     ]);
 
     const { purgeAt } = await (await remove(headers, 'alice@example.test')).json();
     await service.runJobs(async (email) => void sent.push(email));
-    expect(sent.slice(1)).toEqual([
+    expect(sent.slice(3)).toEqual([
       { template: 'ACCOUNT_DELETED', to: 'alice@example.test', name: expect.any(String), purgeAt },
     ]);
   });

@@ -12,7 +12,7 @@ const deliver = async () => {
   sent.length = 0;
   // Emails queued by a run (e.g. a backup check) go out on the next one.
   for (let run = 0; run < 2; run++) await service.runJobs(async (email) => void sent.push(email));
-  return sent.filter((email) => email.template !== 'WELCOME');
+  return sent.filter((email) => email.template !== 'WELCOME' && email.template !== 'NEW_SIGNUP');
 };
 const signIn = (sessionId: string, devicePublicId: string, name = 'MacBook') =>
   service.registerDevice('alice', { name, platform: 'MACOS', devicePublicId }, sessionId);

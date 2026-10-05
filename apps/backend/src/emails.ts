@@ -8,6 +8,8 @@ const CODE = '{####}';
 const USERNAME = '{username}';
 const site = 'https://harbor0.com';
 const contact = 'contact@harbor0.com';
+/** Staff told about every new account. */
+export const SIGNUP_ALERT_RECIPIENTS = ['anirban12321@gmail.com', contact];
 
 type Message = {
     subject: string;
@@ -89,6 +91,15 @@ export type Email =
     | { template: 'BETA_INVITE'; to: string; code: string; }
     | { template: 'BETA_WAITLIST'; to: string; }
     | { template: 'WELCOME'; to: string; name: string; quotaBytes: number; }
+    | {
+        template: 'NEW_SIGNUP';
+        to: string;
+        email: string;
+        username: string;
+        name: string;
+        quotaBytes: number;
+        at: string;
+    }
     | { template: 'ACCOUNT_DELETED'; to: string; name: string; purgeAt: string; }
     | {
         template: 'ACCOUNT_CLOSED';
@@ -283,6 +294,20 @@ function accountMessage(email: Email, webOrigin: string): Message {
                 footnote: `Get the desktop and mobile apps at <a href="${site}/apps" style="color:#4353d9;">harbor0.com/apps</a>.`,
             };
         }
+        case 'NEW_SIGNUP':
+            return {
+                subject: `New harbor0 sign-up: ${email.email}`,
+                preheader: `${escape(email.email)} just created an account.`,
+                heading: 'New sign-up',
+                intro: `<strong style="color:#16181d;">${escape(email.email)}</strong> just created a harbor0 account.`,
+                details: [
+                    ['Name', escape(email.name)],
+                    ['Username', escape(email.username)],
+                    ['Storage', size(email.quotaBytes)],
+                    ['Time', dateTime(email.at)],
+                ],
+                footnote: 'Sent to harbor0 staff for every new account.',
+            };
         case 'ACCOUNT_DELETED': {
             const purge = longDate(email.purgeAt);
             return {
