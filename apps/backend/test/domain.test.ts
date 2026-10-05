@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { MemoryRepository, Transaction, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
@@ -186,12 +186,18 @@ describe('quota and upload recovery', () => {
     const job = (await new Transaction(repo).get<Job>('JOB', `verify-${u.objectId}`))!;
     const read = storage.readRange.bind(storage);
     let reads = 0;
+    let sliced = false;
     storage.readRange = async (...args) => {
       reads++;
+      sliced = true;
       return read(...args);
     };
-    // The first slice uses up the run's time; the second run resumes from the saved state.
-    expect(await service.verifyUpload(job, Date.now() + 1)).toBe(false);
+    // The first slice uses up the run's time, however long setup took; the second run resumes
+    // from the saved state.
+    const start = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (sliced ? start + 1 : start));
+    expect(await service.verifyUpload(job, start + 1)).toBe(false);
+    clock.mockRestore();
     expect(job.offset).toBe(16 * 1048576);
     expect(reads).toBe(1);
     expect(await service.verifyUpload(job, Infinity)).toBe(true);
