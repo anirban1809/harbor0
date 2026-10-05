@@ -18,6 +18,10 @@ import {
   aws_logs as logs,
   aws_sqs as sqs,
   aws_cloudwatch as cloudwatch,
+  aws_cloudwatch_actions as cwActions,
+  aws_sns as sns,
+  aws_sns_subscriptions as subscriptions,
+  aws_ses as ses,
   Tags,
 } from 'aws-cdk-lib';
 import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -48,12 +52,46 @@ const hasEmailFrom = new CfnCondition(stack, 'HasEmailFrom', {
 // Cognito sends from the verified domain identity; the trailing '@' keeps the split two-part
 // even when the sender is empty.
 const emailDomain = Fn.select(1, Fn.split('@', Fn.join('', [emailFrom, '@'])));
+// Every email we send goes through this configuration set, which reports what happened to each
+// message (delivered, bounced, complained, delayed, rejected) to EventBridge. A rule keeps those
+// events in a log group, so a "the email never came" report can be traced to one message.
+const mail = new ses.ConfigurationSet(stack, 'Mail', {
+  configurationSetName: harborEnv.production ? 'harbor0-mail' : 'harbor0-staging-mail',
+});
+mail.addEventDestination('Events', {
+  destination: ses.EventDestination.eventBus(
+    events.EventBus.fromEventBusName(stack, 'DefaultBus', 'default'),
+  ),
+  events: [
+    ses.EmailSendingEvent.SEND,
+    ses.EmailSendingEvent.DELIVERY,
+    ses.EmailSendingEvent.BOUNCE,
+    ses.EmailSendingEvent.COMPLAINT,
+    ses.EmailSendingEvent.DELIVERY_DELAY,
+    ses.EmailSendingEvent.REJECT,
+    ses.EmailSendingEvent.RENDERING_FAILURE,
+  ],
+});
+const mailEvents = new logs.LogGroup(stack, 'MailEvents', {
+  // EventBridge can only write to log groups under /aws/events/.
+  logGroupName: `/aws/events/${mail.configurationSetName}`,
+  retention: logs.RetentionDays.THREE_MONTHS,
+  removalPolicy,
+});
+new events.Rule(stack, 'MailEventsRule', {
+  eventPattern: {
+    source: ['aws.ses'],
+    detail: { mail: { tags: { 'ses:configuration-set': [mail.configurationSetName] } } },
+  },
+  targets: [new targets.CloudWatchLogGroup(mailEvents)],
+});
 const useSesForCognito = (userPool: cognito.UserPool) => {
   (userPool.node.defaultChild as cognito.CfnUserPool).emailConfiguration = Fn.conditionIf(
     hasEmailFrom.logicalId,
     {
       EmailSendingAccount: 'DEVELOPER',
       From: `harbor0 <${emailFrom}>`,
+      ConfigurationSet: mail.configurationSetName,
       SourceArn: `arn:${stack.partition}:ses:${stack.region}:${stack.account}:identity/${emailDomain}`,
     },
     { EmailSendingAccount: 'COGNITO_DEFAULT' },
@@ -176,6 +214,7 @@ const environment = {
   R2_SECRET_ARN: r2SecretArn,
   WEB_ORIGIN: webOrigin,
   EMAIL_FROM: emailFrom,
+  MAIL_CONFIGURATION_SET: mail.configurationSetName,
   NODE_ENV: 'production',
 };
 const logGroup = new logs.LogGroup(stack, 'ApiLogs', {
@@ -389,7 +428,13 @@ adminApi.addRoutes({
 });
 const adminStage = adminApi.defaultStage!.node.defaultChild as apigw.CfnStage;
 adminStage.defaultRouteSettings = { throttlingBurstLimit: 20, throttlingRateLimit: 10 };
-new cloudwatch.Alarm(stack, 'AdminErrors', {
+// Every alarm emails these addresses. Each one must confirm the SNS subscription email once.
+const alerts = new sns.Topic(stack, 'Alerts', { displayName: 'harbor0 alerts' });
+for (const address of ['anirban12321@gmail.com', 'contact@harbor0.com'])
+  alerts.addSubscription(new subscriptions.EmailSubscription(address));
+const alarm = (id: string, props: cloudwatch.AlarmProps) =>
+  new cloudwatch.Alarm(stack, id, props).addAlarmAction(new cwActions.SnsAction(alerts));
+alarm('AdminErrors', {
   metric: adminFunction.metricErrors(),
   threshold: 1,
   evaluationPeriods: 1,
@@ -417,17 +462,35 @@ new events.Rule(stack, 'MaintenanceSchedule', {
   schedule: events.Schedule.rate(Duration.minutes(1)),
   targets: [new targets.LambdaFunction(jobsFunction, { deadLetterQueue: dlq, retryAttempts: 2 })],
 });
-new cloudwatch.Alarm(stack, 'ApiErrors', {
+// The API answers failures itself, so Lambda Errors stays at 0 while users get 500s. Alert on
+// the share of 5xx responses instead, ignoring quiet periods where a few failures look large.
+const minutes5 = { period: Duration.minutes(5), statistic: 'Sum' };
+alarm('ApiServerErrors', {
+  alarmDescription: 'More than 5% of API responses were 5xx for 10 minutes.',
+  metric: new cloudwatch.MathExpression({
+    expression: 'IF(requests >= 50, 100 * failures / requests, 0)',
+    usingMetrics: {
+      requests: api.metricCount(minutes5),
+      failures: api.metricServerError(minutes5),
+    },
+    period: Duration.minutes(5),
+    label: '5xx %',
+  }),
+  threshold: 5,
+  evaluationPeriods: 2,
+  treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+});
+alarm('ApiErrors', {
   metric: apiFunction.metricErrors(),
   threshold: 5,
   evaluationPeriods: 1,
 });
-new cloudwatch.Alarm(stack, 'RealtimeErrors', {
+alarm('RealtimeErrors', {
   metric: realtimeStream.metricErrors(),
   threshold: 5,
   evaluationPeriods: 1,
 });
-new cloudwatch.Alarm(stack, 'JobErrors', {
+alarm('JobErrors', {
   metric: jobsFunction.metricErrors(),
   threshold: 1,
   evaluationPeriods: 1,

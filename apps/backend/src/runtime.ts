@@ -30,6 +30,8 @@ const configSchema = z.object({
   R2_SECRET_ARN: z.string().min(1),
   WEB_ORIGIN: z.url(),
   EMAIL_FROM: z.union([z.email(), z.literal('')]).default(''),
+  /** SES configuration set that reports delivery events for every message. */
+  MAIL_CONFIGURATION_SET: z.string().optional(),
 });
 let instance: ReturnType<typeof initialize> | undefined;
 async function initialize() {
@@ -82,6 +84,7 @@ async function initialize() {
           await new SESv2Client({}).send(
             new SendEmailCommand({
               FromEmailAddress: `harbor0 <${c.EMAIL_FROM}>`,
+              ConfigurationSetName: c.MAIL_CONFIGURATION_SET,
               Destination: { ToAddresses: [email.to] },
               Content: {
                 Simple: {
