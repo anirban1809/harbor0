@@ -31,6 +31,8 @@ export interface UserDirectory {
     signOut(userId: string): Promise<void>;
     delete(userId: string): Promise<void>;
     estimatedUsers(): Promise<number | null>;
+    /** Every sign-in account; one paged listing of the whole pool. */
+    all(): Promise<DirectoryUser[]>;
     /** The id of every sign-in account; one paged listing, so callers cache the result. */
     ids(): Promise<Set<string>>;
 }
@@ -160,23 +162,20 @@ export class CognitoDirectory implements UserDirectory {
         const r = await this.client.send(new DescribeUserPoolCommand({ UserPoolId: this.poolId }));
         return r.UserPool?.EstimatedNumberOfUsers ?? null;
     }
-    async ids() {
-        const ids = new Set<string>();
+    async all() {
+        const users: DirectoryUser[] = [];
         let token: string | undefined;
         do {
             const r = await this.client.send(
-                new ListUsersCommand({
-                    UserPoolId: this.poolId,
-                    AttributesToGet: ['sub'],
-                    Limit: 60,
-                    PaginationToken: token,
-                }),
+                new ListUsersCommand({ UserPoolId: this.poolId, Limit: 60, PaginationToken: token }),
             );
-            for (const u of r.Users ?? [])
-                ids.add(u.Attributes?.find((a) => a.Name === 'sub')?.Value ?? u.Username!);
+            for (const u of r.Users ?? []) users.push(this.user(u));
             token = r.PaginationToken;
         } while (token);
-        return ids;
+        return users;
+    }
+    async ids() {
+        return new Set((await this.all()).map((u) => u.id));
     }
 }
 
@@ -254,6 +253,9 @@ export class DevelopmentDirectory implements UserDirectory {
     }
     async estimatedUsers() {
         return this.auth.users.size;
+    }
+    async all() {
+        return [...this.auth.users.values()].map((u) => this.user(u));
     }
     async ids() {
         return new Set([...this.auth.users.values()].map((u) => u.id));

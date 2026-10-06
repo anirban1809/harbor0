@@ -93,6 +93,11 @@ export const adminUserDetailSchema = z.object({
   backupCount: z.number(),
   activity: z.array(auditEntrySchema),
 });
+/** How the console orders the account list; Cognito's own order is unsorted. */
+export const adminUserSortSchema = z.object({
+  sort: z.enum(['created', 'storage']),
+  order: z.enum(['asc', 'desc']).default('desc'),
+});
 export const adminUserPageSchema = z.object({
   items: z.array(
     directoryUserSchema.extend({
@@ -187,6 +192,7 @@ export type AdminProfile = z.infer<typeof adminProfileSchema>;
 export type AuditEntry = z.infer<typeof auditEntrySchema>;
 export type AdminUserDetail = z.infer<typeof adminUserDetailSchema>;
 export type AdminUserPage = z.infer<typeof adminUserPageSchema>;
+export type AdminUserSort = z.infer<typeof adminUserSortSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;

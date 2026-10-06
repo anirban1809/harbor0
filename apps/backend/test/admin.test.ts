@@ -121,6 +121,22 @@ describe('management console API', () => {
     expect(detail.devices).toHaveLength(1);
   });
 
+  it('sorts accounts by storage used and by creation time', async () => {
+    const cookie = await signIn('support@example.test');
+    const repo = service.repo as MemoryRepository;
+    (repo.rows.get('USER#bob|PROFILE')!.data as Record<string, number>).storageUsedBytes = 5;
+    const ids = async (query: string) =>
+      ((await (await call(cookie, 'GET', `/users?${query}`)).json()).items as { id: string }[]).map(
+        (u) => u.id,
+      );
+    expect(await ids('sort=storage&order=desc')).toEqual(['bob', 'alice']);
+    expect(await ids('sort=storage&order=asc')).toEqual(['alice', 'bob']);
+    expect(await ids('sort=storage')).toEqual(['bob', 'alice']);
+    expect((await ids('sort=created&order=asc')).sort()).toEqual(['alice', 'bob']);
+    expect(await ids('q=b&sort=storage')).toEqual(['bob']);
+    expect((await call(cookie, 'GET', '/users?sort=size')).status).toBe(400);
+  });
+
   it('lets admins change the storage limit, audited, and the user sees it', async () => {
     const support = await signIn('support@example.test');
     expect(

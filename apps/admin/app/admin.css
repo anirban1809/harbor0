@@ -236,6 +236,35 @@ body {
   color: var(--text-2);
   font-size: var(--text-sm);
 }
+.admin-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.admin-sort svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.5;
+}
+.admin-sort:hover,
+.admin-sort[data-active] {
+  color: var(--text);
+}
+.admin-sort[data-active] svg {
+  opacity: 1;
+}
+.admin-sort:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
 .admin-nowrap {
   white-space: nowrap;
 }

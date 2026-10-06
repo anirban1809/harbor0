@@ -4,6 +4,7 @@ import type {
     AdminProfile,
     AdminUserDetail,
     AdminUserPage,
+    AdminUserSort,
     AuditEntry,
     DirectoryUser,
     Staff,
@@ -24,6 +25,20 @@ const auditKey = (at: number, id: string) => `${String(9e15 - at).padStart(16, '
 export const STORAGE_TOTALS_MAX_AGE_MS = 15 * 60_000;
 const STORAGE_TOTALS_MIN_REFRESH_MS = 60_000;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const USER_PAGE = 50;
+
+type Sortable = { id: string; createdAt: string | null; usedBytes: number | null };
+/** Orders accounts by `sort`; accounts without the value (no profile yet) always come last. */
+function compareUsers({ sort, order }: AdminUserSort) {
+    const value = (u: Sortable) => (sort === 'created' ? u.createdAt : u.usedBytes);
+    return (a: Sortable, b: Sortable) => {
+        const x = value(a);
+        const y = value(b);
+        if (x === null || y === null) return x === y ? a.id.localeCompare(b.id) : x === null ? 1 : -1;
+        const by = x < y ? -1 : x > y ? 1 : a.id.localeCompare(b.id);
+        return order === 'asc' ? by : -by;
+    };
+}
 
 type Audit = {
     action: string;
@@ -134,8 +149,9 @@ export class AdminService {
         return totals;
     }
 
-    async search(query: string, cursor?: string): Promise<AdminUserPage> {
+    async search(query: string, cursor?: string, sort?: AdminUserSort): Promise<AdminUserPage> {
         const q = query.trim();
+        if (sort && !q) return this.sorted(sort, cursor);
         let page = await this.directory.list(q, cursor);
         if (q && !q.includes('@') && !uuid.test(q)) {
             // Usernames can change in the app, so the current one is the claim in the table, while
@@ -155,8 +171,30 @@ export class AdminService {
             const tombstone = await this.profile(q);
             if (tombstone) page = { items: [this.fromProfile(tombstone)], nextCursor: null };
         }
-        const items = await Promise.all(
-            page.items.map(async (user) => {
+        const items = await this.withProfiles(page.items);
+        if (sort) items.sort(compareUsers(sort));
+        return { items, nextCursor: page.nextCursor };
+    }
+    /**
+     * Every sign-in account in `sort` order. Cognito cannot sort, so each page lists the whole
+     * pool and scans every profile; the cursor is an offset into that order.
+     */
+    private async sorted(sort: AdminUserSort, cursor?: string): Promise<AdminUserPage> {
+        const start = cursor && /^\d+$/.test(cursor) ? Number(cursor) : 0;
+        const [users, profiles] = await Promise.all([this.directory.all(), this.repo.scanProfiles()]);
+        const used = new Map(profiles.map((p) => [p.id, p.storageUsedBytes ?? 0]));
+        const ordered = users
+            .map((u) => ({ ...u, usedBytes: used.get(u.id) ?? null }))
+            .sort(compareUsers(sort));
+        const end = start + USER_PAGE;
+        return {
+            items: await this.withProfiles(ordered.slice(start, end)),
+            nextCursor: end < ordered.length ? String(end) : null,
+        };
+    }
+    private withProfiles(users: DirectoryUser[]) {
+        return Promise.all(
+            users.map(async (user) => {
                 const profile = await this.profile(user.id);
                 return {
                     ...user,
@@ -169,7 +207,6 @@ export class AdminService {
                 };
             }),
         );
-        return { items, nextCursor: page.nextCursor };
     }
     private fromProfile(profile: Account): DirectoryUser {
         return {

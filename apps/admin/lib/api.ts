@@ -4,6 +4,7 @@ import type {
     AdminPurgeResult,
     AdminUserDetail,
     AdminUserPage,
+    AdminUserSort,
     AuditEntry,
     AuditPage,
     Staff,
@@ -65,10 +66,10 @@ export const api = {
         request<AdminPurgeResult>('POST', '/deleted-accounts/purge', { reason }),
     audit: (cursor?: string) =>
         request<AuditPage>('GET', `/audit${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`),
-    users: (q: string, cursor?: string) =>
+    users: (q: string, sort: AdminUserSort | null, cursor?: string) =>
         request<AdminUserPage>(
             'GET',
-            `/users?${new URLSearchParams({ q, ...(cursor ? { cursor } : {}) })}`,
+            `/users?${new URLSearchParams({ q, ...(sort ?? {}), ...(cursor ? { cursor } : {}) })}`,
         ),
     user: (id: string) => request<AdminUserDetail>('GET', user(id)),
     setQuota: (id: string, quotaBytes: number, reason: string) =>

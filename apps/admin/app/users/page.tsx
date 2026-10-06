@@ -2,7 +2,8 @@
 import { Suspense, useEffect, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { Search } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Search } from 'lucide-react';
+import type { AdminUserSort } from '../../../../packages/contracts/src/admin';
 import { Button } from '../../../web/components/ui/button';
 import { Input, InputGroup } from '../../../web/components/ui/input';
 import { DataTable } from '../../../web/components/ui/table';
@@ -13,21 +14,63 @@ import { StorageMeter } from '../../components/storage-meter';
 import { api } from '../../lib/api';
 import { date } from '../../lib/format';
 
+type SortKey = AdminUserSort['sort'];
+
+function readSort(params: URLSearchParams): AdminUserSort | null {
+  const sort = params.get('sort');
+  if (sort !== 'created' && sort !== 'storage') return null;
+  return { sort, order: params.get('order') === 'asc' ? 'asc' : 'desc' };
+}
+
+/** A column header that sorts the list by `column`, newest or largest first on the first click. */
+function SortHeader({
+  column,
+  label,
+  current,
+  onSort,
+}: {
+  column: SortKey;
+  label: string;
+  current: AdminUserSort | null;
+  onSort: (sort: AdminUserSort) => void;
+}) {
+  const active = current?.sort === column ? current.order : null;
+  const Icon = active === 'asc' ? ArrowUp : active === 'desc' ? ArrowDown : ArrowUpDown;
+  return (
+    <th aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}>
+      <button
+        type="button"
+        className="admin-sort"
+        data-active={active ? '' : undefined}
+        onClick={() => onSort({ sort: column, order: active === 'desc' ? 'asc' : 'desc' })}
+      >
+        {label}
+        <Icon aria-hidden="true" />
+      </button>
+    </th>
+  );
+}
+
 function Users() {
   const router = useRouter();
   const params = useSearchParams();
   const q = params.get('q') ?? '';
+  const sort = readSort(params);
   const [draft, setDraft] = useState(q);
   useEffect(() => setDraft(q), [q]);
   const users = useInfiniteQuery({
-    queryKey: ['users', q],
-    queryFn: ({ pageParam }) => api.users(q, pageParam),
+    queryKey: ['users', q, sort?.sort, sort?.order],
+    queryFn: ({ pageParam }) => api.users(q, sort, pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
+  const go = (query: string, next: AdminUserSort | null) => {
+    const search = new URLSearchParams({ ...(query ? { q: query } : {}), ...(next ?? {}) });
+    router.replace(`/users${search.size ? `?${search}` : ''}`);
+  };
   const search = (event: FormEvent) => {
     event.preventDefault();
-    router.replace(`/users${draft.trim() ? `?q=${encodeURIComponent(draft.trim())}` : ''}`);
+    go(draft.trim(), sort);
   };
   const items = users.data?.pages.flatMap((p) => p.items) ?? [];
   const open = (id: string) => router.push(`/user?id=${encodeURIComponent(id)}`);
@@ -62,8 +105,18 @@ function Users() {
               <th>Account</th>
               <th>Username</th>
               <th>Status</th>
-              <th>Storage</th>
-              <th>Created</th>
+              <SortHeader
+                column="storage"
+                label="Storage"
+                current={sort}
+                onSort={(s) => go(q, s)}
+              />
+              <SortHeader
+                column="created"
+                label="Created"
+                current={sort}
+                onSort={(s) => go(q, s)}
+              />
             </tr>
           </thead>
           <tbody>
