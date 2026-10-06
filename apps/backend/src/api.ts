@@ -18,7 +18,6 @@ import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
-import { transact } from './repository';
 import type { AuthProvider } from './auth';
 import type { Realtime } from './realtime';
 import { PushRegistrations } from './push';
@@ -186,22 +185,13 @@ export function createApp(
   });
   async function rateLimit(key: string, max: number) {
     const bucket = Math.floor(Date.now() / 60000);
-    await transact(service.repo, async (tx) => {
-      const k = createHash('sha256').update(key).digest('hex');
-      const r = await tx.get<{ count: number }>('RATE', `${k}#${bucket}`);
-      assert(
-        (r?.count ?? 0) < max,
-        'RATE_LIMITED',
-        'Too many requests. Please try again shortly.',
-        429,
-      );
-      await tx.put(
-        'RATE',
-        `${k}#${bucket}`,
-        { count: (r?.count ?? 0) + 1 },
-        { expiresAt: (bucket + 2) * 60 },
-      );
-    });
+    const k = createHash('sha256').update(key).digest('hex');
+    assert(
+      await service.repo.increment({ pk: 'RATE', sk: `${k}#${bucket}` }, max, (bucket + 2) * 60),
+      'RATE_LIMITED',
+      'Too many requests. Please try again shortly.',
+      429,
+    );
   }
   function route(d: Definition) {
     definitions.push(d);

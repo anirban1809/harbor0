@@ -5,6 +5,7 @@ import {
   QueryCommand,
   TransactWriteCommand,
   ScanCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { DomainError, RetryTransaction } from './errors';
 export type Row = {
@@ -31,6 +32,8 @@ export interface Repository {
     descending?: boolean,
   ): Promise<Page>;
   commit(writes: Write[], checks: Write[]): Promise<void>;
+  /** Atomically counts one more use of `key` unless it already has `max`; false when full. */
+  increment(key: Key, max: number, expiresAt: number): Promise<boolean>;
   due(now: string, cursor?: string): Promise<Page>;
   /** Every account PROFILE's storage fields; a full-table read, so callers cache the result. */
   scanProfiles(): Promise<ProfileStorage[]>;
@@ -171,6 +174,25 @@ export class DynamoRepository implements Repository {
       throw error;
     }
   }
+  async increment(key: Key, max: number, expiresAt: number) {
+    // One plain conditional update: half the write cost of a transaction and no read first.
+    try {
+      await this.db.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: key,
+          UpdateExpression: 'ADD #n :one SET expiresAt = :exp',
+          ConditionExpression: 'attribute_not_exists(#n) OR #n < :max',
+          ExpressionAttributeNames: { '#n': 'n' },
+          ExpressionAttributeValues: { ':one': 1, ':max': max, ':exp': expiresAt },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if ((error as { name: string }).name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
+  }
   async scanProfiles() {
     // Parallel segments keep a large table within the console Lambda's timeout.
     const segments = 4;
@@ -249,6 +271,14 @@ export class MemoryRepository implements Repository {
       ),
       cursor: null,
     };
+  }
+  counters = new Map<string, number>();
+  async increment(key: Key, max: number) {
+    const k = key.pk + '|' + key.sk;
+    const n = this.counters.get(k) ?? 0;
+    if (n >= max) return false;
+    this.counters.set(k, n + 1);
+    return true;
   }
   async scanProfiles() {
     return [...this.rows.values()]

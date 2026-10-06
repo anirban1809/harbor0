@@ -24,7 +24,6 @@ import {
     type StaffPermission,
 } from '../../../../packages/contracts/src/admin';
 import { DomainError, assert } from '../errors';
-import { transact } from '../repository';
 import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
@@ -98,16 +97,12 @@ export function createAdminApp(
     async function rateLimit(key: string, max: number) {
         const bucket = Math.floor(Date.now() / 60000);
         const k = createHash('sha256').update(`admin:${key}`).digest('hex');
-        await transact(service.repo, async (tx) => {
-            const r = await tx.get<{ count: number; }>('RATE', `${k}#${bucket}`);
-            assert((r?.count ?? 0) < max, 'RATE_LIMITED', 'Too many attempts. Wait a minute.', 429);
-            await tx.put(
-                'RATE',
-                `${k}#${bucket}`,
-                { count: (r?.count ?? 0) + 1 },
-                { expiresAt: (bucket + 2) * 60 },
-            );
-        });
+        assert(
+            await service.repo.increment({ pk: 'RATE', sk: `${k}#${bucket}` }, max, (bucket + 2) * 60),
+            'RATE_LIMITED',
+            'Too many attempts. Wait a minute.',
+            429,
+        );
     }
 
     app.use('*', async (ctx, next) => {
