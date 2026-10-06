@@ -222,6 +222,8 @@ export function DriveWorkspace({
   const partial = useRef(false);
   const [loadError, setLoadError] = useState('');
   const [syncStatuses, setSyncStatuses] = useState<Record<string, SyncItemStatus>>({});
+  // The last successful status read, for the poller; null until one succeeds.
+  const settledStatuses = useRef<Record<string, SyncItemStatus> | null>(null);
   const [syncStatusError, setSyncStatusError] = useState(false);
   const [syncFoldersError, setSyncFoldersError] = useState(false);
   const [error, setError] = useState('');
@@ -545,6 +547,7 @@ export function DriveWorkspace({
   useEffect(() => {
     const controller = new AbortController();
     let fetching = false;
+    settledStatuses.current = null;
     setSyncStatuses({});
     setSyncStatusError(false);
     const ids = statusTargets ? statusTargets.split(',') : [];
@@ -563,10 +566,12 @@ export function DriveWorkspace({
           for (const status of result.items) statuses[status.itemId] = status;
         }
         if (controller.signal.aborted) return;
+        settledStatuses.current = statuses;
         setSyncStatuses(statuses);
         setSyncStatusError(false);
       } catch {
         if (!controller.signal.aborted) {
+          settledStatuses.current = null;
           setSyncStatuses({});
           setSyncStatusError(true);
         }
@@ -574,16 +579,35 @@ export function DriveWorkspace({
         fetching = false;
       }
     }
+    let checkedAt = Date.now();
     void refreshStatus();
-    const timer = window.setInterval(() => void refreshStatus(), 5000);
+    // Each status walks a folder's whole tree on the server, so poll gently: never while hidden,
+    // every 30s, and every 2 minutes once all is synced and pushed changes would refresh it.
+    // Device receipts are not pushed, so a SYNCING badge still needs the 30s poll to settle.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      const settled =
+        isLive() &&
+        !!settledStatuses.current &&
+        Object.values(settledStatuses.current).every((s) => s.state === 'SYNCED');
+      if (Date.now() - checkedAt < (settled ? 120_000 : 30_000)) return;
+      checkedAt = Date.now();
+      void refreshStatus();
+    }, 10_000);
     const refreshWhenVisible = () => {
-      if (document.visibilityState !== 'hidden') void refreshStatus();
+      if (document.visibilityState === 'hidden') return;
+      checkedAt = Date.now();
+      void refreshStatus();
     };
+    const offLive = onLive((message) => {
+      if (message.type === 'changes') refreshWhenVisible();
+    });
     window.addEventListener('focus', refreshWhenVisible);
     window.addEventListener('online', refreshWhenVisible);
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       controller.abort();
+      offLive();
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshWhenVisible);
       window.removeEventListener('online', refreshWhenVisible);
