@@ -359,6 +359,10 @@ export function createAdminApp(
     v1.get('/flags/:key', guard('read'), async (ctx) =>
         ctx.json(adminFlagDetailSchema.parse(await flags.detail(flagKey(ctx)))),
     );
+    v1.get('/flags/:key/usage', guard('read'), async (ctx) => {
+        const { cursor } = searchQuery.parse(ctx.req.query());
+        return ctx.json(c.flagUsagePageSchema.parse(await flags.usage(flagKey(ctx), cursor)));
+    });
     v1.put('/flags/:key', guard('flags'), async (ctx) => {
         const i = await body(ctx, adminFlagBody);
         return ctx.json(adminFlagSchema.parse(await flags.set(ctx.get('staff'), flagKey(ctx), i)));

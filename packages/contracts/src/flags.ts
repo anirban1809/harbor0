@@ -9,13 +9,37 @@ export const featureFlags = {
   'two-factor': {
     description:
       'Two-step verification: turn on an authenticator app or email codes in Settings. Sign-in asks accounts that have it on for their code whether or not the flag is on.',
+    usage: {
+      TOTP_SETUP_STARTED: 'Started setting up an authenticator app',
+      TOTP_TURNED_ON: 'Turned on the authenticator app',
+      EMAIL_TURNED_ON: 'Turned on email codes',
+      TURNED_OFF: 'Turned off two-step verification',
+      SIGNED_IN: 'Signed in with a code',
+      CODE_REJECTED: 'Entered a wrong code',
+      APP_UNSUPPORTED: 'Blocked: app has no two-step support',
+    },
   },
-} as const satisfies Record<string, { description: string }>;
+} as const satisfies Record<string, FlagDefinition>;
+type FlagDefinition = {
+  /** What staff see for it in the console. */
+  description: string;
+  /** Events the feature records in its usage log, with how the console names them. */
+  usage?: Record<string, string>;
+};
 export type FlagKey = keyof typeof featureFlags;
 /** Every defined flag; read when needed, so tests can define their own. */
 export const flagKeys = () => Object.keys(featureFlags) as FlagKey[];
-export const flagDescription = (key: FlagKey) =>
-  (featureFlags as Record<string, { description: string }>)[key].description;
+const definition = (key: FlagKey) => (featureFlags as Record<string, FlagDefinition>)[key];
+export const flagDescription = (key: FlagKey) => definition(key).description;
+/** How the console names a usage event; unknown events show as recorded. */
+export const flagUsageLabel = (key: FlagKey, event: string) =>
+  definition(key)?.usage?.[event] ?? event;
+/** Usage events a flag records, as written in its definition. */
+export type FlagUsageEvent<K extends FlagKey> = K extends keyof typeof featureFlags
+  ? (typeof featureFlags)[K] extends { usage: infer U }
+    ? keyof U & string
+    : never
+  : never;
 export const isFlagKey = (key: string): key is FlagKey => Object.hasOwn(featureFlags, key);
 
 /** Whether each flag is on for the signed-in account on this app; absent means off. */
@@ -58,3 +82,22 @@ export const defaultFlagRule = (): FlagRule => ({
   percent: 0,
   minVersions: {},
 });
+
+/** One use of a flagged feature, for staff to see who is using it. Kept for 180 days. */
+export const flagUsageSchema = z.object({
+  id: z.string(),
+  at: z.string(),
+  event: z.string(),
+  /** Event name as the console shows it. */
+  label: z.string(),
+  /** Null when the account isn't known yet, e.g. a code entered before sign-in finishes. */
+  userId: z.string().nullable(),
+  email: z.string().nullable(),
+  details: z.record(z.string(), z.unknown()),
+});
+export const flagUsagePageSchema = z.object({
+  items: z.array(flagUsageSchema),
+  nextCursor: z.string().nullable(),
+});
+export type FlagUsage = z.infer<typeof flagUsageSchema>;
+export type FlagUsagePage = z.infer<typeof flagUsagePageSchema>;

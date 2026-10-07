@@ -15,6 +15,7 @@ import type {
     StaffDeletionReason,
     StaffLoginResult,
 } from '../../../packages/contracts/src/admin';
+import type { FlagUsagePage } from '../../../packages/contracts/src/flags';
 
 export class ApiError extends Error {
     constructor(
@@ -99,6 +100,11 @@ export const api = {
         }),
     flags: () => request<AdminFlagList>('GET', '/flags'),
     flag: (key: string) => request<AdminFlagDetail>('GET', flag(key)),
+    flagUsage: (key: string, cursor?: string) =>
+        request<FlagUsagePage>(
+            'GET',
+            `${flag(key)}/usage${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
+        ),
     saveFlag: (key: string, body: AdminFlagBody) => request<AdminFlag>('PUT', flag(key), body),
     addFlagUser: (key: string, userId: string, reason: string) =>
         request<AdminFlag>('POST', `${flag(key)}/users`, { userId, reason }),

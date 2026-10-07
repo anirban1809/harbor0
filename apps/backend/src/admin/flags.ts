@@ -15,6 +15,7 @@ import {
   featureFlagsFor,
   FLAG_PK,
   isOn,
+  flagUsagePage,
   type StoredFlag,
 } from '../flags';
 import { transact, type Transaction } from '../repository';
@@ -74,6 +75,10 @@ export class AdminFlags {
       accounts,
       history: log.rows.map((r) => r.data as AuditEntry),
     };
+  }
+  /** Who used the flagged feature and how, newest first. */
+  async usage(name: string, cursor?: string) {
+    return flagUsagePage(this.admin.repo, this.key(name), cursor);
   }
   /** Each flag for one account, as the console shows it on the account's page. */
   async forUser(userId: string) {

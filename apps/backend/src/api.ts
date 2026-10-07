@@ -25,7 +25,7 @@ import { PushRegistrations } from './push';
 import { responseSchema, queryParameters } from './responses';
 import { storageAudit } from './storage-audit';
 import { Beta } from './beta';
-import { featureFlagsFor, type FeatureFlags } from './flags';
+import { featureFlagsFor, recordFlagUsage, type FeatureFlags, type UsageInput } from './flags';
 type Env = {
   Variables: {
     identity: c.Identity;
@@ -385,6 +385,9 @@ export function createApp(
     async (_, i) => auth.resend(i.email),
     true,
   );
+  /** Records a two-step verification event in the console's usage log for the flag. */
+  const twoFactorUsage = (event: c.FlagUsageEvent<'two-factor'>, input: UsageInput) =>
+    recordFlagUsage(service.repo, 'two-factor', event, input);
   const signInDevice = {
     deviceName: z.string().max(100).default('Web browser'),
     platform: c.platform.default('WEB'),
@@ -421,6 +424,11 @@ export function createApp(
     async (_, i) => {
       const result = await auth.login(i.email, i.password);
       if (!needsSecondStep(result)) return signedIn(result, i);
+      if (!i.twoFactor)
+        await twoFactorUsage('APP_UNSUPPORTED', {
+          email: i.email,
+          details: { platform: i.platform },
+        });
       assert(
         i.twoFactor,
         'TWO_FACTOR_UNSUPPORTED',
@@ -453,7 +461,27 @@ export function createApp(
       })
       .strict(),
     anyObject,
-    async (_, i) => signedIn(await auth.verifySecondStep(i.email, i.session, i.method, i.code), i),
+    async (_, i) => {
+      let tokens;
+      try {
+        tokens = await auth.verifySecondStep(i.email, i.session, i.method, i.code);
+      } catch (error) {
+        if (error instanceof DomainError && error.code === 'AUTH_INVALID')
+          await twoFactorUsage('CODE_REJECTED', {
+            email: i.email,
+            details: { method: i.method, platform: i.platform },
+          });
+        throw error;
+      }
+      const result = await signedIn(tokens, i);
+      const identity = await auth.identity(tokens.accessToken);
+      await twoFactorUsage('SIGNED_IN', {
+        userId: identity.id,
+        email: identity.email,
+        details: { method: i.method, platform: i.platform },
+      });
+      return result;
+    },
     true,
   );
   add(
@@ -597,6 +625,14 @@ export function createApp(
   ) => {
     const other = method === 'TOTP' ? 'EMAIL' : 'TOTP';
     const replaced = enabled && before[other === 'TOTP' ? 'totp' : 'email'] ? other : undefined;
+    await twoFactorUsage(
+      !enabled ? 'TURNED_OFF' : method === 'TOTP' ? 'TOTP_TURNED_ON' : 'EMAIL_TURNED_ON',
+      {
+        userId: ctx.get('identity').id,
+        email: ctx.get('identity').email,
+        details: { method, ...(replaced ? { replaced } : {}) },
+      },
+    );
     const { id, email, displayName } = ctx.get('identity');
     const at = new Date().toISOString();
     await transact(service.repo, (tx) =>
@@ -627,9 +663,12 @@ export function createApp(
     'Start adding an authenticator app',
     undefined,
     c.totpSetupSchema,
-    flagged(flags, 'two-factor', async (ctx) =>
-      auth.setupTotp(bearer(ctx)!, ctx.get('identity').email),
-    ),
+    flagged(flags, 'two-factor', async (ctx) => {
+      const { id, email } = ctx.get('identity');
+      const setup = await auth.setupTotp(bearer(ctx)!, email);
+      await twoFactorUsage('TOTP_SETUP_STARTED', { userId: id, email });
+      return setup;
+    }),
   );
   add(
     'post',

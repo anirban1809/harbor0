@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
 import { StorageService } from '../src/domain';
-import { FLAG_PK, emptyFlag } from '../src/flags';
+import { FLAG_PK, emptyFlag, flagUsagePage } from '../src/flags';
 import { MemoryRepository, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 
@@ -131,5 +131,38 @@ describe('two-step verification', () => {
       (row) => (row.data as { email?: { replaced?: string } }).email?.replaced,
     );
     expect(jobs).toEqual(expect.arrayContaining(['EMAIL', 'TOTP']));
+  });
+
+  it('records who used the feature in its usage log', async () => {
+    await flagOn(['alice']);
+    const token = await tokenFor();
+    await post('/v1/users/me/two-factor/totp/setup', undefined, token);
+    await post('/v1/users/me/two-factor/totp/verify', { code: '123456' }, token);
+    const first = await (await login()).json();
+    const verify = (code: string) =>
+      post('/v1/auth/login/verify', {
+        email: 'alice@example.test',
+        session: first.twoFactor.session,
+        method: 'TOTP',
+        code,
+      });
+    await verify('000000');
+    await verify('123456');
+    await login('alice@example.test', false);
+    const { items } = await flagUsagePage(service.repo, 'two-factor');
+    expect(items.map((e) => e.event)).toEqual([
+      'APP_UNSUPPORTED',
+      'SIGNED_IN',
+      'CODE_REJECTED',
+      'TOTP_TURNED_ON',
+      'TOTP_SETUP_STARTED',
+    ]);
+    expect(items[1]).toMatchObject({
+      userId: 'alice',
+      email: 'alice@example.test',
+      label: 'Signed in with a code',
+      details: { method: 'TOTP', platform: 'WEB' },
+    });
+    expect(items[2]).toMatchObject({ userId: null, email: 'alice@example.test' });
   });
 });

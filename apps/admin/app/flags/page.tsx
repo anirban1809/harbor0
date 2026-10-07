@@ -17,6 +17,7 @@ import { Skeleton } from '../../../web/components/ui/skeleton';
 import { AuditList } from '../../components/audit-list';
 import { FlagModeBadge } from '../../components/flag-badge';
 import { ReasonDialog } from '../../components/reason-dialog';
+import { UsageLog } from '../../components/usage-log';
 import { PageHeader, Shell, useCan } from '../../components/shell';
 import { api } from '../../lib/api';
 import { flagReach, relative } from '../../lib/format';
@@ -328,6 +329,8 @@ function Editor({
       <Card title="History" description="Every change to this flag, newest first.">
         <AuditList items={detail.history} showUser />
       </Card>
+
+      <UsageLog flagKey={saved.key} />
 
       <ReasonDialog
         open={confirming}

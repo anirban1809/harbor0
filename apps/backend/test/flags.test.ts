@@ -8,7 +8,7 @@ import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
 import { DevelopmentStaffAuth } from '../src/admin/staff-auth';
 import { featureFlags, type FlagKey } from '@harbor/contracts';
-import { atLeast, bucket, decide, emptyFlag, featureFlagsFor } from '../src/flags';
+import { atLeast, bucket, decide, emptyFlag, featureFlagsFor, recordFlagUsage } from '../src/flags';
 
 const ORIGIN = 'http://console.test';
 // The tests define their own flag, so they don't depend on which real flags exist.
@@ -190,6 +190,28 @@ describe('feature flags in the console', () => {
     ).toBe(409);
     await call(cookie, 'POST', `/flags/${KEY}/users/bob/remove`, { reason: 'Done testing' });
     expect((await flagsOf('bob'))[KEY]).toBe(false);
+  });
+});
+
+describe('flag usage logs', () => {
+  it('lists recorded uses for staff, newest first', async () => {
+    await recordFlagUsage(service.repo, 'two-factor', 'TOTP_SETUP_STARTED', {
+      userId: 'alice',
+      email: 'alice@example.test',
+    });
+    await recordFlagUsage(service.repo, 'two-factor', 'TOTP_TURNED_ON', {
+      userId: 'alice',
+      email: 'alice@example.test',
+      details: { method: 'TOTP' },
+    });
+    const cookie = await signIn('support@example.test');
+    const page = await (await call(cookie, 'GET', '/flags/two-factor/usage')).json();
+    expect(page.items.map((e: { event: string }) => e.event)).toEqual([
+      'TOTP_TURNED_ON',
+      'TOTP_SETUP_STARTED',
+    ]);
+    expect(page.items[0].label).toBe('Turned on the authenticator app');
+    expect((await call(cookie, 'GET', '/flags/missing/usage')).status).toBe(404);
   });
 });
 

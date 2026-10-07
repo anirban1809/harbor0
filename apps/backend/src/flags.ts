@@ -1,7 +1,11 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   defaultFlagRule,
   flagKeys,
+  flagUsageLabel,
+  type FlagUsage,
+  type FlagUsageEvent,
+  type FlagUsagePage,
   type Device,
   type FlagClient,
   type FlagKey,
@@ -9,7 +13,7 @@ import {
   type FlagRule,
   type FlagStates,
 } from '@harbor/contracts';
-import type { Repository } from './repository';
+import { transact, type Repository } from './repository';
 
 /** A flag's stored rule, with who changed it last. */
 export type StoredFlag = FlagRule & {
@@ -112,6 +116,67 @@ export class FeatureFlags {
     for (const [key, flag] of await this.all()) states[key] = isOn(decide(flag, userId, client));
     return states;
   }
+}
+
+export const FLAG_USAGE_DAYS = 180;
+export const flagUsagePK = (key: FlagKey) => `FLAG_USAGE#${key}`;
+/**
+ * Newest first: the sort key counts down as time goes on. A per-process counter also counts
+ * down, so events from one instance in the same millisecond keep their order.
+ */
+let usageSequence = 0;
+const usageKey = (at: number, id: string) =>
+  `${String(9e15 - at).padStart(16, '0')}${String(999 - (usageSequence++ % 1000)).padStart(3, '0')}#${id}`;
+export type UsageInput = {
+  userId?: string | null;
+  email?: string | null;
+  details?: Record<string, unknown>;
+};
+/**
+ * Records one use of a flagged feature for the console's usage log. Best effort: a failed
+ * write is logged and never fails what the user was doing.
+ */
+export async function recordFlagUsage<K extends FlagKey>(
+  repo: Repository,
+  key: K,
+  event: FlagUsageEvent<K>,
+  input: UsageInput,
+) {
+  const at = Date.now();
+  const id = randomUUID();
+  const entry: Omit<FlagUsage, 'label'> = {
+    id,
+    at: new Date(at).toISOString(),
+    event,
+    userId: input.userId ?? null,
+    email: input.email ?? null,
+    details: input.details ?? {},
+  };
+  try {
+    await transact(repo, (tx) =>
+      tx.put(flagUsagePK(key), usageKey(at, id), entry, {
+        expiresAt: Math.floor(at / 1000) + FLAG_USAGE_DAYS * 86400,
+      }),
+    );
+  } catch (error) {
+    console.error(JSON.stringify({ event: 'flag_usage_not_recorded', key, error: String(error) }));
+  }
+}
+/** A page of a flag's usage log, newest first. */
+export async function flagUsagePage(
+  repo: Repository,
+  key: FlagKey,
+  cursor?: string,
+  limit = 50,
+): Promise<FlagUsagePage> {
+  const page = await repo.query(flagUsagePK(key), '', limit, cursor);
+  return {
+    items: page.rows.map((r) => {
+      const entry = r.data as Omit<FlagUsage, 'label'>;
+      return { ...entry, label: flagUsageLabel(key, entry.event) };
+    }),
+    nextCursor: page.cursor,
+  };
 }
 
 // One reader per table, so a change made through the console in the same process (local
