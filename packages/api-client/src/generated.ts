@@ -244,7 +244,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Current account and quota */
+        /** Current account, quota, and the features turned on for it on this app */
         get: operations["get__v1_users_me"];
         put?: never;
         post?: never;
@@ -4016,6 +4016,9 @@ export interface operations {
                             usedBytes: number;
                             reservedBytes: number;
                             availableBytes: number;
+                        };
+                        flags: {
+                            [key: string]: boolean;
                         };
                     };
                 };

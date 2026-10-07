@@ -57,4 +57,25 @@ export const actionLabels: Record<string, string> = {
   ACCOUNT_PURGED: 'Purged deleted account now',
   NOTE: 'Added a note',
   BETA_WAVE: 'Opened a beta wave',
+  FLAG_CHANGED: 'Changed a feature flag',
+  FLAG_USER_ADDED: 'Turned on a feature flag',
+  FLAG_USER_REMOVED: 'Took off a feature flag',
 };
+export const flagModeLabels = { OFF: 'Off', TARGETED: 'Targeted', ON: 'On for everyone' } as const;
+/** Roughly how many accounts a targeted flag reaches: the list plus a share of the rest. */
+export function flagReach(
+  flag: { mode: keyof typeof flagModeLabels; userIds: string[]; percent: number },
+  accounts: number | null,
+) {
+  if (flag.mode === 'OFF') return 'No one';
+  if (flag.mode === 'ON') return 'Everyone';
+  const listed = flag.userIds.length;
+  const people = `${listed} account${listed === 1 ? '' : 's'}`;
+  if (!flag.percent) return people;
+  if (accounts === null) return `${people} + ${flag.percent}%`;
+  const total = Math.min(
+    accounts,
+    Math.round(listed + (Math.max(0, accounts - listed) * flag.percent) / 100),
+  );
+  return `${people} + ${flag.percent}% (about ${total.toLocaleString()} of ${accounts.toLocaleString()})`;
+}

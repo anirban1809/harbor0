@@ -7,6 +7,11 @@ import * as c from '@harbor/contracts';
 import {
     adminBetaSchema,
     adminDeleteBody,
+    adminFlagBody,
+    adminFlagDetailSchema,
+    adminFlagListSchema,
+    adminFlagSchema,
+    adminFlagUserBody,
     adminNoteBody,
     adminOverviewSchema,
     adminPurgeResultSchema,
@@ -28,6 +33,7 @@ import { DomainError, assert } from '../errors';
 import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
+import { AdminFlags } from './flags';
 import { Beta } from '../beta';
 import type { StaffAuth, StaffAuthStep, StaffTokens } from './staff-auth';
 
@@ -79,6 +85,7 @@ export function createAdminApp(
 ) {
     const admin = new AdminService(service, directory);
     const beta = new Beta(service.repo, options.inviteRequired ?? false);
+    const flags = new AdminFlags(admin);
     const app = new Hono<Env>();
     const cookie = (ctx: Context<Env>, name: string, value: string, maxAge: number) =>
         setCookie(ctx, name, value, {
@@ -276,9 +283,13 @@ export function createAdminApp(
         const page = await admin.search(q, cursor, sort ? { sort, order: order ?? 'desc' } : undefined);
         return ctx.json(adminUserPageSchema.parse(page));
     });
-    v1.get('/users/:id', guard('read'), async (ctx) =>
-        ctx.json(adminUserDetailSchema.parse(await admin.detail(userId(ctx)))),
-    );
+    v1.get('/users/:id', guard('read'), async (ctx) => {
+        const [detail, userFlags] = await Promise.all([
+            admin.detail(userId(ctx)),
+            flags.forUser(userId(ctx)),
+        ]);
+        return ctx.json(adminUserDetailSchema.parse({ ...detail, flags: userFlags }));
+    });
     v1.put('/users/:id/quota', guard('quota'), async (ctx) => {
         const i = await body(ctx, adminQuotaBody);
         return ctx.json(await admin.setQuota(ctx.get('staff'), userId(ctx), i.quotaBytes, i.reason));
@@ -340,6 +351,27 @@ export function createAdminApp(
         return ctx.json(
             adminBetaSchema.extend({ newlyInvited: z.number() }).parse(result),
         );
+    });
+    const flagKey = (ctx: Context<Env>) => ctx.req.param('key') ?? '';
+    v1.get('/flags', guard('read'), async (ctx) =>
+        ctx.json(adminFlagListSchema.parse(await flags.list())),
+    );
+    v1.get('/flags/:key', guard('read'), async (ctx) =>
+        ctx.json(adminFlagDetailSchema.parse(await flags.detail(flagKey(ctx)))),
+    );
+    v1.put('/flags/:key', guard('flags'), async (ctx) => {
+        const i = await body(ctx, adminFlagBody);
+        return ctx.json(adminFlagSchema.parse(await flags.set(ctx.get('staff'), flagKey(ctx), i)));
+    });
+    v1.post('/flags/:key/users', guard('flags'), async (ctx) => {
+        const i = await body(ctx, adminFlagUserBody);
+        const flag = await flags.addUser(ctx.get('staff'), flagKey(ctx), c.id.parse(i.userId), i.reason);
+        return ctx.json(adminFlagSchema.parse(flag));
+    });
+    v1.post('/flags/:key/users/:id/remove', guard('flags'), async (ctx) => {
+        const { reason } = await body(ctx, adminReasonBody);
+        const flag = await flags.removeUser(ctx.get('staff'), flagKey(ctx), userId(ctx), reason);
+        return ctx.json(adminFlagSchema.parse(flag));
     });
     app.route('/api/v1/admin', v1);
     app.notFound((ctx) =>

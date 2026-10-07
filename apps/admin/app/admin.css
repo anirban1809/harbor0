@@ -459,3 +459,76 @@ body {
     transform: rotate(360deg);
   }
 }
+.admin-flag-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.admin-flag-on {
+  color: var(--success-text);
+  font-size: var(--text-sm);
+}
+.admin-flag-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.admin-flag-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.admin-flag-add .input {
+  flex: 1;
+}
+.admin-flag-users {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-flag-users li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.admin-flag-users li:first-child {
+  border-top: 0;
+}
+.admin-flag-percent {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.admin-flag-percent input {
+  flex: 1;
+  accent-color: var(--primary);
+}
+.admin-flag-percent strong {
+  min-width: 3.5ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.admin-flag-versions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.admin-flag-save {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.admin-flag-save .admin-muted {
+  margin-right: auto;
+}
+.admin-page-header .admin-flag-key {
+  font-size: inherit;
+}

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { deviceSchema, storageSchema } from './index';
+import { flagReason, flagRuleSchema } from './flags';
 
 /**
  * The management console's API. Staff sign in to their own Cognito pool, never the
@@ -26,6 +27,7 @@ export const staffPermissions = {
     'suspend',
     'delete',
     'beta',
+    'flags',
   ],
 } as const satisfies Record<z.infer<typeof staffRole>, readonly string[]>;
 export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];
@@ -92,6 +94,8 @@ export const adminUserDetailSchema = z.object({
   devices: z.array(deviceSchema),
   backupCount: z.number(),
   activity: z.array(auditEntrySchema),
+  /** Each feature flag for this account, ignoring app versions (those vary by device). */
+  flags: z.array(z.object({ key: z.string(), enabled: z.boolean(), reason: flagReason })),
 });
 /** How the console orders the account list; Cognito's own order is unsorted. */
 export const adminUserSortSchema = z.object({
@@ -163,6 +167,31 @@ export const MAX_BETA_CAP = 100_000;
 export const adminWaveBody = z
   .object({ cap: z.number().int().min(1).max(MAX_BETA_CAP), reason })
   .strict();
+/** A feature flag's rule as staff see it, with the allowlisted accounts' emails. */
+export const adminFlagSchema = flagRuleSchema.extend({
+  key: z.string(),
+  description: z.string(),
+  users: z.array(z.object({ id: z.string(), email: z.string().nullable() })),
+  updatedAt: z.string().nullable(),
+  updatedBy: z.string().nullable(),
+});
+export const adminFlagListSchema = z.object({
+  items: z.array(adminFlagSchema),
+  /** Active accounts, for estimating a rollout's reach; null when not yet counted. */
+  accounts: z.number().nullable(),
+});
+export const adminFlagDetailSchema = adminFlagListSchema.pick({ accounts: true }).extend({
+  flag: adminFlagSchema,
+  history: z.array(auditEntrySchema),
+});
+export const adminFlagBody = flagRuleSchema
+  .extend({
+    reason,
+    /** The `updatedAt` the editor loaded; the save is refused if someone changed it since. */
+    expectedUpdatedAt: z.string().nullable(),
+  })
+  .strict();
+export const adminFlagUserBody = z.object({ userId: z.string().min(1).max(128), reason }).strict();
 export const adminPurgeResultSchema = z.object({ accounts: z.number(), usedBytes: z.number() });
 export const adminNoteBody = z.object({ text: z.string().trim().min(1).max(2000) }).strict();
 /** Why staff deleted an account; each sends the account holder its own email. */
@@ -197,4 +226,8 @@ export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;
 export type AdminPurgeResult = z.infer<typeof adminPurgeResultSchema>;
+export type AdminFlag = z.infer<typeof adminFlagSchema>;
+export type AdminFlagList = z.infer<typeof adminFlagListSchema>;
+export type AdminFlagDetail = z.infer<typeof adminFlagDetailSchema>;
+export type AdminFlagBody = z.infer<typeof adminFlagBody>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;

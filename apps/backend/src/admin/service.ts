@@ -46,6 +46,8 @@ type Audit = {
     userEmail?: string | null;
     reason?: string | null;
     details?: Record<string, unknown>;
+    /** Another log to file the entry under as well, like a feature flag's history. */
+    scope?: string;
 };
 
 /**
@@ -57,8 +59,13 @@ export class AdminService {
         private service: StorageService,
         private directory: UserDirectory,
     ) { }
-    private get repo() {
+    get repo() {
         return this.service.repo;
+    }
+    /** The account's email from the sign-in directory, or its profile once it has left it. */
+    async email(userId: string) {
+        const [user, account] = await Promise.all([this.directory.get(userId), this.profile(userId)]);
+        return user?.email ?? account?.email ?? null;
     }
     private profile(userId: string) {
         return new Transaction(this.repo).get<Account>(userPK(userId), 'PROFILE');
@@ -78,6 +85,7 @@ export class AdminService {
         };
         await tx.put(AUDIT, auditKey(at, record.id), record);
         if (record.userId) await tx.put(userAudit(record.userId), auditKey(at, record.id), record);
+        if (entry.scope) await tx.put(entry.scope, auditKey(at, record.id), record);
         return record;
     }
     private record(staff: Staff, entry: Audit) {
@@ -237,7 +245,7 @@ export class AdminService {
         };
     }
     /** The account as staff see it; `null` when it exists in neither the directory nor the table. */
-    async detail(userId: string): Promise<AdminUserDetail> {
+    async detail(userId: string): Promise<Omit<AdminUserDetail, 'flags'>> {
         const [directoryUser, account] = await Promise.all([
             this.directory.get(userId),
             this.profile(userId),

@@ -5501,7 +5501,7 @@
     },
     "/v1/users/me": {
       "get": {
-        "summary": "Current account and quota",
+        "summary": "Current account, quota, and the features turned on for it on this app",
         "operationId": "get__v1_users_me",
         "security": [
           {
@@ -5685,11 +5685,21 @@
                         "reservedBytes",
                         "availableBytes"
                       ]
+                    },
+                    "flags": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "boolean"
+                      }
                     }
                   },
                   "required": [
                     "user",
-                    "storage"
+                    "storage",
+                    "flags"
                   ]
                 }
               }

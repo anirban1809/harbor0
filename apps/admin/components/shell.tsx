@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { LayoutDashboard, LogOut, ScrollText, Users } from 'lucide-react';
+import { Flag, LayoutDashboard, LogOut, ScrollText, Users } from 'lucide-react';
 import { BrandLogo } from '../../web/components/brand-logo';
 import { Badge } from '../../web/components/ui/badge';
 import { Button } from '../../web/components/ui/button';
@@ -25,6 +25,7 @@ export function useCan(permission: StaffPermission) {
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
   { href: '/users', label: 'Users', icon: Users },
+  { href: '/flags', label: 'Feature flags', icon: Flag },
   { href: '/audit', label: 'Audit log', icon: ScrollText },
 ];
 

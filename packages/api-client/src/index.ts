@@ -1,6 +1,7 @@
 import type {
   DriveItem,
   StorageUsage,
+  FlagStates,
   User,
   UploadInput,
   CompletedPart,
@@ -77,7 +78,7 @@ export function createTransport(
 }
 export class ApiClient {
   constructor(public request: Transport) {}
-  me(): Promise<{ user: User; storage: StorageUsage }> {
+  me(): Promise<{ user: User; storage: StorageUsage; flags: FlagStates }> {
     return this.request('/v1/users/me');
   }
   storageAuditPage(

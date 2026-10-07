@@ -24,8 +24,15 @@ import { PushRegistrations } from './push';
 import { responseSchema, queryParameters } from './responses';
 import { storageAudit } from './storage-audit';
 import { Beta } from './beta';
+import { featureFlagsFor, type FeatureFlags } from './flags';
 type Env = {
-  Variables: { identity: c.Identity; requestId: string; timing?: Record<string, number> };
+  Variables: {
+    identity: c.Identity;
+    requestId: string;
+    timing?: Record<string, number>;
+    /** The calling app's device, once the session is registered. */
+    device?: c.Device;
+  };
 };
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
 type Definition = {
@@ -56,6 +63,22 @@ const sessionChallengePath = '/v1/auth/session/challenge';
 const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
+/**
+ * Guards a route for a feature still being rolled out: accounts without the flag, or on an app
+ * build older than the flag allows, are refused as if the feature were not there yet. Use it as
+ * `add('post', path, summary, body, response, flagged(flags, 'key', handler))`.
+ */
+export const flagged =
+  (flags: FeatureFlags, key: c.FlagKey, handler: Handler): Handler =>
+  async (ctx, input) => {
+    assert(
+      await flags.enabled(key, userId(ctx), ctx.get('device')),
+      'FEATURE_UNAVAILABLE',
+      "This feature isn't available on your account yet.",
+      403,
+    );
+    return handler(ctx, input);
+  };
 export function createApp(
   service: StorageService,
   auth: AuthProvider,
@@ -225,6 +248,7 @@ export function createApp(
           timed('rate', rateLimit(`user:${identity.id}`, 600)),
         ]);
         for (const check of checks) if (check.status === 'rejected') throw check.reason;
+        if (checks[1].status === 'fulfilled' && checks[1].value) ctx.set('device', checks[1].value);
       }
       let input: unknown = {};
       if (d.body) {
@@ -263,6 +287,7 @@ export function createApp(
       return ctx.json(validated.data as object);
     });
   }
+  const flags = featureFlagsFor(service.repo);
   const add = (
     method: string,
     path: string,
@@ -466,10 +491,16 @@ export function createApp(
   add(
     'get',
     '/v1/users/me',
-    'Current account and quota',
+    'Current account, quota, and the features turned on for it on this app',
     undefined,
-    z.object({ user: c.userSchema, storage: c.storageSchema }),
-    async (ctx) => service.me(userId(ctx)),
+    z.object({ user: c.userSchema, storage: c.storageSchema, flags: c.flagStatesSchema }),
+    async (ctx) => {
+      const [me, states] = await Promise.all([
+        service.me(userId(ctx)),
+        flags.states(userId(ctx), ctx.get('device')),
+      ]);
+      return { ...me, flags: states };
+    },
   );
   add(
     'get',

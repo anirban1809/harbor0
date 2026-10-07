@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import type { AuditEntry } from '../../../packages/contracts/src/admin';
-import { actionLabels, bytes, date, relative } from '../lib/format';
+import { actionLabels, bytes, date, flagModeLabels, relative } from '../lib/format';
 
 function detail(entry: AuditEntry) {
   const d = entry.details as Record<string, unknown>;
@@ -15,6 +15,21 @@ function detail(entry: AuditEntry) {
     return `${bytes(d.usedBytes as number)}; was due ${date(d.previousPurgeAt as string)}`;
   if (entry.action === 'BETA_WAVE')
     return `${d.cap} seats, ${d.invited} invited from the waitlist`;
+  if (entry.action === 'FLAG_CHANGED') {
+    const before = d.before as { mode: keyof typeof flagModeLabels; percent: number };
+    const after = d.after as typeof before;
+    const parts = [String(d.key)];
+    if (before.mode !== after.mode)
+      parts.push(`${flagModeLabels[before.mode]} → ${flagModeLabels[after.mode]}`);
+    if (before.percent !== after.percent) parts.push(`${before.percent}% → ${after.percent}%`);
+    const added = d.added as string[];
+    const removed = d.removed as string[];
+    if (added.length) parts.push(`added ${added.join(', ')}`);
+    if (removed.length) parts.push(`removed ${removed.join(', ')}`);
+    return parts.join(' · ');
+  }
+  if (entry.action === 'FLAG_USER_ADDED' || entry.action === 'FLAG_USER_REMOVED')
+    return String(d.key);
   return null;
 }
 

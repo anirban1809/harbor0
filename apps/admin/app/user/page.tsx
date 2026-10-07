@@ -42,7 +42,17 @@ type Dialog =
   | { kind: 'quota' }
   | { kind: 'delete' }
   | { kind: 'device'; deviceId: string; name: string }
-  | { kind: 'action'; action: UserAction };
+  | { kind: 'action'; action: UserAction }
+  | { kind: 'flag'; key: string; add: boolean };
+
+const flagReasons: Record<AdminUserDetail['flags'][number]['reason'], string> = {
+  OFF: 'Off for everyone',
+  ALLOWLIST: 'On: listed for this account',
+  PERCENT: 'On: in the percentage rollout',
+  EVERYONE: 'On for everyone',
+  NOT_SELECTED: 'Off: not selected',
+  APP_TOO_OLD: 'Off: app too old',
+};
 
 const actions: Record<
   UserAction,
@@ -178,6 +188,7 @@ function Detail({ id }: { id: string }) {
   const canDelete = useCan('delete');
   const canReset = useCan('password-reset');
   const canSignOut = useCan('sign-out');
+  const canFlags = useCan('flags');
   const refresh = () => {
     void queries.invalidateQueries({ queryKey: ['user', id] });
     void queries.invalidateQueries({ queryKey: ['users'] });
@@ -210,7 +221,8 @@ function Detail({ id }: { id: string }) {
         <p className="admin-empty">{detail.error.message}</p>
       </>
     );
-  const { account, profile, devices, backupCount, activity } = detail.data as AdminUserDetail;
+  const { account, profile, devices, backupCount, activity, flags } =
+    detail.data as AdminUserDetail;
   const deleted = !!profile?.deletedAt;
   const suspended = !!profile?.suspendedAt || (!account.enabled && !deleted);
   const unverified = account.status === 'UNCONFIRMED';
@@ -437,6 +449,46 @@ function Detail({ id }: { id: string }) {
         </Card>
       )}
 
+      {flags.length > 0 && (
+        <Card
+          title="Feature flags"
+          description="Features still being rolled out, as they stand for this account on an up-to-date app."
+        >
+          <ul className="admin-flag-users">
+            {flags.map((f) => (
+              <li key={f.key}>
+                <span>
+                  <Link href={`/flags?key=${encodeURIComponent(f.key)}`}>
+                    <code className="admin-flag-key">{f.key}</code>
+                  </Link>
+                  <div className={f.enabled ? 'admin-flag-on' : 'admin-muted'}>
+                    {flagReasons[f.reason]}
+                  </div>
+                </span>
+                {canFlags && !deleted && f.reason === 'NOT_SELECTED' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => open({ kind: 'flag', key: f.key, add: true })}
+                  >
+                    Turn on for this account
+                  </Button>
+                )}
+                {canFlags && f.reason === 'ALLOWLIST' && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => open({ kind: 'flag', key: f.key, add: false })}
+                  >
+                    Take off the list
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       <Card
         title="Devices"
         description="Each signed-in app installation."
@@ -529,6 +581,30 @@ function Detail({ id }: { id: string }) {
           onConfirm={async (reason) => {
             await api.action(id, dialog.action, reason);
             done(action.done);
+          }}
+        />
+      )}
+      {dialog?.kind === 'flag' && (
+        <ReasonDialog
+          open
+          onOpenChange={(o) => !o && setDialog(null)}
+          title={
+            dialog.add
+              ? `Turn on ${dialog.key} for this account`
+              : `Take this account off ${dialog.key}`
+          }
+          description={
+            dialog.add
+              ? 'Adds the account to the flag’s list. Its apps pick this up within a minute.'
+              : 'Removes the account from the flag’s list. It may still get the feature through the percentage rollout.'
+          }
+          confirmLabel={dialog.add ? 'Turn on' : 'Take off'}
+          onConfirm={async (reason) => {
+            if (dialog.add) await api.addFlagUser(dialog.key, id, reason);
+            else await api.removeFlagUser(dialog.key, id, reason);
+            void queries.invalidateQueries({ queryKey: ['flags'] });
+            void queries.invalidateQueries({ queryKey: ['flag', dialog.key] });
+            done(dialog.add ? `${dialog.key} is on for this account.` : `Taken off ${dialog.key}.`);
           }}
         />
       )}

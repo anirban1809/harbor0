@@ -1,5 +1,9 @@
 import type {
     AdminBeta,
+    AdminFlag,
+    AdminFlagBody,
+    AdminFlagDetail,
+    AdminFlagList,
     AdminOverview,
     AdminPurgeResult,
     AdminUserDetail,
@@ -45,6 +49,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const user = (id: string) => `/users/${encodeURIComponent(id)}`;
+const flag = (key: string) => `/flags/${encodeURIComponent(key)}`;
 export const api = {
     login: (email: string, password: string) =>
         request<StaffLoginResult>('POST', '/auth/login', { email, password }),
@@ -92,6 +97,17 @@ export const api = {
             category,
             notify,
         }),
+    flags: () => request<AdminFlagList>('GET', '/flags'),
+    flag: (key: string) => request<AdminFlagDetail>('GET', flag(key)),
+    saveFlag: (key: string, body: AdminFlagBody) => request<AdminFlag>('PUT', flag(key), body),
+    addFlagUser: (key: string, userId: string, reason: string) =>
+        request<AdminFlag>('POST', `${flag(key)}/users`, { userId, reason }),
+    removeFlagUser: (key: string, userId: string, reason: string) =>
+        request<AdminFlag>(
+            'POST',
+            `${flag(key)}/users/${encodeURIComponent(userId)}/remove`,
+            { reason },
+        ),
 };
 export type UserAction =
     | 'password-reset'
