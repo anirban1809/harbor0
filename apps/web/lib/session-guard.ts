@@ -1,12 +1,8 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import { ApiError, type Transport } from '@harbor/api-client';
 
 /** Why a signed-in session ended without the user signing out. */
 export type SessionEnd = 'expired';
-
-// Baked into the static export by scripts/build-web-static.ts; unset in development.
-const buildId = process.env.NEXT_PUBLIC_BUILD_ID;
-const VERSION_CHECK_MS = 5 * 60_000;
 
 let signedIn = false;
 let ended: SessionEnd | null = null;
@@ -86,35 +82,4 @@ export function guardTransport(
       throw e;
     }
   };
-}
-
-/**
- * Reports whether a newer web release has been published since this page loaded. Releases keep
- * older chunks, so the open page keeps working and the sign-in is untouched; the user reloads
- * when convenient.
- */
-export function useUpdateAvailable(enabled: boolean) {
-  const [available, setAvailable] = useState(false);
-  useEffect(() => {
-    if (!enabled || !buildId || available) return;
-    const check = async () => {
-      if (document.visibilityState !== 'visible') return;
-      try {
-        const response = await fetch('/version.json', { cache: 'no-store' });
-        const latest = response.ok ? ((await response.json()) as { buildId?: string }) : null;
-        if (latest?.buildId && latest.buildId !== buildId) setAvailable(true);
-      } catch {
-        // Offline, or a release without version.json: try again later.
-      }
-    };
-    const timer = setInterval(check, VERSION_CHECK_MS);
-    document.addEventListener('visibilitychange', check);
-    window.addEventListener('focus', check);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', check);
-      window.removeEventListener('focus', check);
-    };
-  }, [enabled, available]);
-  return available;
 }

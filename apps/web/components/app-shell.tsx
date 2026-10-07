@@ -121,12 +121,7 @@ import { UploadTray } from './upload-tray';
 import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { onLive, useLiveUpdates } from '../lib/live-updates';
 import { registerBrowser } from '../lib/device-key';
-import {
-  guardTransport,
-  setSignedIn,
-  useSessionEnd,
-  useUpdateAvailable,
-} from '../lib/session-guard';
+import { guardTransport, setSignedIn, useSessionEnd } from '../lib/session-guard';
 const api = new ApiClient(guardTransport(createTransport('/api')));
 const loadPreview: PreviewLoader = async (item, signal) => {
   const result = await api.download({ driveItemId: item.id });
@@ -315,8 +310,6 @@ function Workspace() {
   const user = me.data?.user;
   const sessionEnd = useSessionEnd();
   useEffect(() => setSignedIn(!!user), [user?.id]);
-  const updateAvailable = useUpdateAvailable(!!user);
-  const [updateDismissed, setUpdateDismissed] = useState(false);
   const live = useLiveUpdates(api, user?.id);
   // Link this sign-in to the browser's key so the browser is listed once among devices.
   useEffect(() => {
@@ -1226,21 +1219,6 @@ function Workspace() {
             {!online && (
               <Alert tone="warning">
                 You’re offline. Changes will sync when your connection returns.
-              </Alert>
-            )}
-            {updateAvailable && !updateDismissed && (
-              <Alert
-                tone="info"
-                className="banner"
-                action={
-                  <Button variant="link" onClick={() => window.location.reload()}>
-                    Reload
-                  </Button>
-                }
-                dismissLabel="Dismiss update notice"
-                onDismiss={() => setUpdateDismissed(true)}
-              >
-                A new version of harbor0 is available.
               </Alert>
             )}
             {pageError && !sessionEnd && (

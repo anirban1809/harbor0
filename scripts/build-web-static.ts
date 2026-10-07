@@ -1,10 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 const root = process.cwd();
-// Each release gets an id; open pages compare theirs with /version.json to notice a new deploy.
-const buildId = `${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}-${randomBytes(4).toString('hex')}`;
 const stage = path.join(root, '.cloud/web-export');
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
@@ -38,7 +35,7 @@ await new Promise<void>((resolve, reject) => {
     {
       cwd: stage,
       stdio: 'inherit',
-      env: { ...process.env, NODE_ENV: 'production', NEXT_PUBLIC_BUILD_ID: buildId },
+      env: { ...process.env, NODE_ENV: 'production' },
     },
   );
   child.on('error', reject);
@@ -61,5 +58,4 @@ if (
     'Static export is missing the component stylesheet. Check the imports in apps/web/app/globals.css before publishing.',
   );
 }
-await writeFile(path.join(stage, 'out/version.json'), JSON.stringify({ buildId }) + '\n');
 console.log('Static export ready at .cloud/web-export/out. Browser APIs are served by Lambda.');
