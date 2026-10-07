@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Trash2, UserPlus } from 'lucide-react';
 import type { EmailGroup } from '../../../../packages/contracts/src/campaigns';
-import { MAX_GROUP_ADD } from '../../../../packages/contracts/src/campaigns';
+import { EVERYONE_GROUP, MAX_GROUP_ADD } from '../../../../packages/contracts/src/campaigns';
+import { Badge } from '../../../web/components/ui/badge';
 import { Alert } from '../../../web/components/ui/alert';
 import { Button } from '../../../web/components/ui/button';
 import { Card } from '../../../web/components/ui/card';
@@ -122,7 +123,10 @@ function GroupList() {
                 onKeyDown={(e) => e.key === 'Enter' && open(g.id)}
               >
                 <td>
-                  <strong>{g.name}</strong>
+                  <span className="admin-title-row">
+                    <strong>{g.name}</strong>
+                    {g.builtIn && <Badge>Built in</Badge>}
+                  </span>
                   {g.description && <div className="admin-muted">{g.description}</div>}
                 </td>
                 <td>{g.memberCount.toLocaleString()}</td>
@@ -407,8 +411,47 @@ function GroupDetail({ id }: { id: string }) {
   );
 }
 
+/** The built-in group of every account: nothing to edit, so it only explains itself. */
+function EveryoneGroup() {
+  const detail = useQuery({
+    queryKey: ['email-group', EVERYONE_GROUP],
+    queryFn: () => api.group(EVERYONE_GROUP),
+  });
+  return (
+    <>
+      <Link href="/email-groups" className="admin-back">
+        <ArrowLeft aria-hidden="true" />
+        Groups
+      </Link>
+      <PageHeader
+        title={
+          <span className="admin-title-row">
+            Everyone
+            <Badge>Built in</Badge>
+          </span>
+        }
+        description={
+          detail.data ? `About ${plural(detail.data.group.memberCount, 'account')} today` : undefined
+        }
+      />
+      <Card title="Who is in it">
+        <p>
+          Every account, worked out when a campaign starts sending. People who sign up after you
+          schedule a campaign are included. As with any group, deleted, suspended and unverified
+          accounts are skipped, and product updates skip people who unsubscribed.
+        </p>
+        <p className="admin-muted">
+          It can&apos;t be renamed, edited or deleted. To see the accounts, open{' '}
+          <Link href="/users">Users</Link>.
+        </p>
+      </Card>
+    </>
+  );
+}
+
 function GroupsPage() {
   const id = useSearchParams().get('id');
+  if (id === EVERYONE_GROUP) return <EveryoneGroup />;
   return id ? <GroupDetail key={id} id={id} /> : <GroupList />;
 }
 

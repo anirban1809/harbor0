@@ -79,11 +79,18 @@ export const emailGroupInput = z
     description: z.string().trim().max(500).default(''),
   })
   .strict();
+/**
+ * The built-in group of every account. It has no stored members: it is worked out when a
+ * campaign starts sending, so people who sign up after it is scheduled are included.
+ */
+export const EVERYONE_GROUP = 'everyone';
 export const emailGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string(),
   memberCount: z.number(),
+  /** The Everyone group, which can't be renamed, edited or deleted. */
+  builtIn: z.boolean().optional(),
   ...staffStamp,
 });
 export const emailGroupBody = emailGroupInput.extend({ expectedUpdatedAt }).strict();

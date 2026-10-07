@@ -9,6 +9,7 @@ import type {
   Recipient,
   RecipientSkipReason,
 } from '../../../packages/contracts/src/campaigns';
+import { EVERYONE_GROUP } from '../../../packages/contracts/src/campaigns';
 import { campaignVars } from './campaign-content';
 import { userPK, type Account, type StorageService } from './domain';
 import type { Email } from './emails';
@@ -77,6 +78,11 @@ export async function audienceUserIds(repo: Repository, audience: CampaignAudien
   const ids = new Set(audience.userIds);
   const missingGroups: string[] = [];
   for (const groupId of audience.groupIds) {
+    if (groupId === EVERYONE_GROUP) {
+      // Every account with a profile; eligibility then skips deleted and suspended ones.
+      for (const profile of await repo.scanProfiles()) if (profile.id) ids.add(profile.id);
+      continue;
+    }
     if (!(await repo.get({ pk: GROUP_PK, sk: groupId }))) {
       missingGroups.push(groupId);
       continue;

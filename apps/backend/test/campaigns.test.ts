@@ -442,3 +442,61 @@ describe('campaigns', () => {
     expect((await ok(support, 'GET', '/email/campaigns')).items).toHaveLength(1);
   });
 });
+
+describe('the Everyone group', () => {
+  it('is listed first, holds every account, and cannot be changed', async () => {
+    const mine = await ok(admin, 'POST', '/email/groups', { name: 'Testers' });
+    const groups = (await ok(support, 'GET', '/email/groups')).items;
+    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', mine.id]);
+    expect(groups[0]).toMatchObject({ name: 'Everyone', builtIn: true, memberCount: 2 });
+    expect((await ok(admin, 'GET', '/email/groups/everyone')).group.builtIn).toBe(true);
+    for (const [method, path, body] of [
+      ['PUT', '/email/groups/everyone', { name: 'x', description: '', expectedUpdatedAt: '' }],
+      ['DELETE', '/email/groups/everyone', undefined],
+      ['POST', '/email/groups/everyone/members', { userIds: ['alice'] }],
+      ['POST', '/email/groups/everyone/members/remove', { userIds: ['alice'] }],
+    ] as const) {
+      const r = await call(admin, method, path, body);
+      expect(r.status, path).toBe(409);
+      expect(r.data.error.code).toBe('BUILT_IN_GROUP');
+    }
+    // Account pages list only the groups staff made.
+    expect((await ok(admin, 'GET', '/users/alice')).email.groups).toEqual([]);
+  });
+
+  it('sends to every account, including ones that join after scheduling', async () => {
+    const t = await ok(admin, 'POST', '/email/templates', template('SERVICE'));
+    const campaign = await ok(admin, 'POST', '/email/campaigns', {
+      name: 'Everyone',
+      templateId: t.id,
+      audience: { groupIds: ['everyone'], userIds: ['alice'] },
+    });
+    expect(
+      await ok(admin, 'POST', '/email/audience/count', { audience: campaign.audience, category: 'SERVICE' }),
+    ).toMatchObject({ total: 2, eligible: 2 });
+    expect((await ok(admin, 'GET', `/email/campaigns/${campaign.id}`)).groups).toEqual([
+      { id: 'everyone', name: 'Everyone', memberCount: 2 },
+    ]);
+    await ok(admin, 'POST', `/email/campaigns/${campaign.id}/schedule`, {
+      at: null,
+      reason: 'Announcement',
+      expectedUpdatedAt: campaign.updatedAt,
+    });
+    await service.ensureUser({
+      id: 'carol',
+      email: 'carol@example.test',
+      emailVerified: true,
+      username: 'carol',
+      displayName: 'Carol',
+    });
+    await service.runJobs(async () => {});
+    const campaignJob = await service.repo.get({ pk: 'JOB', sk: `CAMPAIGN#${campaign.id}` });
+    expect(campaignJob).toBeUndefined();
+    const sent = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=SENT`);
+    expect(sent.items.map((r: { email: string }) => r.email).sort()).toEqual([
+      'alice@example.test',
+      'bob@example.test',
+      'carol@example.test',
+    ]);
+  });
+});

@@ -19,7 +19,8 @@ export function UserEmailCard({ userId, email }: { userId: string; email: AdminU
   const [adding, setAdding] = useState('');
   const [error, setError] = useState('');
   const groups = useQuery({ queryKey: ['email-groups'], queryFn: api.groups, enabled: canEdit });
-  const available = groups.data?.items.filter((g) => !email.groups.some((m) => m.id === g.id)) ?? [];
+  const available =
+    groups.data?.items.filter((g) => !g.builtIn && !email.groups.some((m) => m.id === g.id)) ?? [];
   const change = async (work: () => Promise<unknown>) => {
     setError('');
     try {

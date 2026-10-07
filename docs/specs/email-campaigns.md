@@ -62,6 +62,7 @@ Code: `apps/backend/src/campaigns.ts` (rows, eligibility, sending), `apps/backen
 
 - A campaign copies its template when it is scheduled. Editing the template later does not change a campaign that is already queued.
 - Group membership is read when sending starts, so members added or removed before then are included or left out.
+- **Everyone** (id `everyone`) is a built-in group with no stored rows. When a campaign resolves it, it scans every account profile, so accounts created after scheduling are included and eligibility skips the rest. The console lists it first with its count taken from the cached storage totals (up to 15 minutes old). It can't be renamed, edited, deleted or have members added or removed (`BUILT_IN_GROUP`), and it isn't shown on account pages. Resolving or counting it is a full-table scan, fine at today's size.
 - An account's groups are found by checking each group for its member row; there is no reverse index, as there are few groups.
 - Recipients are always accounts. Emails go to the account's current address, read again at send time.
 

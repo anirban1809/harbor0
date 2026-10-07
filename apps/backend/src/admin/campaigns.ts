@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeEmail } from '@harbor/contracts';
 import type { AdminUserEmail, AuditEntry, Staff } from '../../../../packages/contracts/src/admin';
+import { EVERYONE_GROUP } from '../../../../packages/contracts/src/campaigns';
 import type {
   CampaignBody,
   CampaignContent,
@@ -36,7 +37,18 @@ import type { AdminService } from './service';
 
 const history = (kind: 'TEMPLATE' | 'GROUP' | 'CAMPAIGN', id: string) =>
   `ADMIN_AUDIT#${kind}#${id}`;
-const stamp = (staff: Staff) => ({ updatedAt: new Date().toISOString(), updatedBy: staff.email });
+/**
+ * The new updatedAt and updatedBy for a change to `row`. updatedAt always moves forward, even
+ * for two saves in the same millisecond, since editors use it to detect a change made since.
+ */
+const stamp = (staff: Staff, row: { updatedAt: string }) => {
+  const now = Date.now();
+  const previous = Date.parse(row.updatedAt);
+  return {
+    updatedAt: new Date(previous >= now ? previous + 1 : now).toISOString(),
+    updatedBy: staff.email,
+  };
+};
 const MAX_SCHEDULE_AHEAD_MS = 90 * 86400_000;
 // Group writes go in chunks; a transaction holds at most 100 items.
 const CHUNK = 40;
@@ -122,7 +134,7 @@ export class AdminCampaigns {
       const template = await getRow<StoredTemplate>(tx, TEMPLATE_PK, id, 'template');
       changedSince('template', template, input.expectedUpdatedAt);
       const { expectedUpdatedAt: _, ...fields } = input;
-      const next: StoredTemplate = { ...template, ...fields, ...stamp(staff) };
+      const next: StoredTemplate = { ...template, ...fields, ...stamp(staff, template) };
       await tx.put(TEMPLATE_PK, id, next);
       await this.audit(tx, staff, 'TEMPLATE', id, 'EMAIL_TEMPLATE_CHANGED', {
         name: next.name,
@@ -199,14 +211,41 @@ export class AdminCampaigns {
   }
 
   // Groups ----------------------------------------------------------------------------------
-  async groups() {
+  /** The built-in group of every account; its count is the cached live-account total. */
+  private async everyone(): Promise<StoredGroup> {
+    const accounts = await this.admin
+      .storageTotals()
+      .then((t) => t.accounts)
+      .catch(() => 0);
     return {
-      items: (await allRows<StoredGroup>(this.repo, GROUP_PK)).sort((a, b) =>
-        a.name.localeCompare(b.name),
-      ),
+      id: EVERYONE_GROUP,
+      name: 'Everyone',
+      description: 'Every account, worked out when a campaign starts sending.',
+      memberCount: accounts,
+      builtIn: true,
+      createdAt: '',
+      createdBy: 'Built in',
+      updatedAt: '',
+      updatedBy: 'Built in',
     };
   }
+  private notBuiltIn(id: string) {
+    assert(
+      id !== EVERYONE_GROUP,
+      'BUILT_IN_GROUP',
+      'The Everyone group is built in: it always holds every account and cannot be changed.',
+      409,
+    );
+  }
+  async groups() {
+    const [everyone, groups] = await Promise.all([
+      this.everyone(),
+      allRows<StoredGroup>(this.repo, GROUP_PK),
+    ]);
+    return { items: [everyone, ...groups.sort((a, b) => a.name.localeCompare(b.name))] };
+  }
   async group(id: string) {
+    if (id === EVERYONE_GROUP) return { group: await this.everyone(), history: [] };
     const [group, log] = await Promise.all([
       getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group'),
       this.log('GROUP', id),
@@ -233,6 +272,7 @@ export class AdminCampaigns {
     return group;
   }
   async updateGroup(staff: Staff, id: string, input: EmailGroupBody) {
+    this.notBuiltIn(id);
     return transact(this.repo, async (tx) => {
       const group = await getRow<StoredGroup>(tx, GROUP_PK, id, 'group');
       changedSince('group', group, input.expectedUpdatedAt);
@@ -240,7 +280,7 @@ export class AdminCampaigns {
         ...group,
         name: input.name,
         description: input.description,
-        ...stamp(staff),
+        ...stamp(staff, group),
       };
       await tx.put(GROUP_PK, id, next);
       await this.audit(tx, staff, 'GROUP', id, 'EMAIL_GROUP_CHANGED', {
@@ -259,6 +299,7 @@ export class AdminCampaigns {
     );
   }
   async deleteGroup(staff: Staff, id: string) {
+    this.notBuiltIn(id);
     const group = await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const using = await this.pendingCampaignsUsing(id);
     assert(
@@ -282,6 +323,8 @@ export class AdminCampaigns {
     return { deleted: true };
   }
   async members(id: string, cursor?: string) {
+    // Everyone has no stored members; the console lists accounts on the Users page.
+    if (id === EVERYONE_GROUP) return { items: [], nextCursor: null };
     await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const page = await this.repo.query(memberPK(id), 'MEMBER#', 50, cursor);
     return { items: page.rows.map((r) => r.data as StoredMember), nextCursor: page.cursor };
@@ -304,6 +347,7 @@ export class AdminCampaigns {
     return (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as Account | undefined;
   }
   async addMembers(staff: Staff, id: string, userIds: string[], identifiers: string[]) {
+    this.notBuiltIn(id);
     await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const unmatched: string[] = [];
     const accounts = new Map<string, Account>();
@@ -344,7 +388,7 @@ export class AdminCampaigns {
         }
         if (fresh) {
           g.memberCount += fresh;
-          Object.assign(g, stamp(staff));
+          Object.assign(g, stamp(staff, g));
           await tx.put(GROUP_PK, id, g);
         }
         added += fresh;
@@ -363,6 +407,7 @@ export class AdminCampaigns {
     return { group: group!, added, alreadyMembers, unmatched };
   }
   async removeMembers(staff: Staff, id: string, userIds: string[]) {
+    this.notBuiltIn(id);
     let removed = 0;
     let group: StoredGroup | undefined;
     const emails: string[] = [];
@@ -380,7 +425,7 @@ export class AdminCampaigns {
         }
         if (gone) {
           g.memberCount = Math.max(0, g.memberCount - gone);
-          Object.assign(g, stamp(staff));
+          Object.assign(g, stamp(staff, g));
           await tx.put(GROUP_PK, id, g);
         }
         removed += gone;
@@ -436,6 +481,10 @@ export class AdminCampaigns {
       this.log('CAMPAIGN', id),
       Promise.all(
         c.audience.groupIds.map(async (groupId) => {
+          if (groupId === EVERYONE_GROUP) {
+            const everyone = await this.everyone();
+            return { id: groupId, name: everyone.name, memberCount: everyone.memberCount };
+          }
           const g = (await this.repo.get({ pk: GROUP_PK, sk: groupId }))?.data as StoredGroup | undefined;
           return { id: groupId, name: g?.name ?? null, memberCount: g?.memberCount ?? 0 };
         }),
@@ -492,7 +541,7 @@ export class AdminCampaigns {
         templateId: input.templateId,
         templateName: template.name,
         audience: input.audience,
-        ...stamp(staff),
+        ...stamp(staff, c),
       };
       await tx.put(CAMPAIGN_PK, id, next);
       await this.audit(tx, staff, 'CAMPAIGN', id, 'CAMPAIGN_CHANGED', {
@@ -556,7 +605,7 @@ export class AdminCampaigns {
         state: 'SCHEDULED',
         scheduledAt,
         scheduledBy: staff.email,
-        ...stamp(staff),
+        ...stamp(staff, c),
       };
       await tx.put(CAMPAIGN_PK, id, next);
       const job: Job = {
@@ -602,7 +651,7 @@ export class AdminCampaigns {
         content: null,
         scheduledAt: null,
         scheduledBy: null,
-        ...stamp(staff),
+        ...stamp(staff, c),
       };
       await tx.put(CAMPAIGN_PK, id, next);
       if (await tx.get('JOB', campaignJobId(id))) await tx.delete('JOB', campaignJobId(id));
@@ -616,7 +665,7 @@ export class AdminCampaigns {
     const campaign = await transact(this.repo, async (tx) => {
       const c = await getRow<StoredCampaign>(tx, CAMPAIGN_PK, id, 'campaign');
       assert(c.state === 'SENDING', 'INVALID_STATE', 'Only a campaign that is sending can be stopped.', 409);
-      const next: StoredCampaign = { ...c, state: 'STOPPED', ...stamp(staff) };
+      const next: StoredCampaign = { ...c, state: 'STOPPED', ...stamp(staff, c) };
       await tx.put(CAMPAIGN_PK, id, next);
       await this.audit(
         tx,
