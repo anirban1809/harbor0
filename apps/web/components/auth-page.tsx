@@ -4,7 +4,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Check, HardDrive, Laptop, Loader2, Send, ShieldCheck } from 'lucide-react';
 import { ApiError, type ApiClient } from '@harbor/api-client';
-import type { AccessRequestResult, BetaStatus } from '@harbor/contracts';
+import type {
+  AccessRequestResult,
+  BetaStatus,
+  TwoFactorChallenge,
+  TwoFactorMethod,
+} from '@harbor/contracts';
 import { authRoutes, loginDestination, privacyUrl, termsUrl, type AuthMode } from '../lib/routes';
 import { BrandLogo } from './brand-logo';
 import { ThemeToggle } from './theme-toggle';
@@ -61,6 +66,7 @@ const features = [
 ];
 
 const RESEND_COOLDOWN = 30;
+const signInDevice = { deviceName: 'Web browser', platform: 'WEB' } as const;
 
 // While the beta is invite-only, /signup without a link asks for an email instead.
 const requestCopy = {
@@ -114,6 +120,11 @@ export function AuthPage({
     email: string;
     status: AccessRequestResult['status'];
   }>();
+  // Set once the password is accepted for an account with two-step verification.
+  const [twoFactor, setTwoFactor] = useState<TwoFactorChallenge>();
+  // Every method the account offered, kept after one is chosen so the user can switch back.
+  const [offered, setOffered] = useState<TwoFactorMethod[]>([]);
+  const [code, setCode] = useState('');
 
   useEffect(() => {
     setError(undefined);
@@ -121,6 +132,7 @@ export function AuthPage({
     // The page stays mounted across steps, so an access-request result would otherwise
     // cover the sign-in form it points to. The email carries over.
     setRequested(undefined);
+    setTwoFactor(undefined);
     // Focus the first empty field of each step.
     const fields = formRef.current?.querySelectorAll<HTMLInputElement>('input:not([type=hidden])');
     Array.from(fields ?? [])
@@ -175,11 +187,15 @@ export function AuthPage({
     const values = Object.fromEntries(new FormData(e.currentTarget));
     try {
       if (mode === 'login') {
-        await api.request('/v1/auth/login', {
+        const result: { twoFactor?: TwoFactorChallenge } = await api.request('/v1/auth/login', {
           method: 'POST',
-          body: { ...values, deviceName: 'Web browser', platform: 'WEB' },
+          body: { ...values, ...signInDevice, twoFactor: true },
         });
-        onDone();
+        if (result.twoFactor) {
+          setCode('');
+          setOffered(result.twoFactor.methods);
+          setTwoFactor(result.twoFactor);
+        } else onDone();
       } else {
         await api.request(`/v1/auth/${mode}`, { method: 'POST', body: values });
         if (mode === 'signup') {
@@ -196,6 +212,84 @@ export function AuthPage({
         text: (e as Error).message,
         unverified: e instanceof ApiError && e.code === 'EMAIL_NOT_VERIFIED',
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Sends the password again for a fresh sign-in, then moves it to `method` if given. */
+  async function restartSignIn(method?: TwoFactorMethod) {
+    const result: { twoFactor?: TwoFactorChallenge } = await api.request('/v1/auth/login', {
+      method: 'POST',
+      body: { email, password, ...signInDevice, twoFactor: true },
+    });
+    if (!result.twoFactor) return onDone();
+    let next = result.twoFactor;
+    if (method && next.method === null)
+      next = (
+        await api.request('/v1/auth/login/method', {
+          method: 'POST',
+          body: { email, session: next.session, method },
+        })
+      ).twoFactor;
+    setCode('');
+    setTwoFactor(next);
+  }
+
+  async function verifySecondStep(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!twoFactor) return;
+    setBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      await api.request('/v1/auth/login/verify', {
+        method: 'POST',
+        body: {
+          email,
+          session: twoFactor.session,
+          method: twoFactor.method ?? 'TOTP',
+          code,
+          ...signInDevice,
+        },
+      });
+      onDone();
+    } catch (e) {
+      const details = e instanceof ApiError ? (e.details as { session?: string }) : undefined;
+      // Choosing a method replaces the session; a wrong code hands the new one back.
+      if (details?.session)
+        setTwoFactor({
+          ...twoFactor,
+          session: details.session,
+          method: twoFactor.method ?? 'TOTP',
+          methods: twoFactor.method ? twoFactor.methods : ['TOTP'],
+        });
+      if (e instanceof ApiError && e.code === 'AUTH_EXPIRED') setTwoFactor(undefined);
+      setCode('');
+      setError({ text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function switchSecondStep(method: TwoFactorMethod, text?: string) {
+    if (!twoFactor) return;
+    setBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      if (twoFactor.method === null) {
+        const result: { twoFactor: TwoFactorChallenge } = await api.request(
+          '/v1/auth/login/method',
+          { method: 'POST', body: { email, session: twoFactor.session, method } },
+        );
+        setCode('');
+        setTwoFactor(result.twoFactor);
+      } else await restartSignIn(method);
+      if (text) setNotice({ mode: 'login', text });
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'AUTH_EXPIRED') setTwoFactor(undefined);
+      setError({ text: (e as Error).message });
     } finally {
       setBusy(false);
     }
@@ -241,24 +335,37 @@ export function AuthPage({
   const request = requestCopy[beta?.open ? 'open' : 'full'];
   const { submit: submitLabel, busy: busyLabel } = copy[mode];
   const to = requested && <strong>{requested.email}</strong>;
-  const { title, lead } = requested
+  const secondStep = mode === 'login' ? twoFactor : undefined;
+  const { title, lead } = secondStep
     ? {
-        INVITED: {
-          title: 'Check your email',
-          lead: <>We sent a sign-up link to {to}. It works only for that address.</>,
-        },
-        WAITLISTED: {
-          title: 'You’re on the waitlist',
-          lead: <>We’ll email a sign-up link to {to} when the next beta wave opens.</>,
-        },
-        REGISTERED: {
-          title: 'You already have an account',
-          lead: <>{to} already has a harbor0 account. Sign in to get to your files.</>,
-        },
-      }[requested.status]
-    : requesting
-      ? request
-      : copy[mode];
+        title: 'Two-step verification',
+        lead:
+          secondStep.method === 'EMAIL' ? (
+            <>
+              Enter the code we sent to <strong>{secondStep.destination ?? email}</strong>.
+            </>
+          ) : (
+            'Enter the 6-digit code from your authenticator app.'
+          ),
+      }
+    : requested
+      ? {
+          INVITED: {
+            title: 'Check your email',
+            lead: <>We sent a sign-up link to {to}. It works only for that address.</>,
+          },
+          WAITLISTED: {
+            title: 'You’re on the waitlist',
+            lead: <>We’ll email a sign-up link to {to} when the next beta wave opens.</>,
+          },
+          REGISTERED: {
+            title: 'You already have an account',
+            lead: <>{to} already has a harbor0 account. Sign in to get to your files.</>,
+          },
+        }[requested.status]
+      : requesting
+        ? request
+        : copy[mode];
   const newPassword = mode === 'signup' || mode === 'reset';
   const shownNotice = notice?.mode === mode ? notice.text : undefined;
 
@@ -303,7 +410,69 @@ export function AuthPage({
             )}
           </p>
           {shownNotice && <Alert tone="success">{shownNotice}</Alert>}
-          {signupLoading ? (
+          {secondStep ? (
+            <>
+              <form className="form" onSubmit={verifySecondStep}>
+                <Field label={secondStep.method === 'EMAIL' ? 'Email code' : 'Authenticator code'}>
+                  <Input
+                    size="lg"
+                    className="auth-code"
+                    name="code"
+                    autoComplete="one-time-code"
+                    inputMode="numeric"
+                    placeholder="000000"
+                    pattern="\d{6,8}"
+                    maxLength={8}
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                    autoFocus
+                    required
+                  />
+                </Field>
+                {error && <Alert tone="error">{error.text}</Alert>}
+                <Button disabled={busy || code.length < 6} type="submit" size="lg" block>
+                  {busy && <Loader2 className="spin" aria-hidden="true" />}
+                  {busy ? 'Verifying…' : 'Verify'}
+                </Button>
+              </form>
+              <p className="auth-resend">
+                {secondStep.method === 'EMAIL' ? (
+                  <>
+                    Didn’t get it?{' '}
+                    <Button
+                      variant="link"
+                      disabled={busy}
+                      onClick={() => void switchSecondStep('EMAIL', 'A new code is on its way.')}
+                    >
+                      Send a new code
+                    </Button>
+                    {offered.includes('TOTP') && (
+                      <>
+                        {' · '}
+                        <Button
+                          variant="link"
+                          disabled={busy}
+                          onClick={() => void switchSecondStep('TOTP')}
+                        >
+                          Use my authenticator app
+                        </Button>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  offered.includes('EMAIL') && (
+                    <Button
+                      variant="link"
+                      disabled={busy}
+                      onClick={() => void switchSecondStep('EMAIL')}
+                    >
+                      Email me a code instead
+                    </Button>
+                  )
+                )}
+              </p>
+            </>
+          ) : signupLoading ? (
             <Loader2 className="spin auth-loading" aria-label="Loading" />
           ) : requested ? (
             <p className="auth-resend">
@@ -493,7 +662,17 @@ export function AuthPage({
             </p>
           )}
           <div className="auth-switch">
-            {mode === 'login' ? (
+            {secondStep ? (
+              <Button
+                variant="link"
+                onClick={() => {
+                  setTwoFactor(undefined);
+                  setError(undefined);
+                }}
+              >
+                Back to sign in
+              </Button>
+            ) : mode === 'login' ? (
               <>
                 New to harbor0? <Link href={authHref('signup')}>Create an account</Link>
               </>

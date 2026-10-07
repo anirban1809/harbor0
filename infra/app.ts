@@ -137,10 +137,22 @@ const pool = new cognito.UserPool(stack, 'Users', {
     requireUppercase: true,
     requireSymbols: true,
   },
-  accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+  // Cognito offers email sign-in codes only when recovery has a second mechanism. Accounts
+  // can't add a phone number (see writeAttributes), so resets always go by email.
+  accountRecovery: cognito.AccountRecovery.EMAIL_AND_PHONE_WITHOUT_MFA,
+  // Two-step verification is each account's choice: an authenticator app, email codes, or both.
+  mfa: cognito.Mfa.OPTIONAL,
+  mfaSecondFactor: { sms: false, otp: true },
   removalPolicy,
 });
 useSesForCognito(pool);
+// Email codes need the SES sender above, so they are offered only where one is configured.
+// Reset codes go to the same address; the API lifts an account's email codes while it sends one.
+(pool.node.defaultChild as cognito.CfnUserPool).enabledMfas = Fn.conditionIf(
+  hasEmailFrom.logicalId,
+  ['SOFTWARE_TOKEN_MFA', 'EMAIL_OTP'],
+  ['SOFTWARE_TOKEN_MFA'],
+) as unknown as string[];
 const registration = new lambda.Function(stack, 'Registration', {
   runtime: lambda.Runtime.NODEJS_22_X,
   handler: 'index.preSignup',
@@ -230,6 +242,13 @@ const apiFunction = new lambda.Function(stack, 'Api', {
   environment,
   logGroup,
 });
+// Password resets lift and restore an account's email sign-in codes (see withEmailCodesLifted).
+apiFunction.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: ['cognito-idp:AdminGetUser', 'cognito-idp:AdminSetUserMFAPreference'],
+    resources: [pool.userPoolArn],
+  }),
+);
 const jobsFunction = new lambda.Function(stack, 'Maintenance', {
   runtime: lambda.Runtime.NODEJS_22_X,
   handler: 'index.jobs',
@@ -408,6 +427,8 @@ adminFunction.addToRolePolicy(
       'cognito-idp:ListUsers',
       'cognito-idp:DescribeUserPool',
       'cognito-idp:AdminResetUserPassword',
+      'cognito-idp:AdminGetUser',
+      'cognito-idp:AdminSetUserMFAPreference',
       'cognito-idp:AdminConfirmSignUp',
       'cognito-idp:AdminUpdateUserAttributes',
       'cognito-idp:AdminDisableUser',

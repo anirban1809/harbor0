@@ -110,7 +110,13 @@ export async function proxyBrowserRequest(req: Request, options: ProxyOptions): 
       access,
     );
     const data = await response.json();
-    if (endpoint === '/v1/auth/login' && response.ok) rotated = data;
+    // A sign-in that still needs its second step returns no tokens yet.
+    if (
+      ['/v1/auth/login', '/v1/auth/login/verify'].includes(endpoint) &&
+      response.ok &&
+      data.accessToken
+    )
+      rotated = data;
     const { accessToken: _access, refreshToken: _refresh, idToken: _id, ...safe } = data;
     const result = json(safe, response.status);
     result.headers.set('X-Request-ID', response.headers.get('X-Request-ID') ?? '');

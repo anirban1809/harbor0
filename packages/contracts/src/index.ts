@@ -323,6 +323,31 @@ export const betaStatusSchema = z.object({ inviteRequired: z.boolean(), open: z.
 export const accessRequestResultSchema = z.object({
   status: z.enum(['INVITED', 'WAITLISTED', 'REGISTERED']),
 });
+/** Second sign-in steps: a code from an authenticator app, or one emailed at sign-in. */
+export const twoFactorMethod = z.enum(['TOTP', 'EMAIL']);
+/** Which second step the account uses; turning one on turns the other off. */
+export const twoFactorStatusSchema = z.object({ totp: z.boolean(), email: z.boolean() });
+/** Sign-in needs a second step before tokens are issued. */
+export const twoFactorChallengeSchema = z.object({
+  /** Opaque; send it back with the code. It expires a few minutes after the password step. */
+  session: z.string(),
+  /** Every method the account can finish signing in with. */
+  methods: z.array(twoFactorMethod),
+  /** The method this session is waiting for, or null while the user still has to choose. */
+  method: twoFactorMethod.nullable(),
+  /** Masked address the email code went to (EMAIL only). */
+  destination: z.string().optional(),
+});
+export const totpSetupSchema = z.object({
+  /** Base32 secret for apps that cannot scan a QR code. */
+  secret: z.string(),
+  /** otpauth:// URI to show as a QR code. */
+  uri: z.string(),
+});
+export type TwoFactorMethod = z.infer<typeof twoFactorMethod>;
+export type TwoFactorStatus = z.infer<typeof twoFactorStatusSchema>;
+export type TwoFactorChallenge = z.infer<typeof twoFactorChallengeSchema>;
+export type TotpSetup = z.infer<typeof totpSetupSchema>;
 export type BetaStatus = z.infer<typeof betaStatusSchema>;
 export type AccessRequestResult = z.infer<typeof accessRequestResultSchema>;
 export const storageUsage = (u: User): StorageUsage => ({

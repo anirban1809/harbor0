@@ -4,13 +4,19 @@
     {
       "name": "api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 8787
     },
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:web"],
+      "runtimeArgs": [
+        "run",
+        "dev:web"
+      ],
       "port": 3000
     },
     {
@@ -33,13 +39,21 @@
     {
       "name": "landing",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:landing"],
+      "runtimeArgs": [
+        "run",
+        "dev:landing"
+      ],
       "port": 3100
     },
     {
       "name": "ops-dashboard",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "cloud:dashboard", "--", "--serve"],
+      "runtimeArgs": [
+        "run",
+        "cloud:dashboard",
+        "--",
+        "--serve"
+      ],
       "port": 4319
     },
     {
@@ -62,8 +76,45 @@
     {
       "name": "admin",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:admin"],
+      "runtimeArgs": [
+        "run",
+        "dev:admin"
+      ],
       "port": 3300
+    },
+    {
+      "name": "api-cognito",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DEV_AUTH=false",
+        "COGNITO_USER_POOL_ID=us-east-1_4CxUM88qs",
+        "COGNITO_CLIENT_ID=3d6e331fll3p8mkv3k8vafk19r",
+        "AWS_ACCESS_KEY_ID=",
+        "AWS_SECRET_ACCESS_KEY=",
+        "PORT=8797",
+        "REALTIME_PORT=8798",
+        "npm",
+        "run",
+        "dev"
+      ],
+      "port": 8797
+    },
+    {
+      "name": "web-cognito",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "API_URL=http://127.0.0.1:8797",
+        "APP_ORIGIN=http://localhost:3400",
+        "npm",
+        "run",
+        "dev",
+        "-w",
+        "@harbor/web",
+        "--",
+        "-p",
+        "3400"
+      ],
+      "port": 3400
     }
   ]
 }

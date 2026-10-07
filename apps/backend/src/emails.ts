@@ -132,6 +132,16 @@ export type Email =
         at: string;
     }
     | { template: 'PASSWORD_CHANGED'; to: string; name?: string; at: string; }
+    | {
+        template: 'TWO_FACTOR_CHANGED';
+        to: string;
+        name?: string;
+        method: 'TOTP' | 'EMAIL';
+        enabled: boolean;
+        /** The method this one replaced; an account has one at a time. */
+        replaced?: 'TOTP' | 'EMAIL';
+        at: string;
+    }
     | { template: 'SIGNED_OUT'; to: string; name: string; device?: string; };
 export type StorageAlertLevel = 80 | 95 | 100;
 
@@ -416,6 +426,27 @@ function accountMessage(email: Email, webOrigin: string): Message {
                 action: reset,
                 footnote: `If this was you, there's nothing to do. If it wasn't, reset your password right away and write to ${mailto}.`,
             };
+        case 'TWO_FACTOR_CHANGED': {
+            const label = (m: 'TOTP' | 'EMAIL') =>
+                m === 'TOTP' ? 'an authenticator app' : 'email sign-in codes';
+            const method = label(email.method);
+            const change = email.enabled ? 'turned on' : 'turned off';
+            const sentence = email.replaced
+                ? `your harbor0 account was switched from ${label(email.replaced)} to ${method} for two-step verification on ${dateTime(email.at)}.`
+                : `two-step verification with ${method} was ${change} for your harbor0 account on ${dateTime(email.at)}.`;
+            return {
+                subject: email.replaced
+                    ? 'Two-step verification changed for harbor0'
+                    : `Two-step verification ${change} for harbor0`,
+                preheader: sentence[0].toUpperCase() + sentence.slice(1),
+                heading: email.replaced
+                    ? 'Two-step verification changed'
+                    : `Two-step verification ${change}`,
+                intro: greet(email.name, sentence),
+                action: reset,
+                footnote: `If this was you, there's nothing to do. If it wasn't, reset your password right away, check your sign-in settings in <a href="${app}/settings" style="color:#4353d9;">Settings</a>, and write to ${mailto}.`,
+            };
+        }
         case 'SIGNED_OUT':
             return {
                 subject: email.device

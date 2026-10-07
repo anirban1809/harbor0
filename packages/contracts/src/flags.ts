@@ -6,7 +6,10 @@ import { z } from 'zod';
  * building behind it; remove it once the feature is on for everyone and its checks are gone.
  */
 export const featureFlags = {
-  // 'new-feature': { description: 'What staff see for it in the console' },
+  'two-factor': {
+    description:
+      'Two-step verification: turn on an authenticator app or email codes in Settings. Sign-in asks accounts that have it on for their code whether or not the flag is on.',
+  },
 } as const satisfies Record<string, { description: string }>;
 export type FlagKey = keyof typeof featureFlags;
 /** Every defined flag; read when needed, so tests can define their own. */

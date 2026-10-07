@@ -41,6 +41,25 @@ describe('same-origin browser session gateway', () => {
     for (const c of cookies) expect(c).toMatch(/HttpOnly; SameSite=Strict; Max-Age=\d+; Secure/);
     expect(r.headers.get('cache-control')).toContain('no-store');
   });
+  it('sets no cookies until a two-step sign-in finishes', async () => {
+    const challenge = { twoFactor: { session: 'TOTP:abc', methods: ['TOTP'], method: 'TOTP' } };
+    const first = await proxyBrowserRequest(request('auth/login', { email: 'user@example.test' }), {
+      ...opts,
+      upstream: async () => Response.json(challenge),
+    });
+    expect(await first.json()).toEqual(challenge);
+    expect(first.headers.getSetCookie()).toHaveLength(0);
+    const second = await proxyBrowserRequest(
+      request('auth/login/verify', { email: 'user@example.test', code: '123456' }),
+      {
+        ...opts,
+        upstream: async () =>
+          Response.json({ accessToken: 'a', refreshToken: 'r', expiresIn: 900, device: {} }),
+      },
+    );
+    expect(await second.json()).toEqual({ expiresIn: 900, device: {} });
+    expect(second.headers.getSetCookie()).toHaveLength(2);
+  });
   it('hides raw refresh endpoints and only renews through the cookie', async () => {
     const upstream = vi.fn();
     for (const path of ['auth/refresh', 'auth/session'])

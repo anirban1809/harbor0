@@ -683,6 +683,86 @@
 .settings-layout .card > .alert {
   margin-bottom: 16px;
 }
+.two-factor-methods {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.two-factor-methods li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.two-factor-methods li:last-child {
+  padding-bottom: 0;
+}
+.two-factor-methods li > div {
+  flex: 1;
+  min-width: 0;
+}
+.two-factor-methods strong .badge {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+.two-factor-methods p {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+.two-factor-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  color: var(--text-2);
+}
+.two-factor-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.totp-setup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.totp-qr {
+  flex: none;
+  width: 160px;
+  height: 160px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  /* Authenticator apps read dark modules on a light ground, whatever the theme. */
+  background: #ffffff;
+}
+.totp-key {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 180px;
+}
+.totp-key .field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.totp-key .field-label svg {
+  width: 14px;
+  height: 14px;
+}
+.totp-key code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
 .appearance-controls {
   display: grid;
   gap: 24px;

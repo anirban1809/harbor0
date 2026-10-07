@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { deviceProofMessage } from '@harbor/contracts';
 import { createApp } from '../src/api';
-import { DevelopmentAuth } from '../src/auth';
+import { DevelopmentAuth, type Tokens } from '../src/auth';
 import { StorageService, userPK } from '../src/domain';
 import { MemoryRepository, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
@@ -417,7 +417,10 @@ describe('signed device identity', () => {
   it('serves challenges to sessions before they are registered', async () => {
     const auth = new DevelopmentAuth();
     const { app } = createApp(service, auth);
-    const { accessToken } = await auth.login('alice@example.test', 'Development-only-123!');
+    const { accessToken } = (await auth.login(
+      'alice@example.test',
+      'Development-only-123!',
+    )) as Tokens;
     const headers = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
     const challenged = await app.request('/v1/auth/session/challenge', { method: 'POST', headers });
     expect(challenged.status).toBe(200);

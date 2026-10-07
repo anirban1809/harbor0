@@ -18,7 +18,8 @@ import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
-import type { AuthProvider } from './auth';
+import { transact } from './repository';
+import { needsSecondStep, type AuthProvider, type Tokens } from './auth';
 import type { Realtime } from './realtime';
 import { PushRegistrations } from './push';
 import { responseSchema, queryParameters } from './responses';
@@ -154,11 +155,7 @@ export function createApp(
         CodeMismatchException: ['AUTH_INVALID', 'The verification code is incorrect.', 400],
         ExpiredCodeException: ['AUTH_EXPIRED', 'The verification code expired.', 400],
         // The refresh token was already rotated (by another client or a lost response).
-        RefreshTokenReuseException: [
-          'AUTH_INVALID',
-          'Your session expired. Sign in again.',
-          401,
-        ],
+        RefreshTokenReuseException: ['AUTH_INVALID', 'Your session expired. Sign in again.', 401],
         TooManyRequestsException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         LimitExceededException: ['RATE_LIMITED', 'Please wait before trying again.', 429],
         InvalidPasswordException: ['VALIDATION_ERROR', 'Use a stronger password.', 400],
@@ -388,31 +385,75 @@ export function createApp(
     async (_, i) => auth.resend(i.email),
     true,
   );
+  const signInDevice = {
+    deviceName: z.string().max(100).default('Web browser'),
+    platform: c.platform.default('WEB'),
+  };
+  /** Registers the signed-in session as a device; every finished sign-in goes through here. */
+  const signedIn = async (
+    tokens: Tokens,
+    device: { deviceName: string; platform: z.infer<typeof c.platform> },
+  ) => {
+    const identity = await auth.identity(tokens.accessToken);
+    await service.ensureUser(identity);
+    const registered = await service.registerDevice(
+      identity.id,
+      { name: device.deviceName, platform: device.platform },
+      identity.deviceId,
+    );
+    await service.claimPending(identity.id);
+    return { ...tokens, device: registered.device };
+  };
   add(
     'post',
     '/v1/auth/login',
-    'Sign in',
+    'Sign in; accounts with two-step verification get a challenge instead of tokens',
     z
       .object({
         email,
         password: z.string().min(1).max(256),
-        deviceName: z.string().max(100).default('Web browser'),
-        platform: c.platform.default('WEB'),
+        ...signInDevice,
+        // Apps that can ask for a second-step code say so; others are told to update.
+        twoFactor: z.boolean().optional(),
       })
       .strict(),
     anyObject,
     async (_, i) => {
-      const tokens = await auth.login(i.email, i.password);
-      const identity = await auth.identity(tokens.accessToken);
-      await service.ensureUser(identity);
-      const { device } = await service.registerDevice(
-        identity.id,
-        { name: i.deviceName, platform: i.platform },
-        identity.deviceId,
+      const result = await auth.login(i.email, i.password);
+      if (!needsSecondStep(result)) return signedIn(result, i);
+      assert(
+        i.twoFactor,
+        'TWO_FACTOR_UNSUPPORTED',
+        'This account uses two-step verification, which this version of the app doesn’t support. Update the app, or sign in on the web.',
+        403,
       );
-      await service.claimPending(identity.id);
-      return { ...tokens, device };
+      return { twoFactor: result.challenge };
     },
+    true,
+  );
+  const secondStep = { email, session: z.string().min(1).max(8192), method: c.twoFactorMethod };
+  add(
+    'post',
+    '/v1/auth/login/method',
+    'Choose how to finish a two-step sign-in; an email code is sent now',
+    z.object(secondStep).strict(),
+    z.object({ twoFactor: c.twoFactorChallengeSchema }),
+    async (_, i) => ({ twoFactor: await auth.chooseSecondStep(i.email, i.session, i.method) }),
+    true,
+  );
+  add(
+    'post',
+    '/v1/auth/login/verify',
+    'Finish a two-step sign-in with the code',
+    z
+      .object({
+        ...secondStep,
+        code: z.string().regex(/^\d{6,8}$/, 'Enter the code.'),
+        ...signInDevice,
+      })
+      .strict(),
+    anyObject,
+    async (_, i) => signedIn(await auth.verifySecondStep(i.email, i.session, i.method, i.code), i),
     true,
   );
   add(
@@ -538,6 +579,94 @@ export function createApp(
       const result = await service.deleteAccount(userId(ctx), i);
       await auth.deleteUser(bearer(ctx)!);
       return result;
+    },
+  );
+  // An account has at most one second step. Turning one on is rolled out behind a flag; reading and turning off are not, so
+  // an account keeps control of what it turned on if the flag is later taken off.
+  const twoFactorPath = '/v1/users/me/two-factor';
+  const twoFactorResponse = z.object({ twoFactor: c.twoFactorStatusSchema });
+  const twoFactorStatus = async (ctx: Context<Env>) => ({
+    twoFactor: await auth.twoFactorStatus(bearer(ctx)!),
+  });
+  /** Emails the account holder whenever a second step is turned on, switched or turned off. */
+  const twoFactorChanged = async (
+    ctx: Context<Env>,
+    method: c.TwoFactorMethod,
+    enabled: boolean,
+    before: c.TwoFactorStatus,
+  ) => {
+    const other = method === 'TOTP' ? 'EMAIL' : 'TOTP';
+    const replaced = enabled && before[other === 'TOTP' ? 'totp' : 'email'] ? other : undefined;
+    const { id, email, displayName } = ctx.get('identity');
+    const at = new Date().toISOString();
+    await transact(service.repo, (tx) =>
+      service.email(tx, `two-factor-${id}-${at}-${crypto.randomUUID()}`, {
+        template: 'TWO_FACTOR_CHANGED',
+        to: email,
+        name: displayName,
+        method,
+        enabled,
+        ...(replaced ? { replaced } : {}),
+        at,
+      }),
+    );
+    await wakeWorker();
+    return twoFactorStatus(ctx);
+  };
+  add(
+    'get',
+    twoFactorPath,
+    'Which two-step verification methods are on',
+    undefined,
+    twoFactorResponse,
+    twoFactorStatus,
+  );
+  add(
+    'post',
+    `${twoFactorPath}/totp/setup`,
+    'Start adding an authenticator app',
+    undefined,
+    c.totpSetupSchema,
+    flagged(flags, 'two-factor', async (ctx) =>
+      auth.setupTotp(bearer(ctx)!, ctx.get('identity').email),
+    ),
+  );
+  add(
+    'post',
+    `${twoFactorPath}/totp/verify`,
+    'Turn on the authenticator app with its first code; it replaces email codes',
+    z.object({ code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code.') }).strict(),
+    twoFactorResponse,
+    flagged(flags, 'two-factor', async (ctx, i) => {
+      const before = await auth.twoFactorStatus(bearer(ctx)!);
+      await auth.confirmTotp(bearer(ctx)!, i.code);
+      return twoFactorChanged(ctx, 'TOTP', true, before);
+    }),
+  );
+  add(
+    'post',
+    `${twoFactorPath}/email`,
+    'Turn on email sign-in codes; they replace the authenticator app',
+    undefined,
+    twoFactorResponse,
+    flagged(flags, 'two-factor', async (ctx) => {
+      const before = await auth.twoFactorStatus(bearer(ctx)!);
+      if (before.email && !before.totp) return { twoFactor: before };
+      await auth.setTwoFactor(bearer(ctx)!, 'EMAIL', true);
+      return twoFactorChanged(ctx, 'EMAIL', true, before);
+    }),
+  );
+  add(
+    'post',
+    `${twoFactorPath}/disable`,
+    'Turn off one two-step verification method',
+    z.object({ method: c.twoFactorMethod }).strict(),
+    twoFactorResponse,
+    async (ctx, i) => {
+      const before = await auth.twoFactorStatus(bearer(ctx)!);
+      if (!before[i.method === 'TOTP' ? 'totp' : 'email']) return { twoFactor: before };
+      await auth.setTwoFactor(bearer(ctx)!, i.method, false);
+      return twoFactorChanged(ctx, i.method, false, before);
     },
   );
   const publicUser = z.object({

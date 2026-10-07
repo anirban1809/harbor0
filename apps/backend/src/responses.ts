@@ -32,7 +32,12 @@ const schemas: Record<string, z.ZodType> = {
   'post /v1/auth/signup': z.object({ verificationRequired: z.boolean() }),
   'post /v1/auth/confirm': z.object({ verified: z.boolean() }),
   'post /v1/auth/resend': z.object({ sent: z.boolean() }),
-  'post /v1/auth/login': tokens.extend({ device: c.deviceSchema }),
+  'post /v1/auth/login': z.union([
+    tokens.extend({ device: c.deviceSchema }),
+    // The account has two-step verification: finish with /v1/auth/login/verify.
+    z.object({ twoFactor: c.twoFactorChallengeSchema }),
+  ]),
+  'post /v1/auth/login/verify': tokens.extend({ device: c.deviceSchema }),
   'post /v1/auth/refresh': tokens,
   'post /v1/auth/logout': z.object({ loggedOut: z.boolean() }),
   'post /v1/auth/forgot': z.object({ sent: z.boolean() }),

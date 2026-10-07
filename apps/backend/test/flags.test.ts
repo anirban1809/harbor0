@@ -11,7 +11,7 @@ import { featureFlags, type FlagKey } from '@harbor/contracts';
 import { atLeast, bucket, decide, emptyFlag, featureFlagsFor } from '../src/flags';
 
 const ORIGIN = 'http://console.test';
-// No real flags may exist yet, so the tests define their own.
+// The tests define their own flag, so they don't depend on which real flags exist.
 const KEY = 'test-flag' as FlagKey;
 (featureFlags as Record<string, { description: string }>)[KEY] = { description: 'For tests' };
 let service: StorageService;
@@ -115,7 +115,7 @@ describe('feature flag rules', () => {
 
 describe('feature flags in the console', () => {
   it('turns a flag on for chosen accounts only, and audits the change', async () => {
-    expect(await flagsOf('alice')).toEqual({ [KEY]: false });
+    expect(await flagsOf('alice')).toMatchObject({ [KEY]: false });
     const cookie = await signIn('admin@example.test');
     const saved = await call(cookie, 'PUT', `/flags/${KEY}`, rule());
     expect(saved.status).toBe(200);
@@ -134,7 +134,7 @@ describe('feature flags in the console', () => {
       details: { key: KEY, added: ['alice@example.test'], removed: [] },
     });
     const list = await (await call(cookie, 'GET', '/flags')).json();
-    expect(list.items.map((f: { key: string }) => f.key)).toEqual([KEY]);
+    expect(list.items.map((f: { key: string }) => f.key)).toContain(KEY);
     expect(list.accounts).toBe(2);
   });
 

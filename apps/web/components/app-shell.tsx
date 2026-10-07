@@ -72,6 +72,7 @@ import type { DriveItem, Device, Transfer } from '@harbor/contracts';
 import { EmptyState, FileEmptyState, LoadError } from '../components/empty-state';
 import { AppearanceSettings } from '../components/appearance-settings';
 import { DeleteAccount } from '../components/delete-account';
+import { TwoFactorSettings } from '../components/two-factor-settings';
 import { useAccountAppearance } from '../lib/appearance';
 import {
   FileCollection,
@@ -1913,7 +1914,6 @@ function Workspace() {
           )}
           {section === 'Settings' && !searching && (
             <div className="settings-layout">
-              <AppearanceSettings />
               <Card
                 className="panel"
                 title="Your account"
@@ -1944,6 +1944,7 @@ function Workspace() {
                   Manage devices
                 </Button>
               </Card>
+              <TwoFactorSettings api={api} email={user.email} />
               <Card
                 className="panel"
                 title="Sync & backups"
@@ -1965,6 +1966,7 @@ function Workspace() {
                   })}
                 </div>
               </Card>
+              <AppearanceSettings />
               <DeleteAccount
                 email={user.email}
                 onDelete={async (email) => {

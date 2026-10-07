@@ -13,7 +13,7 @@ import {
     type UserType,
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { AccountStatus, DirectoryUser } from '../../../../packages/contracts/src/admin';
-import type { DevelopmentAuth } from '../auth';
+import { withEmailCodesLifted, type DevelopmentAuth } from '../auth';
 import { assert } from '../errors';
 
 export type DirectoryPage = { items: DirectoryUser[]; nextCursor: string | null; };
@@ -110,11 +110,10 @@ export class CognitoDirectory implements UserDirectory {
         return users[0] ? this.user(users[0]) : null;
     }
     async resetPassword(userId: string) {
-        await this.client.send(
-            new AdminResetUserPasswordCommand({
-                UserPoolId: this.poolId,
-                Username: await this.username(userId),
-            }),
+        const Username = await this.username(userId);
+        // Cognito won't email a reset code to the address that gets the account's sign-in codes.
+        await withEmailCodesLifted(this.client, this.poolId, Username, () =>
+            this.client.send(new AdminResetUserPasswordCommand({ UserPoolId: this.poolId, Username })),
         );
     }
     async resendVerification(userId: string) {
