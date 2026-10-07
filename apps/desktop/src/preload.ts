@@ -5,6 +5,8 @@ const channels = [
   'notificationSettings',
   'openAccountPage',
   'login',
+  'loginMethod',
+  'loginVerify',
   'request',
   'chooseRoot',
   'backupNow',

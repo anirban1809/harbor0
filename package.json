@@ -45,6 +45,7 @@
     "check": "npm run lint && npm run typecheck && npm test",
     "test:ui": "tsx scripts/ui-redesign-check.ts",
     "test:previews": "npm run build -w @harbor/desktop && tsx scripts/preview-check.ts",
+    "test:desktop-two-factor": "npm run build -w @harbor/desktop && tsx scripts/desktop-two-factor-check.ts",
     "test:web-styles": "tsx scripts/web-styles-check.ts",
     "cloud:deploy-web:assets": "tsx --env-file=.env.cloud scripts/deploy-web.ts --assets-only",
     "cloud:deploy-admin": "tsx --env-file=.env.cloud scripts/deploy-admin.ts",

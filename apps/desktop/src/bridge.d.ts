@@ -1,4 +1,9 @@
 export {};
+/** A two-step sign-in either moves on or fails with a message; a wrong code returns its session. */
+type TwoFactorStep = {
+  twoFactor?: import('@harbor/contracts').TwoFactorChallenge;
+  failed?: { code?: string; message: string; session?: string };
+};
 declare global {
   interface Window {
     harbor: {
@@ -7,7 +12,22 @@ declare global {
       testNotification: () => Promise<{ shown: boolean }>;
       notificationSettings: () => Promise<void>;
       openAccountPage: (input: { page: 'signup' | 'forgot' }) => Promise<void>;
-      login: (input: { email: string; password: string }) => Promise<any>;
+      /** Signs in, or returns the account's two-step challenge to finish with loginVerify. */
+      login: (input: {
+        email: string;
+        password: string;
+      }) => Promise<{ twoFactor?: import('@harbor/contracts').TwoFactorChallenge }>;
+      loginMethod: (input: {
+        email: string;
+        session: string;
+        method: import('@harbor/contracts').TwoFactorMethod;
+      }) => Promise<TwoFactorStep>;
+      loginVerify: (input: {
+        email: string;
+        session: string;
+        method: import('@harbor/contracts').TwoFactorMethod;
+        code: string;
+      }) => Promise<TwoFactorStep>;
       request: (input: { path: string; method?: string; body?: unknown }) => Promise<any>;
       disconnectBackup: (input: { id: string }) => Promise<{ disconnected: boolean }>;
       backupNow: (input: { id: string }) => Promise<{ queued: boolean; changes: number }>;

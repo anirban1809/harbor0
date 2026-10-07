@@ -43,7 +43,8 @@ import { AppearanceSettings } from '../../web/components/appearance-settings';
 import { useAccountAppearance } from '../../web/lib/appearance';
 import { ApiClient, type Transport } from '@harbor/api-client';
 import { ThemeToggle } from '../../web/components/theme-toggle';
-import type { Device, StorageUsage, SyncFolderItem } from '@harbor/contracts';
+import type { Device, StorageUsage, SyncFolderItem, TwoFactorChallenge } from '@harbor/contracts';
+import { TwoFactorSignIn } from './two-factor-sign-in';
 import { StoragePanel } from './overview';
 import { BackupFolderPanel, type BackupDesktop } from '../../web/components/backup-folder-panel';
 import {
@@ -145,6 +146,11 @@ function App() {
   const [trail, setTrail] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Set while an account with two-step verification is asked for its code.
+  const [twoFactor, setTwoFactor] = useState<{
+    credentials: { email: string; password: string };
+    challenge: TwoFactorChallenge;
+  }>();
   const [toast, setToast] = useState('');
   useEffect(() => {
     if (!toast) return;
@@ -575,98 +581,117 @@ function App() {
           </span>
         </section>
         <section className="auth-form">
-          <div>
-            <h2>Sign in to harbor0</h2>
-            <p className="muted auth-intro">Sign in to access your files on this computer.</p>
-            {!status.configured && (
-              <Alert tone="error" role="none">
-                {status.configurationError ?? 'harbor0’s server connection is not configured.'} Add
-                the connection settings to apps/desktop/.env.local, then fully quit and restart
-                harbor0.
-              </Alert>
-            )}
-            {status.signedOutReason && !error && <Alert>{status.signedOutReason}</Alert>}
-            {error && <Alert tone="error">{error}</Alert>}
-            <form
-              className="form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (busy || !status.configured) return;
-                const form = e.currentTarget;
-                const data = new FormData(form);
-                const credentials = {
-                  email: String(data.get('email') ?? '').trim(),
-                  password: String(data.get('password') ?? ''),
-                };
-                void act(async () => {
-                  await bridge.login(credentials);
-                  form.reset();
-                });
-              }}
-            >
-              <Field label="Email">
-                <Input
-                  size="lg"
-                  name="email"
-                  defaultValue={status.development ? 'alice@example.test' : ''}
-                  type="email"
-                  autoComplete="username"
-                  disabled={busy}
-                  required
-                />
-              </Field>
-              <Field label="Password">
-                <PasswordInput
-                  size="lg"
-                  name="password"
-                  aria-label="Password"
-                  autoComplete="current-password"
-                  maxLength={256}
-                  disabled={busy}
-                  required
-                />
-              </Field>
-              {status.accountLinks && (
-                <Button
-                  type="button"
-                  variant="link"
-                  className="auth-forgot"
-                  onClick={() => void openAccountPage('forgot')}
-                >
-                  Forgot password?
-                  <ExternalLink aria-hidden="true" />
-                </Button>
+          {twoFactor ? (
+            <div>
+              <TwoFactorSignIn
+                credentials={twoFactor.credentials}
+                challenge={twoFactor.challenge}
+                onSignedIn={async () => {
+                  setTwoFactor(undefined);
+                  await load();
+                }}
+                onCancel={(message) => {
+                  setTwoFactor(undefined);
+                  setError(message ?? '');
+                }}
+              />
+            </div>
+          ) : (
+            <div>
+              <h2>Sign in to harbor0</h2>
+              <p className="muted auth-intro">Sign in to access your files on this computer.</p>
+              {!status.configured && (
+                <Alert tone="error" role="none">
+                  {status.configurationError ?? 'harbor0’s server connection is not configured.'}{' '}
+                  Add the connection settings to apps/desktop/.env.local, then fully quit and
+                  restart harbor0.
+                </Alert>
               )}
-              <Button type="submit" size="lg" block disabled={busy || !status.configured}>
-                {busy
-                  ? 'Signing in…'
-                  : status.development
-                    ? 'Sign in to local development'
-                    : 'Sign in'}
-              </Button>
-            </form>
-            {status.accountLinks ? (
-              <div className="auth-switch">
-                New to harbor0?{' '}
-                <Button variant="link" onClick={() => void openAccountPage('signup')}>
-                  Create an account
-                  <ExternalLink aria-hidden="true" />
+              {status.signedOutReason && !error && <Alert>{status.signedOutReason}</Alert>}
+              {error && <Alert tone="error">{error}</Alert>}
+              <form
+                className="form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (busy || !status.configured) return;
+                  const form = e.currentTarget;
+                  const data = new FormData(form);
+                  const credentials = {
+                    email: String(data.get('email') ?? '').trim(),
+                    password: String(data.get('password') ?? ''),
+                  };
+                  void act(async () => {
+                    const result = await bridge.login(credentials);
+                    if (result.twoFactor)
+                      setTwoFactor({ credentials, challenge: result.twoFactor });
+                    form.reset();
+                  });
+                }}
+              >
+                <Field label="Email">
+                  <Input
+                    size="lg"
+                    name="email"
+                    defaultValue={status.development ? 'alice@example.test' : ''}
+                    type="email"
+                    autoComplete="username"
+                    disabled={busy}
+                    required
+                  />
+                </Field>
+                <Field label="Password">
+                  <PasswordInput
+                    size="lg"
+                    name="password"
+                    aria-label="Password"
+                    autoComplete="current-password"
+                    maxLength={256}
+                    disabled={busy}
+                    required
+                  />
+                </Field>
+                {status.accountLinks && (
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="auth-forgot"
+                    onClick={() => void openAccountPage('forgot')}
+                  >
+                    Forgot password?
+                    <ExternalLink aria-hidden="true" />
+                  </Button>
+                )}
+                <Button type="submit" size="lg" block disabled={busy || !status.configured}>
+                  {busy
+                    ? 'Signing in…'
+                    : status.development
+                      ? 'Sign in to local development'
+                      : 'Sign in'}
                 </Button>
-              </div>
-            ) : (
+              </form>
+              {status.accountLinks ? (
+                <div className="auth-switch">
+                  New to harbor0?{' '}
+                  <Button variant="link" onClick={() => void openAccountPage('signup')}>
+                    Create an account
+                    <ExternalLink aria-hidden="true" />
+                  </Button>
+                </div>
+              ) : (
+                <p className="auth-session-note">
+                  New to harbor0 or forgot your password? Create an account or reset your password
+                  in the harbor0 web app, then sign in here.
+                </p>
+              )}
               <p className="auth-session-note">
-                New to harbor0 or forgot your password? Create an account or reset your password in
-                the harbor0 web app, then sign in here.
+                <ShieldCheck size={16} />
+                <span>
+                  Stay signed in for up to 30 days. Your session is protected by this computer’s
+                  keychain.
+                </span>
               </p>
-            )}
-            <p className="auth-session-note">
-              <ShieldCheck size={16} />
-              <span>
-                Stay signed in for up to 30 days. Your session is protected by this computer’s
-                keychain.
-              </span>
-            </p>
-          </div>
+            </div>
+          )}
         </section>
       </main>
     );

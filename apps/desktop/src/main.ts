@@ -282,7 +282,7 @@ else {
   });
 }
 // The login page uses these, so they work without an account.
-const signedOutChannels = new Set(['status', 'openAccountPage']);
+const signedOutChannels = new Set(['status', 'openAccountPage', 'loginMethod']);
 function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<unknown>) {
   ipcMain.handle('harbor:' + name, async (event, input) => {
     if (
@@ -290,14 +290,14 @@ function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<u
       event.senderFrame?.url !== pathToFileURL(rendererPath).href
     )
       throw new Error('Untrusted IPC sender.');
-    const authentication = name === 'login' || name === 'logout';
+    const authentication = name === 'login' || name === 'loginVerify' || name === 'logout';
     let operation: Promise<unknown> | undefined;
     let ownsTransition = false;
     try {
       const parsed = schema.parse(input);
       if (authentication) {
         if (authTransition) throw new Error('An account change is already in progress.');
-        if (name === 'login' && accountReady)
+        if ((name === 'login' || name === 'loginVerify') && accountReady)
           throw new Error('Sign out before using another account.');
         authTransition = true;
         ownsTransition = true;
@@ -493,35 +493,93 @@ app
         accountId: accountReady ? journal.get('accountId') : null,
       };
     });
+    const signInDevice = () => ({
+      deviceName: os.hostname(),
+      platform:
+        process.platform === 'darwin'
+          ? 'MACOS'
+          : process.platform === 'win32'
+            ? 'WINDOWS'
+            : 'LINUX',
+    });
+    const authCall = async (path: string, body: Record<string, unknown>) => {
+      if (!configured) throw new Error(configurationError);
+      const response = await fetch(apiUrl + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { response, data: (await response.json()) as any };
+    };
+    /** Stores the tokens of a finished sign-in and connects this computer's account. */
+    const finishSignIn = async (data: any) => {
+      await session.signIn(data);
+      try {
+        return await connected();
+      } catch (error) {
+        await session.invalidate();
+        throw error;
+      }
+    };
+    const email = z.email().max(254);
+    const twoFactorMethod = z.enum(['TOTP', 'EMAIL']);
     ipc(
       'login',
-      z.object({ email: z.email(), password: z.string().min(1).max(256) }).strict(),
+      z.object({ email, password: z.string().min(1).max(256) }).strict(),
       async (input) => {
-        if (!configured) throw new Error(configurationError);
-        const response = await fetch(apiUrl + '/v1/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...input,
-            deviceName: os.hostname(),
-            platform:
-              process.platform === 'darwin'
-                ? 'MACOS'
-                : process.platform === 'win32'
-                  ? 'WINDOWS'
-                  : 'LINUX',
-          }),
+        // Accounts with two-step verification answer with a challenge instead of tokens; the
+        // renderer asks for the code and finishes with loginVerify.
+        const { response, data } = await authCall('/v1/auth/login', {
+          ...input,
+          ...signInDevice(),
+          twoFactor: true,
         });
-        const data = (await response.json()) as any;
         if (!response.ok)
           throw new Error(data.error?.message ?? 'Could not sign in. Please try again.');
-        await session.signIn(data);
-        try {
-          return await connected();
-        } catch (error) {
-          await session.invalidate();
-          throw error;
-        }
+        if (data.twoFactor) return { twoFactor: data.twoFactor };
+        return finishSignIn(data);
+      },
+    );
+    ipc(
+      'loginMethod',
+      z.object({ email, session: z.string().min(1).max(8192), method: twoFactorMethod }).strict(),
+      async (input) => {
+        const { response, data } = await authCall('/v1/auth/login/method', input);
+        if (!response.ok)
+          return {
+            failed: {
+              code: data.error?.code,
+              message: data.error?.message ?? 'Could not send a code.',
+            },
+          };
+        return { twoFactor: data.twoFactor };
+      },
+    );
+    ipc(
+      'loginVerify',
+      z
+        .object({
+          email,
+          session: z.string().min(1).max(8192),
+          method: twoFactorMethod,
+          code: z.string().regex(/^\d{6,8}$/),
+        })
+        .strict(),
+      async (input) => {
+        const { response, data } = await authCall('/v1/auth/login/verify', {
+          ...input,
+          ...signInDevice(),
+        });
+        // A wrong code keeps the sign-in going; the renderer needs the session it hands back.
+        if (!response.ok)
+          return {
+            failed: {
+              code: data.error?.code,
+              message: data.error?.message ?? 'Could not sign in. Please try again.',
+              session: data.error?.details?.session,
+            },
+          };
+        return finishSignIn(data);
       },
     );
     ipc('request', rendererRequestSchema, async (input) =>
