@@ -13,6 +13,7 @@ import { StorageService } from './domain';
 import { createAdminApp } from './admin/api';
 import { DevelopmentDirectory } from './admin/directory';
 import { DevelopmentStaffAuth } from './admin/staff-auth';
+import { EmailLinks } from './email-preferences';
 if (process.env.NODE_ENV === 'production')
   throw new Error('The local server must not run in production. Use the Lambda entrypoint.');
 // DynamoDB Local has no stream trigger; report committed keys the way the stream would.
@@ -100,6 +101,10 @@ if (auth instanceof DevelopmentAuth)
       /* Deleted development accounts and revoked devices stay that way. */
     }
   }
+const emailLinks = new EmailLinks(
+  'local-development-email-link-secret-not-for-production',
+  'http://localhost:3000',
+);
 const { app } = createApp(
   service,
   auth,
@@ -110,6 +115,7 @@ const { app } = createApp(
   realtime,
   // Local sign-up is open unless HARBOR_INVITE_ONLY=true, so tests can create accounts freely.
   new Beta(repo, process.env.HARBOR_INVITE_ONLY === 'true'),
+  emailLinks,
 );
 serve({ fetch: app.fetch, hostname: '127.0.0.1', port: Number(process.env.PORT ?? 8787) }, () =>
   console.log('harbor0 API listening at http://127.0.0.1:8787'),
@@ -122,9 +128,15 @@ if (auth instanceof DevelopmentAuth) {
     new DevelopmentDirectory(auth),
     new DevelopmentStaffAuth(),
     {
-      origins: ['http://localhost:3300', 'http://127.0.0.1:3300'],
+      origins: [
+        'http://localhost:3300',
+        'http://127.0.0.1:3300',
+        // A second console dev server, e.g. on another port.
+        ...(process.env.ADMIN_DEV_ORIGIN ? [process.env.ADMIN_DEV_ORIGIN] : []),
+      ],
       secureCookies: false,
       inviteRequired: process.env.HARBOR_INVITE_ONLY === 'true',
+      webOrigin: 'http://localhost:3000',
     },
   );
   serve({ fetch: adminApp.fetch, hostname: '127.0.0.1', port: adminPort }, () =>
@@ -146,6 +158,7 @@ const timer = setInterval(
             message: 'Local email is not delivered.',
           }),
         ),
+        { emailLinks, ratePerSecond: 50 },
       )
       .catch(() => console.error('Local job runner failed')),
   60_000,

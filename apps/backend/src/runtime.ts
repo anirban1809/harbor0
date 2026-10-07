@@ -21,6 +21,7 @@ import { createAdminApp } from './admin/api';
 import { CognitoDirectory } from './admin/directory';
 import { CognitoStaffAuth } from './admin/staff-auth';
 import type { ObjectStorage } from './storage';
+import { EmailLinks, EmailSuppressions, recordMailEvent, type SesEventDetail } from './email-preferences';
 const configSchema = z.object({
   TABLE_NAME: z.string().min(1),
   COGNITO_USER_POOL_ID: z.string().min(1),
@@ -32,13 +33,22 @@ const configSchema = z.object({
   EMAIL_FROM: z.union([z.email(), z.literal('')]).default(''),
   /** SES configuration set that reports delivery events for every message. */
   MAIL_CONFIGURATION_SET: z.string().optional(),
+  /** Secrets Manager secret (a plain string) that signs unsubscribe links. */
+  EMAIL_LINK_SECRET_ARN: z.string().min(1),
+  /** Sender for console campaigns, kept apart from account notices; empty refuses to send them. */
+  CAMPAIGN_EMAIL_FROM: z.union([z.email(), z.literal('')]).default(''),
+  /** Campaign emails a second; SES accounts allow 14 by default and notices share the rate. */
+  CAMPAIGN_SEND_RATE: z.coerce.number().int().min(1).max(100).default(10),
 });
 let instance: ReturnType<typeof initialize> | undefined;
 async function initialize() {
   const c = configSchema.parse(process.env);
-  const secret = await new SecretsManagerClient({}).send(
-    new GetSecretValueCommand({ SecretId: c.R2_SECRET_ARN }),
-  );
+  const secrets = new SecretsManagerClient({});
+  const [secret, linkSecret] = await Promise.all([
+    secrets.send(new GetSecretValueCommand({ SecretId: c.R2_SECRET_ARN })),
+    secrets.send(new GetSecretValueCommand({ SecretId: c.EMAIL_LINK_SECRET_ARN })),
+  ]);
+  const emailLinks = new EmailLinks(z.string().min(32).parse(linkSecret.SecretString), c.WEB_ORIGIN);
   const credentials = z
     .object({ accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1) })
     .parse(JSON.parse(secret.SecretString!));
@@ -66,6 +76,7 @@ async function initialize() {
     },
     process.env.REALTIME_URL ? new Realtime(repo, process.env.REALTIME_URL) : undefined,
     new Beta(repo, BETA),
+    emailLinks,
   );
   app.all('/api/*', (ctx) =>
     proxyBrowserRequest(ctx.req.raw, {
@@ -75,21 +86,29 @@ async function initialize() {
       upstream: (request) => app.fetch(request),
     }),
   );
+  const ses = new SESv2Client({});
   return {
     app,
     service,
+    emailLinks,
+    campaignRate: c.CAMPAIGN_SEND_RATE,
     sendEmail: c.EMAIL_FROM
       ? async (email: Email) => {
+          const from = email.template === 'CAMPAIGN' ? c.CAMPAIGN_EMAIL_FROM : c.EMAIL_FROM;
+          if (!from) throw new Error('The campaign sender is not configured.');
           const message = composeEmail(email, c.WEB_ORIGIN);
-          await new SESv2Client({}).send(
+          await ses.send(
             new SendEmailCommand({
-              FromEmailAddress: `harbor0 <${c.EMAIL_FROM}>`,
+              FromEmailAddress: `harbor0 <${from}>`,
               ConfigurationSetName: c.MAIL_CONFIGURATION_SET,
               Destination: { ToAddresses: [email.to] },
               Content: {
                 Simple: {
                   Subject: { Data: message.subject },
                   Body: { Html: { Data: message.html }, Text: { Data: message.text } },
+                  Headers: message.headers.length
+                    ? message.headers.map((h) => ({ Name: h.name, Value: h.value }))
+                    : undefined,
                 },
               },
             }),
@@ -188,6 +207,7 @@ export function adminRuntime() {
       STAFF_USER_POOL_ID: z.string().min(1),
       STAFF_CLIENT_ID: z.string().min(1),
       ADMIN_ORIGIN: z.union([z.url(), z.literal('')]).default(''),
+      WEB_ORIGIN: z.union([z.url(), z.literal('')]).default(''),
     })
     .parse(process.env);
   const noStorage = new Proxy({} as ObjectStorage, {
@@ -198,7 +218,21 @@ export function adminRuntime() {
     new StorageService(new DynamoRepository(c.TABLE_NAME), noStorage),
     new CognitoDirectory(c.COGNITO_USER_POOL_ID, c.COGNITO_CLIENT_ID),
     new CognitoStaffAuth(c.STAFF_USER_POOL_ID, c.STAFF_CLIENT_ID),
-    { origins: c.ADMIN_ORIGIN ? [c.ADMIN_ORIGIN] : [], secureCookies: true, inviteRequired: BETA },
+    {
+      origins: c.ADMIN_ORIGIN ? [c.ADMIN_ORIGIN] : [],
+      secureCookies: true,
+      inviteRequired: BETA,
+      webOrigin: c.WEB_ORIGIN,
+    },
   ).app;
   return adminInstance;
+}
+
+let suppressions: EmailSuppressions | undefined;
+/** SES bounce and complaint events, delivered by EventBridge; needs only the table. */
+export function mailEventRuntime() {
+  suppressions ??= new EmailSuppressions(
+    new DynamoRepository(z.object({ TABLE_NAME: z.string().min(1) }).parse(process.env).TABLE_NAME),
+  );
+  return (detail: SesEventDetail) => recordMailEvent(suppressions!, detail);
 }

@@ -368,7 +368,8 @@ textarea.input {
     border-color var(--ease),
     background-color var(--ease);
 }
-.choice > .radio {
+.choice > .radio,
+.choice > .checkbox {
   margin-top: 2px;
 }
 .choice > span {

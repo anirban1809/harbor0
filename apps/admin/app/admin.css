@@ -532,3 +532,110 @@ body {
 .admin-page-header .admin-flag-key {
   font-size: inherit;
 }
+
+/* Email campaigns --------------------------------------------------------- */
+.admin-subnav {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-subnav a {
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-decoration: none;
+}
+.admin-subnav a:hover {
+  color: var(--text);
+}
+.admin-subnav a[aria-current='page'] {
+  border-bottom-color: var(--primary);
+  color: var(--text);
+}
+/* Editor on the left, the email it makes on the right. */
+.admin-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.admin-stack,
+.admin-form {
+  display: grid;
+  gap: 16px;
+}
+.admin-form {
+  margin-bottom: 16px;
+}
+.admin-markdown {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+.admin-form .field-hint code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.admin-preview {
+  display: grid;
+  gap: 12px;
+}
+.admin-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.admin-preview-subject {
+  display: grid;
+  gap: 2px;
+  font-size: var(--text-sm);
+}
+/* The email is rendered by the backend in a sandbox with no scripts. */
+.admin-preview-frame {
+  justify-self: center;
+  width: 100%;
+  height: 640px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f4f5f7;
+}
+.admin-preview-frame[data-width='mobile'] {
+  width: 375px;
+  max-width: 100%;
+}
+.admin-preview-text {
+  max-height: 640px;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
+.admin-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.admin-count {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.admin-campaign-progress {
+  width: 100%;
+}
+@media (max-width: 1100px) {
+  .admin-composer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

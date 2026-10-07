@@ -634,3 +634,43 @@
     margin-bottom: 10px;
   }
 }
+
+/* Standalone pages opened from email links, outside the signed-in app. */
+.standalone-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  min-height: 100dvh;
+  padding: clamp(32px, 10vh, 96px) 16px 32px;
+  background: var(--sidebar);
+}
+.standalone-card {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  max-width: 440px;
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+.standalone-card h1 {
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+.standalone-card .muted strong {
+  font-weight: 500;
+  color: var(--text);
+}
+.standalone-card a {
+  color: var(--accent-text);
+}
+.standalone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 6px;
+  font-size: var(--text-sm);
+}

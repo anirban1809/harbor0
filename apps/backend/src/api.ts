@@ -26,6 +26,12 @@ import { responseSchema, queryParameters } from './responses';
 import { storageAudit } from './storage-audit';
 import { Beta } from './beta';
 import { featureFlagsFor, recordFlagUsage, type FeatureFlags, type UsageInput } from './flags';
+import {
+  emailSubscription,
+  setProductUpdates,
+  unsubscribeUser,
+  type EmailLinks,
+} from './email-preferences';
 type Env = {
   Variables: {
     identity: c.Identity;
@@ -87,6 +93,8 @@ export function createApp(
   wakeArchives?: () => Promise<void>,
   realtime?: Pick<Realtime, 'ticket'>,
   beta = new Beta(service.repo, false),
+  /** Signs and checks unsubscribe links; without it every link is refused. */
+  emailLinks?: EmailLinks,
 ) {
   // A scheduled invocation also resumes background work if an immediate wake-up fails.
   const wakeWorker = async () => {
@@ -592,10 +600,49 @@ export function createApp(
         username: c.username.optional(),
         displayName: z.string().min(1).max(100).optional(),
         appearance: c.appearanceSchema.optional(),
+        emailPreferences: c.emailPreferencesSchema.optional(),
       })
       .strict(),
     z.object({ user: c.userSchema }),
     async (ctx, i) => service.updateProfile(userId(ctx), i),
+  );
+  // Unsubscribe links work without signing in: the signed token in `t` names the account.
+  // The POST takes no JSON body, as mail apps' one-click requests send a form body (RFC 8058).
+  const linkUser = async (ctx: Context<Env>) => {
+    const token = ctx.req.query('t');
+    await rateLimit(`email-link:${token ?? ''}`, 30);
+    return unsubscribeUser(emailLinks, token);
+  };
+  add(
+    'get',
+    '/v1/email/unsubscribe',
+    'Which optional emails the account behind an unsubscribe link gets',
+    undefined,
+    z.object({ subscription: c.emailSubscriptionSchema }),
+    async (ctx) => ({ subscription: await emailSubscription(service, await linkUser(ctx)) }),
+    true,
+  );
+  add(
+    'post',
+    '/v1/email/unsubscribe',
+    'Stop product update emails for the account behind an unsubscribe link',
+    undefined,
+    z.object({ subscription: c.emailSubscriptionSchema }),
+    async (ctx) => ({
+      subscription: await setProductUpdates(service, await linkUser(ctx), false),
+    }),
+    true,
+  );
+  add(
+    'post',
+    '/v1/email/resubscribe',
+    'Turn product update emails back on from an unsubscribe link',
+    undefined,
+    z.object({ subscription: c.emailSubscriptionSchema }),
+    async (ctx) => ({
+      subscription: await setProductUpdates(service, await linkUser(ctx), true),
+    }),
+    true,
   );
   add(
     'post',
@@ -1643,7 +1690,12 @@ export function createApp(
         summary: d.summary,
         operationId: d.method + '_' + d.path.replace(/[^a-zA-Z0-9]/g, '_'),
         security: d.public ? [] : [{ bearerAuth: [] }],
-        parameters: [...parameters, ...(d.method === 'get' ? queryParameters(d.path) : [])],
+        parameters: [
+          ...parameters,
+          ...(d.method === 'get' || d.path.startsWith('/v1/email/')
+            ? queryParameters(d.path)
+            : []),
+        ],
         ...(d.body
           ? {
               requestBody: {

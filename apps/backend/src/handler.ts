@@ -1,6 +1,7 @@
 import { handle, type LambdaEvent, type LambdaContext } from 'hono/aws-lambda';
 import type { DynamoDBStreamEvent } from 'aws-lambda';
-import { runtime, realtimeRuntime, adminRuntime } from './runtime';
+import { runtime, realtimeRuntime, adminRuntime, mailEventRuntime } from './runtime';
+import type { SesEventDetail } from './email-preferences';
 export async function handler(event: LambdaEvent, context: LambdaContext) {
   return handle((await runtime()).app)(event, context);
 }
@@ -9,7 +10,10 @@ export async function admin(event: LambdaEvent, context: LambdaContext) {
 }
 export async function jobs() {
   const r = await runtime();
-  return r.service.runJobs(r.sendEmail);
+  return r.service.runJobs(r.sendEmail, {
+    emailLinks: r.emailLinks,
+    ratePerSecond: r.campaignRate,
+  });
 }
 type SocketEvent = {
   requestContext: { routeKey: string; connectionId: string };
@@ -36,6 +40,11 @@ export async function realtimeStream(event: DynamoDBStreamEvent) {
     return key?.pk?.S && key.sk?.S ? [{ pk: key.pk.S, sk: key.sk.S }] : [];
   });
   if (keys.length) await realtimeRuntime().publish(keys);
+}
+
+// Hard bounces and spam complaints keep the address out of later optional email.
+export async function mailEvent(event: { detail?: SesEventDetail }) {
+  if (event.detail) await mailEventRuntime()(event.detail);
 }
 
 export { preSignup, postConfirmation } from './registration';

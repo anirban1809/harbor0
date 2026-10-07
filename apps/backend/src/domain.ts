@@ -10,6 +10,7 @@ import {
     filename,
     type User,
     type AppearancePreference,
+    type EmailPreferences,
     type Identity,
     type DriveItem,
     type FileVersion,
@@ -41,6 +42,7 @@ import type { StaffDeletionReason } from '../../../packages/contracts/src/admin'
 import { DeletionWorkflows } from './deletion';
 import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
 import { TransferWorkflows, type StagedItem, type Save } from './workflows';
+import { campaignStep, type CampaignSendOptions } from './campaigns';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -186,7 +188,8 @@ export type Job = {
     | 'TRASH_MEASURE'
     | 'TRASH_EMPTY'
     | 'ACCOUNT_DELETE'
-    | 'BACKUP_CHECK';
+    | 'BACKUP_CHECK'
+    | 'CAMPAIGN_SEND';
     userId?: string;
     entityId?: string;
     key?: string;
@@ -2772,6 +2775,7 @@ export class StorageService {
             username?: string;
             displayName?: string;
             appearance?: AppearancePreference;
+            emailPreferences?: EmailPreferences;
         },
     ) {
         return this.operation(
@@ -2803,6 +2807,7 @@ export class StorageService {
                 }
                 if (input.displayName) user.displayName = input.displayName;
                 if (input.appearance) user.appearance = input.appearance;
+                if (input.emailPreferences) user.emailPreferences = input.emailPreferences;
                 user.updatedAt = now();
                 await tx.put(userPK(userId), 'PROFILE', user);
                 await this.record(tx, userId, 'PROFILE_UPDATED', userId);
@@ -2939,7 +2944,10 @@ export class StorageService {
             ),
         };
     }
-    async runJobs(sendEmail?: (email: Email) => Promise<void>) {
+    async runJobs(
+        sendEmail?: (email: Email) => Promise<void>,
+        campaigns: Omit<CampaignSendOptions, 'sendEmail'> = {},
+    ) {
         const deadline = Date.now() + 210_000;
         const page = await this.repo.due(now());
         for (const row of page.rows) {
@@ -2981,6 +2989,11 @@ export class StorageService {
                     );
                 if (job.type === 'ACCOUNT_DELETE') complete = await this.purgeAccount(job.userId!);
                 if (job.type === 'BACKUP_CHECK') await this.backupCheck(job);
+                if (job.type === 'CAMPAIGN_SEND')
+                    complete = await campaignStep(this, job.entityId!, Math.min(deadline, Date.now() + 180_000), {
+                        ...campaigns,
+                        sendEmail,
+                    });
                 if (job.type === 'UPLOAD_VERIFY')
                     complete = await this.verifyUpload(job, Math.min(deadline, Date.now() + 120_000));
                 if (job.type === 'TRANSFER_BUILD') complete = await workflows.build(job.entityId!);

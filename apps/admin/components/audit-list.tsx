@@ -30,6 +30,19 @@ function detail(entry: AuditEntry) {
   }
   if (entry.action === 'FLAG_USER_ADDED' || entry.action === 'FLAG_USER_REMOVED')
     return String(d.key);
+  if (entry.action.startsWith('EMAIL_GROUP_MEMBERS_')) {
+    const n = Number(d.added ?? d.removed);
+    const emails = d.emails as string[] | undefined;
+    return `${d.name}: ${n} account${n === 1 ? '' : 's'}${emails?.length ? ` (${emails.join(', ')})` : ''}`;
+  }
+  if (entry.action === 'CAMPAIGN_SCHEDULED' || entry.action === 'CAMPAIGN_SENT_NOW')
+    return `${d.name} · ${d.eligible} recipient${d.eligible === 1 ? '' : 's'}${
+      entry.action === 'CAMPAIGN_SCHEDULED' ? ` · ${date(d.scheduledAt as string)}` : ''
+    }`;
+  if (entry.action === 'CAMPAIGN_STOPPED') return `${d.name} · ${d.sent} sent, ${d.pending} not sent`;
+  if (entry.action === 'EMAIL_TEST_SENT') return `${d.subject} → ${d.to}`;
+  if (entry.action.startsWith('EMAIL_') || entry.action.startsWith('CAMPAIGN_'))
+    return d.name ? String(d.name) : null;
   return null;
 }
 

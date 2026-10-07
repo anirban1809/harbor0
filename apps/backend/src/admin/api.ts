@@ -34,6 +34,37 @@ import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
 import { AdminFlags } from './flags';
+import { AdminCampaigns } from './campaigns';
+import {
+    audienceCountBody,
+    audienceCountSchema,
+    campaignBody,
+    campaignDetailSchema,
+    campaignInput,
+    campaignListSchema,
+    campaignReasonBody,
+    campaignSchema,
+    campaignScheduleBody,
+    emailGroupAddBody,
+    emailGroupAddResultSchema,
+    emailGroupBody,
+    emailGroupDetailSchema,
+    emailGroupInput,
+    emailGroupListSchema,
+    emailGroupMemberPageSchema,
+    emailGroupRemoveBody,
+    emailGroupSchema,
+    emailPreviewBody,
+    emailPreviewSchema,
+    emailTemplateBody,
+    emailTemplateDetailSchema,
+    emailTemplateInput,
+    emailTemplateListSchema,
+    emailTemplateSchema,
+    emailTestResultSchema,
+    recipientPageSchema,
+    recipientStatus,
+} from '../../../../packages/contracts/src/campaigns';
 import { Beta } from '../beta';
 import type { StaffAuth, StaffAuthStep, StaffTokens } from './staff-auth';
 
@@ -71,6 +102,8 @@ export type AdminAppOptions = {
     secureCookies: boolean;
     /** Whether customer sign-up is invite-only (the beta). */
     inviteRequired?: boolean;
+    /** The customer web app, for links into it. */
+    webOrigin?: string;
 };
 
 /**
@@ -86,6 +119,7 @@ export function createAdminApp(
     const admin = new AdminService(service, directory);
     const beta = new Beta(service.repo, options.inviteRequired ?? false);
     const flags = new AdminFlags(admin);
+    const campaigns = new AdminCampaigns(admin, options.webOrigin ?? '');
     const app = new Hono<Env>();
     const cookie = (ctx: Context<Env>, name: string, value: string, maxAge: number) =>
         setCookie(ctx, name, value, {
@@ -284,11 +318,12 @@ export function createAdminApp(
         return ctx.json(adminUserPageSchema.parse(page));
     });
     v1.get('/users/:id', guard('read'), async (ctx) => {
-        const [detail, userFlags] = await Promise.all([
+        const [detail, userFlags, email] = await Promise.all([
             admin.detail(userId(ctx)),
             flags.forUser(userId(ctx)),
+            campaigns.forUser(userId(ctx)),
         ]);
-        return ctx.json(adminUserDetailSchema.parse({ ...detail, flags: userFlags }));
+        return ctx.json(adminUserDetailSchema.parse({ ...detail, flags: userFlags, email }));
     });
     v1.put('/users/:id/quota', guard('quota'), async (ctx) => {
         const i = await body(ctx, adminQuotaBody);
@@ -376,6 +411,125 @@ export function createAdminApp(
         const { reason } = await body(ctx, adminReasonBody);
         const flag = await flags.removeUser(ctx.get('staff'), flagKey(ctx), userId(ctx), reason);
         return ctx.json(adminFlagSchema.parse(flag));
+    });
+    // Email campaigns: templates, groups of accounts, and scheduled sends.
+    const itemId = (ctx: Context<Env>) => c.id.parse(ctx.req.param('id'));
+    const deleted = z.object({ deleted: z.boolean() });
+    v1.get('/email/templates', guard('read'), async (ctx) =>
+        ctx.json(emailTemplateListSchema.parse(await campaigns.templates())),
+    );
+    v1.post('/email/templates', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailTemplateInput);
+        return ctx.json(emailTemplateSchema.parse(await campaigns.createTemplate(ctx.get('staff'), i)));
+    });
+    v1.get('/email/templates/:id', guard('read'), async (ctx) =>
+        ctx.json(emailTemplateDetailSchema.parse(await campaigns.template(itemId(ctx)))),
+    );
+    v1.put('/email/templates/:id', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailTemplateBody);
+        return ctx.json(
+            emailTemplateSchema.parse(await campaigns.updateTemplate(ctx.get('staff'), itemId(ctx), i)),
+        );
+    });
+    v1.delete('/email/templates/:id', guard('campaigns'), async (ctx) =>
+        ctx.json(deleted.parse(await campaigns.deleteTemplate(ctx.get('staff'), itemId(ctx)))),
+    );
+    v1.post('/email/preview', guard('read'), async (ctx) => {
+        const { sampleUserId, ...content } = await body(ctx, emailPreviewBody);
+        return ctx.json(emailPreviewSchema.parse(await campaigns.preview(content, sampleUserId)));
+    });
+    v1.post('/email/test', guard('campaigns'), async (ctx) => {
+        const { sampleUserId, ...content } = await body(ctx, emailPreviewBody);
+        await rateLimit(`email-test:${ctx.get('staff').id}`, 10);
+        return ctx.json(
+            emailTestResultSchema.parse(await campaigns.test(ctx.get('staff'), content, sampleUserId)),
+        );
+    });
+    v1.get('/email/groups', guard('read'), async (ctx) =>
+        ctx.json(emailGroupListSchema.parse(await campaigns.groups())),
+    );
+    v1.post('/email/groups', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailGroupInput);
+        return ctx.json(emailGroupSchema.parse(await campaigns.createGroup(ctx.get('staff'), i)));
+    });
+    v1.get('/email/groups/:id', guard('read'), async (ctx) =>
+        ctx.json(emailGroupDetailSchema.parse(await campaigns.group(itemId(ctx)))),
+    );
+    v1.put('/email/groups/:id', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailGroupBody);
+        return ctx.json(
+            emailGroupSchema.parse(await campaigns.updateGroup(ctx.get('staff'), itemId(ctx), i)),
+        );
+    });
+    v1.delete('/email/groups/:id', guard('campaigns'), async (ctx) =>
+        ctx.json(deleted.parse(await campaigns.deleteGroup(ctx.get('staff'), itemId(ctx)))),
+    );
+    v1.get('/email/groups/:id/members', guard('read'), async (ctx) => {
+        const { cursor } = searchQuery.parse(ctx.req.query());
+        return ctx.json(emailGroupMemberPageSchema.parse(await campaigns.members(itemId(ctx), cursor)));
+    });
+    v1.post('/email/groups/:id/members', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailGroupAddBody);
+        return ctx.json(
+            emailGroupAddResultSchema.parse(
+                await campaigns.addMembers(ctx.get('staff'), itemId(ctx), i.userIds, i.identifiers),
+            ),
+        );
+    });
+    v1.post('/email/groups/:id/members/remove', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, emailGroupRemoveBody);
+        return ctx.json(
+            z
+                .object({ group: emailGroupSchema, removed: z.number() })
+                .parse(await campaigns.removeMembers(ctx.get('staff'), itemId(ctx), i.userIds)),
+        );
+    });
+    v1.post('/email/audience/count', guard('read'), async (ctx) => {
+        const i = await body(ctx, audienceCountBody);
+        return ctx.json(audienceCountSchema.parse(await campaigns.count(i.audience, i.category)));
+    });
+    v1.get('/email/campaigns', guard('read'), async (ctx) =>
+        ctx.json(campaignListSchema.parse(await campaigns.campaigns())),
+    );
+    v1.post('/email/campaigns', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, campaignInput);
+        return ctx.json(campaignSchema.parse(await campaigns.createCampaign(ctx.get('staff'), i)));
+    });
+    v1.get('/email/campaigns/:id', guard('read'), async (ctx) =>
+        ctx.json(campaignDetailSchema.parse(await campaigns.campaign(itemId(ctx)))),
+    );
+    v1.put('/email/campaigns/:id', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, campaignBody);
+        return ctx.json(
+            campaignSchema.parse(await campaigns.updateCampaign(ctx.get('staff'), itemId(ctx), i)),
+        );
+    });
+    v1.delete('/email/campaigns/:id', guard('campaigns'), async (ctx) =>
+        ctx.json(deleted.parse(await campaigns.deleteCampaign(ctx.get('staff'), itemId(ctx)))),
+    );
+    v1.post('/email/campaigns/:id/schedule', guard('campaigns'), async (ctx) => {
+        const i = await body(ctx, campaignScheduleBody);
+        return ctx.json(
+            campaignSchema.parse(
+                await campaigns.schedule(ctx.get('staff'), itemId(ctx), i.at, i.reason, i.expectedUpdatedAt),
+            ),
+        );
+    });
+    v1.post('/email/campaigns/:id/cancel', guard('campaigns'), async (ctx) => {
+        const { reason } = await body(ctx, campaignReasonBody);
+        return ctx.json(campaignSchema.parse(await campaigns.cancel(ctx.get('staff'), itemId(ctx), reason)));
+    });
+    v1.post('/email/campaigns/:id/stop', guard('campaigns'), async (ctx) => {
+        const { reason } = await body(ctx, campaignReasonBody);
+        return ctx.json(campaignSchema.parse(await campaigns.stop(ctx.get('staff'), itemId(ctx), reason)));
+    });
+    v1.get('/email/campaigns/:id/recipients', guard('read'), async (ctx) => {
+        const q = searchQuery
+            .extend({ status: recipientStatus.optional() })
+            .parse(ctx.req.query());
+        return ctx.json(
+            recipientPageSchema.parse(await campaigns.recipients(itemId(ctx), q.status, q.cursor)),
+        );
     });
     app.route('/api/v1/admin', v1);
     app.notFound((ctx) =>

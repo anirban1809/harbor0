@@ -22,6 +22,7 @@ import {
   aws_sns as sns,
   aws_sns_subscriptions as subscriptions,
   aws_ses as ses,
+  aws_secretsmanager as secretsmanager,
   Tags,
 } from 'aws-cdk-lib';
 import { DynamoEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -57,6 +58,8 @@ const emailDomain = Fn.select(1, Fn.split('@', Fn.join('', [emailFrom, '@'])));
 // events in a log group, so a "the email never came" report can be traced to one message.
 const mail = new ses.ConfigurationSet(stack, 'Mail', {
   configurationSetName: harborEnv.production ? 'harbor0-mail' : 'harbor0-staging-mail',
+  // Addresses on the account's suppression list (hard bounces, spam complaints) get nothing more.
+  suppressionReasons: ses.SuppressionReasons.BOUNCES_AND_COMPLAINTS,
 });
 mail.addEventDestination('Events', {
   destination: ses.EventDestination.eventBus(
@@ -217,6 +220,19 @@ const domain = pool.addDomain('ManagedLogin', {
         : `harbor-${harborEnv.name}-${stack.account}-${stack.region}`),
   },
 });
+// Console campaigns send from their own address on the same domain, so a campaign's complaints
+// don't count against the address account notices come from.
+const campaignEmailFrom = Fn.conditionIf(
+  hasEmailFrom.logicalId,
+  Fn.join('', ['updates@', emailDomain]),
+  '',
+).toString();
+// Signs the unsubscribe links in optional email, so they work without signing in.
+const emailLinkSecret = new secretsmanager.Secret(stack, 'EmailLinkSecret', {
+  description: 'Signs harbor0 unsubscribe links',
+  generateSecretString: { passwordLength: 64, excludePunctuation: true },
+  removalPolicy,
+});
 const environment = {
   TABLE_NAME: table.tableName,
   COGNITO_USER_POOL_ID: pool.userPoolId,
@@ -227,6 +243,8 @@ const environment = {
   WEB_ORIGIN: webOrigin,
   EMAIL_FROM: emailFrom,
   MAIL_CONFIGURATION_SET: mail.configurationSetName,
+  EMAIL_LINK_SECRET_ARN: emailLinkSecret.secretArn,
+  CAMPAIGN_EMAIL_FROM: campaignEmailFrom,
   NODE_ENV: 'production',
 };
 const logGroup = new logs.LogGroup(stack, 'ApiLogs', {
@@ -267,7 +285,27 @@ for (const fn of [apiFunction, jobsFunction]) {
       resources: [r2SecretArn],
     }),
   );
+  emailLinkSecret.grantRead(fn);
 }
+// Hard bounces and complaints are recorded so optional email (campaigns) skips those addresses.
+const mailEventsFunction = new lambda.Function(stack, 'MailEventHandler', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.mailEvent',
+  code: lambda.Code.fromAsset('dist/backend'),
+  timeout: Duration.seconds(10),
+  environment: { TABLE_NAME: table.tableName, NODE_ENV: 'production' },
+});
+table.grantReadWriteData(mailEventsFunction);
+new events.Rule(stack, 'MailSuppressionRule', {
+  eventPattern: {
+    source: ['aws.ses'],
+    detail: {
+      eventType: ['Bounce', 'Complaint'],
+      mail: { tags: { 'ses:configuration-set': [mail.configurationSetName] } },
+    },
+  },
+  targets: [new targets.LambdaFunction(mailEventsFunction, { retryAttempts: 4 })],
+});
 jobsFunction.addToRolePolicy(
   new iam.PolicyStatement({
     actions: ['ses:SendEmail'],
@@ -277,7 +315,16 @@ jobsFunction.addToRolePolicy(
       `arn:${stack.partition}:ses:${stack.region}:${stack.account}:configuration-set/*`,
     ],
     // The sender may carry a display name ("harbor0 <address>"), so match the address in both forms.
-    conditions: { StringLike: { 'ses:FromAddress': [emailFrom, `*<${emailFrom}>`] } },
+    conditions: {
+      StringLike: {
+        'ses:FromAddress': [
+          emailFrom,
+          `*<${emailFrom}>`,
+          campaignEmailFrom,
+          `*<${campaignEmailFrom}>`,
+        ],
+      },
+    },
   }),
 );
 // Live updates: clients hold a WebSocket; the table stream says which users to wake.
@@ -416,6 +463,7 @@ const adminFunction = new lambda.Function(stack, 'Admin', {
     STAFF_USER_POOL_ID: staffPool.userPoolId,
     STAFF_CLIENT_ID: staffClient.ref,
     ADMIN_ORIGIN: adminOrigin,
+    WEB_ORIGIN: webOrigin,
     NODE_ENV: 'production',
   },
   logGroup: adminLogs,
@@ -513,6 +561,11 @@ alarm('RealtimeErrors', {
 });
 alarm('JobErrors', {
   metric: jobsFunction.metricErrors(),
+  threshold: 1,
+  evaluationPeriods: 1,
+});
+alarm('MailEventErrors', {
+  metric: mailEventsFunction.metricErrors(),
   threshold: 1,
   evaluationPeriods: 1,
 });

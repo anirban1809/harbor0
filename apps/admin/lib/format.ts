@@ -60,7 +60,42 @@ export const actionLabels: Record<string, string> = {
   FLAG_CHANGED: 'Changed a feature flag',
   FLAG_USER_ADDED: 'Turned on a feature flag',
   FLAG_USER_REMOVED: 'Took off a feature flag',
+  EMAIL_TEMPLATE_CREATED: 'Created an email template',
+  EMAIL_TEMPLATE_CHANGED: 'Changed an email template',
+  EMAIL_TEMPLATE_DELETED: 'Deleted an email template',
+  EMAIL_TEST_SENT: 'Sent a test email',
+  EMAIL_GROUP_CREATED: 'Created an email group',
+  EMAIL_GROUP_CHANGED: 'Renamed an email group',
+  EMAIL_GROUP_DELETED: 'Deleted an email group',
+  EMAIL_GROUP_MEMBERS_ADDED: 'Added accounts to an email group',
+  EMAIL_GROUP_MEMBERS_REMOVED: 'Removed accounts from an email group',
+  CAMPAIGN_CREATED: 'Created a campaign',
+  CAMPAIGN_CHANGED: 'Changed a campaign',
+  CAMPAIGN_DELETED: 'Deleted a campaign',
+  CAMPAIGN_SCHEDULED: 'Scheduled a campaign',
+  CAMPAIGN_SENT_NOW: 'Sent a campaign',
+  CAMPAIGN_CANCELLED: 'Cancelled a scheduled campaign',
+  CAMPAIGN_STOPPED: 'Stopped a campaign',
 };
+export const campaignStateLabels = {
+  DRAFT: 'Draft',
+  SCHEDULED: 'Scheduled',
+  SENDING: 'Sending',
+  SENT: 'Sent',
+  STOPPED: 'Stopped',
+} as const;
+export const skipReasonLabels = {
+  NO_ACCOUNT: 'No account',
+  DELETED: 'Account deleted',
+  SUSPENDED: 'Suspended',
+  UNVERIFIED: 'Email not verified',
+  UNSUBSCRIBED: 'Unsubscribed',
+  SUPPRESSED: 'Bounced or marked as spam',
+  STOPPED: 'Campaign stopped',
+} as const;
+export const people = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'person' : 'people'}`;
+export const plural = (n: number, word: string) =>
+  `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 export const flagModeLabels = { OFF: 'Off', TARGETED: 'Targeted', ON: 'On for everyone' } as const;
 /** Roughly how many accounts a targeted flag reaches: the list plus a share of the rest. */
 export function flagReach(

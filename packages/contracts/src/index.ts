@@ -90,6 +90,19 @@ export const appearanceSchema = z
   })
   .strict();
 export type AppearancePreference = z.infer<typeof appearanceSchema>;
+/**
+ * Which optional emails an account gets. Service notices (security, terms, pricing) are always
+ * sent. A missing field means the default: on.
+ */
+export const emailPreferencesSchema = z.object({ productUpdates: z.boolean() }).strict();
+export type EmailPreferences = z.infer<typeof emailPreferencesSchema>;
+/** What an unsubscribe link changed, for the page it opens. */
+export const emailSubscriptionSchema = z.object({
+  /** The address with its local part masked, e.g. "a•••@example.com". */
+  email: z.string(),
+  productUpdates: z.boolean(),
+});
+export type EmailSubscription = z.infer<typeof emailSubscriptionSchema>;
 export type ThemePreset = z.infer<typeof themePreset>;
 export const userSchema = z.object({
   id: z.string(),
@@ -99,6 +112,7 @@ export const userSchema = z.object({
   displayName: z.string(),
   avatarUrl: z.string().nullable(),
   appearance: appearanceSchema.optional(),
+  emailPreferences: emailPreferencesSchema.optional(),
   storageQuotaBytes: z.number(),
   storageUsedBytes: z.number(),
   storageReservedBytes: z.number(),

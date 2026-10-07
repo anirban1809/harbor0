@@ -155,6 +155,32 @@ describe('same-origin browser session gateway', () => {
       expect(r.headers.getSetCookie()).toEqual([]);
     }
   });
+  it('passes one-click unsubscribes from mail servers through without cookies', async () => {
+    const upstream = vi.fn(async (_: Request) =>
+      Response.json({ subscription: { email: 'a•••@example.test', productUpdates: false } }),
+    );
+    const r = await proxyBrowserRequest(
+      new Request(origin + '/api/v1/email/unsubscribe?t=token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Cookie: 'harbor_access=secret',
+        },
+        body: 'List-Unsubscribe=One-Click',
+      }),
+      { ...opts, upstream },
+    );
+    expect(r.status).toBe(200);
+    const sent = upstream.mock.calls[0]![0];
+    expect(sent.url).toBe('https://backend.example.test/v1/email/unsubscribe?t=token');
+    expect(sent.headers.get('Authorization')).toBeNull();
+    // Only the unsubscribe endpoint is exempt from the origin check.
+    const other = await proxyBrowserRequest(
+      new Request(origin + '/api/v1/email/resubscribe?t=token', { method: 'POST' }),
+      { ...opts, upstream },
+    );
+    expect(other.status).toBe(403);
+  });
   it('refuses cross-origin renewal', async () => {
     const upstream = vi.fn();
     const r = await proxyBrowserRequest(

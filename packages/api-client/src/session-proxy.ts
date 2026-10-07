@@ -22,6 +22,18 @@ export async function proxyBrowserRequest(req: Request, options: ProxyOptions): 
     return error('NOT_FOUND', 'Unknown endpoint.', 404);
   if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
     return error('METHOD_NOT_ALLOWED', 'Method not allowed.', 405);
+  // Mail apps' one-click unsubscribe POSTs from their own servers (RFC 8058). The signed token
+  // in the URL is the only credential: no cookies or body are passed on.
+  if (endpoint === '/v1/email/unsubscribe' && req.method === 'POST') {
+    try {
+      const response = await (options.upstream ?? fetch)(
+        new Request(options.apiUrl + endpoint + url.search, { method: 'POST' }),
+      );
+      return json(await response.json(), response.status);
+    } catch {
+      return error('BACKEND_UNAVAILABLE', 'harbor0 is temporarily unavailable.', 503);
+    }
+  }
   if (!['GET', 'HEAD'].includes(req.method) && req.headers.get('origin') !== options.allowedOrigin)
     return error('FORBIDDEN', 'Request origin is not allowed.', 403);
   // Refresh credentials only enter through HTTP-only cookies. Native clients

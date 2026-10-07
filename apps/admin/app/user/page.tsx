@@ -35,6 +35,7 @@ import { ReasonDialog } from '../../components/reason-dialog';
 import { PageHeader, Shell, useCan } from '../../components/shell';
 import { StatusBadges } from '../../components/status-badges';
 import { StorageMeter } from '../../components/storage-meter';
+import { UserEmailCard } from '../../components/user-email-card';
 import { api, type UserAction } from '../../lib/api';
 import { bytes, date, GB, relative, TB } from '../../lib/format';
 
@@ -488,6 +489,8 @@ function Detail({ id }: { id: string }) {
           </ul>
         </Card>
       )}
+
+      {profile && <UserEmailCard userId={id} email={detail.data.email} />}
 
       <Card
         title="Devices"

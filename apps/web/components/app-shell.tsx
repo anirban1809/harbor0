@@ -73,6 +73,7 @@ import { EmptyState, FileEmptyState, LoadError } from '../components/empty-state
 import { AppearanceSettings } from '../components/appearance-settings';
 import { DeleteAccount } from '../components/delete-account';
 import { TwoFactorSettings } from '../components/two-factor-settings';
+import { EmailSettings } from '../components/email-settings';
 import { useAccountAppearance } from '../lib/appearance';
 import {
   FileCollection,
@@ -1945,6 +1946,20 @@ function Workspace() {
                 </Button>
               </Card>
               <TwoFactorSettings api={api} email={user.email} />
+              <EmailSettings
+                productUpdates={user.emailPreferences?.productUpdates !== false}
+                busy={busy}
+                save={(productUpdates) =>
+                  void act(
+                    () =>
+                      api.request('/v1/users/me', {
+                        method: 'PATCH',
+                        body: { ...operation(), emailPreferences: { productUpdates } },
+                      }),
+                    productUpdates ? 'Product updates turned on.' : 'Product updates turned off.',
+                  )
+                }
+              />
               <Card
                 className="panel"
                 title="Sync & backups"

@@ -1,6 +1,8 @@
 import type { CustomMessageTriggerEvent } from 'aws-lambda';
 import { BETA_QUOTA } from '@harbor/contracts';
 import type { StaffDeletionReason } from '../../../packages/contracts/src/admin';
+import type { CampaignContent, CampaignVars } from '../../../packages/contracts/src/campaigns';
+import { renderCampaign } from './campaign-content';
 
 // Cognito swaps these placeholders for the real values after the trigger returns, so they
 // must reach the message verbatim.
@@ -21,6 +23,10 @@ type Message = {
     details?: [label: string, value: string][];
     action?: { label: string; url: string; };
     footnote: string;
+    /** A campaign's own body, rendered from Markdown, in place of the heading and intro. */
+    body?: { html: string; text: string; };
+    /** Link to stop this kind of email; only optional emails (product updates) carry one. */
+    unsubscribe?: string;
 };
 
 const escape = (text: string) =>
@@ -53,7 +59,7 @@ export function renderEmail(message: Message) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <meta name="supported-color-schemes" content="light">
-<title>${message.subject}</title>
+<title>${escape(message.subject)}</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f5f7;">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${message.preheader}</div>
@@ -64,8 +70,11 @@ export function renderEmail(message: Message) {
 <a href="${site}" style="text-decoration:none;color:#16181d;"><img src="${site}/icon.png" width="28" height="28" alt="" style="vertical-align:middle;border:0;"><span style="vertical-align:middle;margin-left:8px;font-size:19px;font-weight:650;letter-spacing:-0.02em;color:#16181d;">harbor0</span></a>
 </td></tr>
 <tr><td style="background:#ffffff;border:1px solid #e3e5ea;border-radius:12px;padding:32px;">
-<h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:650;letter-spacing:-0.01em;color:#16181d;">${message.heading}</h1>
-<p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#3d414b;">${message.intro}</p>
+${message.body
+            ? message.body.html
+            : `<h1 style="margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:650;letter-spacing:-0.01em;color:#16181d;">${message.heading}</h1>
+<p style="margin:0 0 24px;font-size:15px;line-height:1.55;color:#3d414b;">${message.intro}</p>`
+        }
 ${list ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 10px;">${list}</table>` : ''}
 ${details ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 12px;">${details}</table>` : ''}
 ${message.code ? `<div style="margin:0 0 24px;padding:18px;background:#f0f2fe;border-radius:8px;text-align:center;font-family:${mono};font-size:28px;font-weight:600;letter-spacing:0.18em;color:#2b38a6;">${message.code}</div>` : ''}
@@ -73,11 +82,14 @@ ${message.action
             ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;"><tr><td style="background:#4353d9;border-radius:8px;"><a href="${message.action.url}" style="display:inline-block;padding:12px 22px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">${message.action.label}</a></td></tr></table>`
             : ''
         }
-<p style="margin:0;font-size:13px;line-height:1.55;color:#5d6270;">${message.footnote}</p>
+${message.footnote ? `<p style="margin:0;font-size:13px;line-height:1.55;color:#5d6270;">${message.footnote}</p>` : ''}
 </td></tr>
 <tr><td style="padding:20px 4px 0;font-size:12px;line-height:1.5;color:#8a8f9c;">
 harbor0 · File storage, backup, sync, and sharing.<br>
-Questions? Write to <a href="mailto:${contact}" style="color:#8a8f9c;">${contact}</a>; replies to this email aren't read.
+Questions? Write to <a href="mailto:${contact}" style="color:#8a8f9c;">${contact}</a>; replies to this email aren't read.${message.unsubscribe
+            ? `<br>You're getting this because product updates are on for your account. <a href="${message.unsubscribe}" style="color:#8a8f9c;">Unsubscribe</a>`
+            : ''
+        }
 </td></tr>
 </table>
 </td></tr>
@@ -86,7 +98,9 @@ Questions? Write to <a href="mailto:${contact}" style="color:#8a8f9c;">${contact
 </html>`;
 }
 
-export type Email =
+/** Where the recipient can stop an optional email: a page to open and a one-click endpoint (RFC 8058). */
+export type Unsubscribe = { page: string; oneClick: string; };
+export type Email = (
     | { template: 'INVITE'; to: string; sender: string; }
     | { template: 'BETA_INVITE'; to: string; code: string; }
     | { template: 'BETA_WAITLIST'; to: string; }
@@ -142,7 +156,10 @@ export type Email =
         replaced?: 'TOTP' | 'EMAIL';
         at: string;
     }
-    | { template: 'SIGNED_OUT'; to: string; name: string; device?: string; };
+    | { template: 'SIGNED_OUT'; to: string; name: string; device?: string; }
+    /** Sent from the campaigns sender, not the account-notices one. */
+    | { template: 'CAMPAIGN'; to: string; content: CampaignContent; vars: CampaignVars; }
+) & { unsubscribe?: Unsubscribe; };
 export type StorageAlertLevel = 80 | 95 | 100;
 
 const greet = (name: string | undefined, sentence: string) =>
@@ -175,6 +192,11 @@ function plainText(message: Message) {
                 /&(amp|lt|gt|quot|#39);/g,
                 (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]!,
             );
+    if (message.body)
+        return [
+            message.body.text,
+            ...(message.unsubscribe ? [`Unsubscribe from product updates: ${text(message.unsubscribe)}`] : []),
+        ].join('\n\n');
     return [
         text(message.heading),
         text(message.intro),
@@ -183,6 +205,7 @@ function plainText(message: Message) {
         ...(message.code ? [message.code] : []),
         ...(message.action ? [`${message.action.label}: ${text(message.action.url)}`] : []),
         text(message.footnote),
+        ...(message.unsubscribe ? [`Unsubscribe from product updates: ${text(message.unsubscribe)}`] : []),
     ].join('\n\n');
 }
 
@@ -253,6 +276,17 @@ function accountMessage(email: Email, webOrigin: string): Message {
     const app = escape(webOrigin);
     const reset = { label: 'Reset your password', url: escape(`${webOrigin}/forgot-password`) };
     switch (email.template) {
+        case 'CAMPAIGN': {
+            const rendered = renderCampaign(email.content, email.vars);
+            return {
+                subject: rendered.subject,
+                preheader: escape(rendered.preheader),
+                heading: '',
+                intro: '',
+                body: { html: rendered.html, text: rendered.text },
+                footnote: '',
+            };
+        }
         case 'INVITE':
             return {
                 subject: 'A file is waiting for you in harbor0',
@@ -468,8 +502,23 @@ function accountMessage(email: Email, webOrigin: string): Message {
 
 // Mail the maintenance job sends: file invitations and account notices.
 export function composeEmail(email: Email, webOrigin: string) {
-    const message = accountMessage(email, webOrigin);
-    return { subject: message.subject, html: renderEmail(message), text: plainText(message) };
+    const message: Message = {
+        ...accountMessage(email, webOrigin),
+        ...(email.unsubscribe ? { unsubscribe: escape(email.unsubscribe.page) } : {}),
+    };
+    return {
+        subject: message.subject,
+        html: renderEmail(message),
+        text: plainText(message),
+        // Mail apps show their own unsubscribe button for these and POST to the one-click URL.
+        // A test send has a link to Settings but no one-click endpoint.
+        headers: email.unsubscribe?.oneClick
+            ? [
+                { name: 'List-Unsubscribe', value: `<${email.unsubscribe.oneClick}>` },
+                { name: 'List-Unsubscribe-Post', value: 'List-Unsubscribe=One-Click' },
+            ]
+            : [],
+    };
 }
 
 function message(event: CustomMessageTriggerEvent): Message | undefined {

@@ -245,7 +245,7 @@ export class AdminService {
         };
     }
     /** The account as staff see it; `null` when it exists in neither the directory nor the table. */
-    async detail(userId: string): Promise<Omit<AdminUserDetail, 'flags'>> {
+    async detail(userId: string): Promise<Omit<AdminUserDetail, 'flags' | 'email'>> {
         const [directoryUser, account] = await Promise.all([
             this.directory.get(userId),
             this.profile(userId),

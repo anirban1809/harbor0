@@ -28,6 +28,7 @@ export const staffPermissions = {
     'delete',
     'beta',
     'flags',
+    'campaigns',
   ],
 } as const satisfies Record<z.infer<typeof staffRole>, readonly string[]>;
 export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];
@@ -87,6 +88,12 @@ export const auditEntrySchema = z.object({
   reason: z.string().nullable(),
   details: z.record(z.string(), z.unknown()),
 });
+/** An account's email settings: optional email, a bounce or complaint, and campaign groups. */
+export const adminUserEmailSchema = z.object({
+  productUpdates: z.boolean(),
+  suppressed: z.object({ source: z.enum(['BOUNCE', 'COMPLAINT']), at: z.string() }).nullable(),
+  groups: z.array(z.object({ id: z.string(), name: z.string() })),
+});
 export const adminUserDetailSchema = z.object({
   account: directoryUserSchema,
   /** Null until the user verifies their email and first signs in. */
@@ -96,6 +103,7 @@ export const adminUserDetailSchema = z.object({
   activity: z.array(auditEntrySchema),
   /** Each feature flag for this account, ignoring app versions (those vary by device). */
   flags: z.array(z.object({ key: z.string(), enabled: z.boolean(), reason: flagReason })),
+  email: adminUserEmailSchema,
 });
 /** How the console orders the account list; Cognito's own order is unsorted. */
 export const adminUserSortSchema = z.object({
@@ -220,6 +228,7 @@ export type DirectoryUser = z.infer<typeof directoryUserSchema>;
 export type AdminProfile = z.infer<typeof adminProfileSchema>;
 export type AuditEntry = z.infer<typeof auditEntrySchema>;
 export type AdminUserDetail = z.infer<typeof adminUserDetailSchema>;
+export type AdminUserEmail = z.infer<typeof adminUserEmailSchema>;
 export type AdminUserPage = z.infer<typeof adminUserPageSchema>;
 export type AdminUserSort = z.infer<typeof adminUserSortSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
