@@ -2830,7 +2830,8 @@ export class StorageService {
                     'Enter your account email to confirm.',
                 );
                 user.deletedAt = now();
-                user.purgeAt = new Date(Date.now() + ACCOUNT_PURGE_DELAY_MS).toISOString();
+                // From deletedAt itself, so the delay is exact rather than read off a second clock tick.
+                user.purgeAt = new Date(Date.parse(user.deletedAt) + ACCOUNT_PURGE_DELAY_MS).toISOString();
                 user.updatedAt = user.deletedAt;
                 await tx.put(userPK(userId), 'PROFILE', user);
                 // Releasing the claims lets the email and username register again as a new account.
