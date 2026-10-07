@@ -100,7 +100,7 @@ export class FeatureFlags {
       for (const row of page.rows) stored.set(row.sk, row.data as StoredFlag);
       cursor = page.cursor ?? undefined;
     } while (cursor);
-    return new Map(flagKeys.map((key) => [key, { ...emptyFlag(key), ...stored.get(key), key }]));
+    return new Map(flagKeys().map((key) => [key, { ...emptyFlag(key), ...stored.get(key), key }]));
   }
   async enabled(key: FlagKey, userId: string, client?: Client) {
     const flag = (await this.all()).get(key)!;

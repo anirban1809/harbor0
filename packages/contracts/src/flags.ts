@@ -6,15 +6,13 @@ import { z } from 'zod';
  * building behind it; remove it once the feature is on for everyone and its checks are gone.
  */
 export const featureFlags = {
-  'guest-transfers': {
-    description: 'Download transfers without an account, with an emailed code',
-  },
-  e2ee: {
-    description: 'End-to-end encrypted accounts',
-  },
+  // 'new-feature': { description: 'What staff see for it in the console' },
 } as const satisfies Record<string, { description: string }>;
 export type FlagKey = keyof typeof featureFlags;
-export const flagKeys = Object.keys(featureFlags) as FlagKey[];
+/** Every defined flag; read when needed, so tests can define their own. */
+export const flagKeys = () => Object.keys(featureFlags) as FlagKey[];
+export const flagDescription = (key: FlagKey) =>
+  (featureFlags as Record<string, { description: string }>)[key].description;
 export const isFlagKey = (key: string): key is FlagKey => Object.hasOwn(featureFlags, key);
 
 /** Whether each flag is on for the signed-in account on this app; absent means off. */

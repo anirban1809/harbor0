@@ -1,4 +1,4 @@
-import { featureFlags, isFlagKey, type FlagKey, type FlagRule } from '@harbor/contracts';
+import { flagDescription, isFlagKey, type FlagKey, type FlagRule } from '@harbor/contracts';
 import type {
   AdminFlag,
   AdminFlagBody,
@@ -42,7 +42,7 @@ export class AdminFlags {
   private view(flag: StoredFlag): AdminFlag {
     return {
       key: flag.key,
-      description: featureFlags[flag.key].description,
+      description: flagDescription(flag.key),
       mode: flag.mode,
       userIds: flag.userIds,
       percent: flag.percent,
