@@ -105,7 +105,16 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
   const router = useRouter();
   const queries = useQueryClient();
   const canEdit = useCan('campaigns');
-  const initial: Draft = saved ?? blank;
+  // Only the editable fields: the save endpoints refuse the stored id and timestamps.
+  const initial: Draft = saved
+    ? {
+        name: saved.name,
+        category: saved.category,
+        subject: saved.subject,
+        preheader: saved.preheader,
+        markdown: saved.markdown,
+      }
+    : blank;
   const [draft, setDraft] = useState<Draft>(initial);
   const [sampleEmail, setSampleEmail] = useState('');
   const [sample, setSample] = useState<{ id?: string; error?: string }>({});
