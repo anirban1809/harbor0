@@ -30,7 +30,14 @@ export function EmailPreview({
 }) {
   const [width, setWidth] = useState<'desktop' | 'mobile'>('desktop');
   const [format, setFormat] = useState<'html' | 'text'>('html');
-  const settled = useSettled({ ...content, sampleUserId });
+  // Only the content fields: callers may pass a whole template, and the endpoint is strict.
+  const settled = useSettled({
+    subject: content.subject,
+    preheader: content.preheader,
+    markdown: content.markdown,
+    category: content.category,
+    sampleUserId,
+  });
   const ready = !!settled.subject.trim() && !!settled.markdown.trim();
   const preview = useQuery({
     queryKey: ['email-preview', settled],
