@@ -43,6 +43,13 @@ import { DeletionWorkflows } from './deletion';
 import { syncMembershipChanged, syncDeviceKey, type SyncMapping } from './sync-relay';
 import { TransferWorkflows, type StagedItem, type Save } from './workflows';
 import { campaignStep, type CampaignSendOptions } from './campaigns';
+import {
+    inboxClaim,
+    inboxTaken,
+    putInboxClaim,
+    recordDeviceAccount,
+    releaseInboxClaim,
+} from './signup-guard';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -261,6 +268,9 @@ export class StorageService {
                 'This email is already registered.',
                 409,
             );
+            // One account per inbox, however the address is spelled.
+            const inbox = await inboxClaim(tx, email);
+            if (inbox?.userId && inbox.userId !== identity.id) throw inboxTaken();
             const user: Account = {
                 id: identity.id,
                 email,
@@ -280,6 +290,7 @@ export class StorageService {
             await tx.put(userPK(user.id), 'PROFILE', user);
             await tx.put('USERNAME', normalized, { userId: user.id });
             await tx.put('EMAIL', email, { userId: user.id });
+            await putInboxClaim(tx, { email, userId: user.id });
             await this.email(tx, `welcome-${user.id}`, {
                 template: 'WELCOME',
                 to: email,
@@ -2325,11 +2336,17 @@ export class StorageService {
                     'Another device already uses this identity.',
                     403,
                 );
-                if (!binding)
+                if (!binding) {
                     await tx.put(userPK(userId), deviceKeyKey(devicePublicId), {
                         ...verified,
                         boundAt: now(),
                     } satisfies DeviceKey);
+                    const account = await this.account(tx, userId);
+                    await recordDeviceAccount(tx, verified.fingerprint, {
+                        userId,
+                        email: account.email,
+                    });
+                }
                 keyFingerprint = verified.fingerprint;
             } else if (devicePublicId) {
                 // Unsigned clients may keep an identity only until a key has been pinned to it.
@@ -2842,6 +2859,7 @@ export class StorageService {
                 // Releasing the claims lets the email and username register again as a new account.
                 await tx.delete('USERNAME', user.username);
                 await tx.delete('EMAIL', user.email);
+                await releaseInboxClaim(tx, user.email, userId);
                 const notice = { to: user.email, name: user.displayName, purgeAt: user.purgeAt };
                 if (!closedBy)
                     await this.email(tx, `account-deleted-${userId}`, {

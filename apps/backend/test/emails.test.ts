@@ -69,6 +69,17 @@ it('welcomes new accounts with their storage and a link to the app', () => {
   expect(email.text).toContain('50 GB of storage');
 });
 
+it('tells suspended accounts their files are kept and who to write to', () => {
+  const email = composeEmail(
+    { template: 'ACCOUNT_SUSPENDED', to: 'a@example.test', name: 'Ada' },
+    'https://app.harbor0.com',
+  );
+  expect(email.subject).toBe('Your harbor0 account was suspended');
+  expect(email.html).toContain('Hi Ada');
+  expect(email.text).toContain('Your files are kept');
+  expect(email.html).toContain('mailto:contact@harbor0.com');
+});
+
 it('tells deleted accounts when their files are erased', () => {
   const email = composeEmail(
     {

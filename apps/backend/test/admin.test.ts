@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
 import { StorageService, type Job } from '../src/domain';
-import { MemoryRepository } from '../src/repository';
+import { MemoryRepository, transact } from '../src/repository';
+import { recordDeviceAccount } from '../src/signup-guard';
 import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
@@ -180,6 +181,21 @@ describe('management console API', () => {
     const detail = await (await call(admin, 'GET', '/users/alice')).json();
     expect(detail.account.enabled).toBe(false);
     expect(detail.profile.suspendedReason).toBe('Abuse report #12');
+    // The account holder is told, without the staff reason.
+    const notices = [...(service.repo as MemoryRepository).rows.values()]
+      .map((row) => (row.data as Job).email)
+      .filter((email) => email?.template === 'ACCOUNT_SUSPENDED');
+    expect(notices).toEqual([
+      { template: 'ACCOUNT_SUSPENDED', to: 'alice@example.test', name: 'Alice Morgan' },
+    ]);
+    // Signing in says the account is suspended rather than that the password is wrong.
+    const blocked = await userApp.request('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'alice@example.test', password: 'Development-only-123!' }),
+    });
+    expect(blocked.status).toBe(403);
+    expect((await blocked.json()).error.code).toBe('ACCOUNT_SUSPENDED');
     await call(admin, 'POST', '/users/alice/unsuspend', { reason: 'Resolved' });
     const login = await userApp.request('/v1/auth/login', {
       method: 'POST',
@@ -187,6 +203,34 @@ describe('management console API', () => {
       body: JSON.stringify({ email: 'alice@example.test', password: 'Development-only-123!' }),
     });
     expect(login.status).toBe(200);
+  });
+
+  it('lists other accounts that signed in on the same device', async () => {
+    const admin = await signIn('admin@example.test');
+    await transact(service.repo, async (tx) => {
+      await tx.put('USER#alice', 'DEVICE_KEY#x', { fingerprint: 'fp', boundAt: 'then' });
+      await recordDeviceAccount(tx, 'fp', { userId: 'alice', email: 'alice@example.test' });
+      await recordDeviceAccount(tx, 'fp', { userId: 'bob', email: 'bob@example.test' });
+    });
+    const detail = await (await call(admin, 'GET', '/users/alice')).json();
+    expect(detail.sameDevice).toEqual([
+      expect.objectContaining({ userId: 'bob', email: 'bob@example.test', suspended: false }),
+    ]);
+  });
+
+  it('suspends without a notice when staff turn it off', async () => {
+    const admin = await signIn('admin@example.test');
+    const res = await call(admin, 'POST', '/users/alice/suspend', {
+      reason: 'Sign-up abuse',
+      notify: false,
+    });
+    expect(res.status).toBe(200);
+    const rows = [...(service.repo as MemoryRepository).rows.values()];
+    expect(rows.some((row) => (row.data as Job).email?.template === 'ACCOUNT_SUSPENDED')).toBe(
+      false,
+    );
+    const audit = await (await call(admin, 'GET', '/users/alice')).json();
+    expect(JSON.stringify(audit)).toContain('"notified":false');
   });
 
   it('signs a user out everywhere', async () => {
@@ -288,6 +332,23 @@ describe('management console API', () => {
     expect(await again.json()).toEqual({ accounts: 0, usedBytes: 0 });
     await service.runJobs();
     expect(await service.repo.get({ pk: 'JOB', sk: 'account-bob' })).toBeUndefined();
+  });
+
+  it('makes test sign-up links for admins only, and audits them', async () => {
+    const support = await signIn('support@example.test');
+    expect((await call(support, 'POST', '/beta/test-invites', { reason: 'QA' })).status).toBe(403);
+    const admin = await signIn('admin@example.test');
+    const made = await call(admin, 'POST', '/beta/test-invites', { reason: 'QA account' });
+    expect(made.status).toBe(200);
+    const { url } = (await made.json()) as { url: string };
+    const code = new URL(url, 'http://web.test').searchParams.get('invite');
+    expect(await (await userApp.request(`/v1/beta/invites/${code}`)).json()).toEqual({
+      email: null,
+    });
+    const audit = (await (await call(admin, 'GET', '/audit')).json()) as {
+      items: { action: string; reason: string }[];
+    };
+    expect(audit.items[0]).toMatchObject({ action: 'BETA_TEST_INVITE', reason: 'QA account' });
   });
 
   it('records support notes', async () => {

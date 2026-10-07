@@ -57,6 +57,7 @@ export const actionLabels: Record<string, string> = {
   ACCOUNT_PURGED: 'Purged deleted account now',
   NOTE: 'Added a note',
   BETA_WAVE: 'Opened a beta wave',
+  BETA_TEST_INVITE: 'Made a test sign-up link',
   FLAG_CHANGED: 'Changed a feature flag',
   FLAG_USER_ADDED: 'Turned on a feature flag',
   FLAG_USER_REMOVED: 'Took off a feature flag',

@@ -74,7 +74,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** The email address a beta sign-up link was sent to */
+        /** The email address a beta sign-up link was sent to; null for a test link, which takes any */
         get: operations["get__v1_beta_invites__code"];
         put?: never;
         post?: never;
@@ -1840,6 +1840,7 @@ export interface operations {
                     username: string;
                     displayName: string;
                     inviteCode?: string;
+                    deviceKey?: string;
                 };
             };
         };
@@ -2360,7 +2361,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        email: string;
+                        email: string | null;
                     };
                 };
             };

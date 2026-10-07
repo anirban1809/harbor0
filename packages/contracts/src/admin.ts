@@ -104,6 +104,17 @@ export const adminUserDetailSchema = z.object({
   /** Each feature flag for this account, ignoring app versions (those vary by device). */
   flags: z.array(z.object({ key: z.string(), enabled: z.boolean(), reason: flagReason })),
   email: adminUserEmailSchema,
+  /** Other accounts whose apps signed in with one of this account's device keys. */
+  sameDevice: z.array(
+    z.object({
+      userId: z.string(),
+      email: z.string(),
+      /** When that account first signed in with the shared key. */
+      boundAt: z.string(),
+      suspended: z.boolean(),
+      deleted: z.boolean(),
+    }),
+  ),
 });
 /** How the console orders the account list; Cognito's own order is unsorted. */
 export const adminUserSortSchema = z.object({
@@ -169,7 +180,11 @@ export const adminBetaSchema = z.object({
   cap: z.number(),
   invited: z.number(),
   waitlisted: z.number(),
+  /** Accounts made with a test link, which take no seat. */
+  testAccounts: z.number(),
 });
+/** A single-use test sign-up link: any email, no beta seat. */
+export const adminTestInviteSchema = z.object({ url: z.string() });
 // Far above any planned wave; it only stops a typo.
 export const MAX_BETA_CAP = 100_000;
 export const adminWaveBody = z
@@ -210,6 +225,8 @@ export const staffDeletionReason = z.enum([
   'DUPLICATE',
   'OTHER',
 ]);
+/** Suspending emails the account holder a short notice unless staff turn it off (abuse). */
+export const adminSuspendBody = z.object({ reason, notify: z.boolean().default(true) }).strict();
 export const adminDeleteBody = z
   .object({
     confirmEmail: z.string().max(254),
@@ -234,6 +251,7 @@ export type AdminUserSort = z.infer<typeof adminUserSortSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;
+export type AdminTestInvite = z.infer<typeof adminTestInviteSchema>;
 export type AdminPurgeResult = z.infer<typeof adminPurgeResultSchema>;
 export type AdminFlag = z.infer<typeof adminFlagSchema>;
 export type AdminFlagList = z.infer<typeof adminFlagListSchema>;

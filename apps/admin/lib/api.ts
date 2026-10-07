@@ -1,5 +1,6 @@
 import type {
     AdminBeta,
+    AdminTestInvite,
     AdminFlag,
     AdminFlagBody,
     AdminFlagDetail,
@@ -88,6 +89,8 @@ export const api = {
     beta: () => request<AdminBeta>('GET', '/beta'),
     openWave: (cap: number, reason: string) =>
         request<AdminBeta & { newlyInvited: number; }>('POST', '/beta/wave', { cap, reason }),
+    testInvite: (reason: string) =>
+        request<AdminTestInvite>('POST', '/beta/test-invites', { reason }),
     purgeDeletedAccounts: (reason: string) =>
         request<AdminPurgeResult>('POST', '/deleted-accounts/purge', { reason }),
     audit: (cursor?: string) =>
@@ -100,8 +103,8 @@ export const api = {
     user: (id: string) => request<AdminUserDetail>('GET', user(id)),
     setQuota: (id: string, quotaBytes: number, reason: string) =>
         request('PUT', `${user(id)}/quota`, { quotaBytes, reason }),
-    action: (id: string, action: UserAction, reason: string) =>
-        request('POST', `${user(id)}/${action}`, { reason }),
+    action: (id: string, action: UserAction, reason: string, extra?: { notify?: boolean; }) =>
+        request('POST', `${user(id)}/${action}`, { reason, ...extra }),
     signOutDevice: (id: string, deviceId: string, reason: string) =>
         request('POST', `${user(id)}/devices/${encodeURIComponent(deviceId)}/sign-out`, { reason }),
     note: (id: string, text: string) => request<AuditEntry>('POST', `${user(id)}/notes`, { text }),

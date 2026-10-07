@@ -98,6 +98,13 @@ const signInExpired = () =>
 const wrongCode = (session: string) =>
   new DomainError('AUTH_INVALID', 'That code didn’t match. Try again.', 400, { session });
 const name = (error: unknown) => (error as { name?: string }).name;
+/** Staff suspend an account by disabling its sign-in; say so instead of "wrong password". */
+const suspended = () =>
+  new DomainError(
+    'ACCOUNT_SUSPENDED',
+    'This account is suspended. Write to contact@harbor0.com to find out more.',
+    403,
+  );
 /**
  * Cognito refuses to send a password-reset code to the address that also receives the
  * account's sign-in codes. Email sign-in codes are switched off just long enough to send the
@@ -289,13 +296,20 @@ export class CognitoAuth implements AuthProvider {
     };
   }
   async login(email: string, password: string): Promise<SignIn> {
-    const r = await this.client.send(
-      new InitiateAuthCommand({
-        ClientId: this.clientId,
-        AuthFlow: 'USER_PASSWORD_AUTH',
-        AuthParameters: { USERNAME: email.toLowerCase(), PASSWORD: password },
-      }),
-    );
+    const r = await this.client
+      .send(
+        new InitiateAuthCommand({
+          ClientId: this.clientId,
+          AuthFlow: 'USER_PASSWORD_AUTH',
+          AuthParameters: { USERNAME: email.toLowerCase(), PASSWORD: password },
+        }),
+      )
+      .catch((error: unknown) => {
+        // Cognito answers a disabled user with this exact message.
+        if (name(error) === 'NotAuthorizedException' && /user is disabled/i.test((error as Error).message))
+          throw suspended();
+        throw error;
+      });
     if (r.ChallengeName) return { challenge: this.challenge(r) };
     return this.tokens(r.AuthenticationResult);
   }
@@ -536,7 +550,7 @@ export class DevelopmentAuth implements AuthProvider {
       401,
     );
     assert(u.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email.', 403);
-    assert(!this.disabled.has(u.id), 'AUTH_INVALID', 'User is disabled.', 401);
+    if (this.disabled.has(u.id)) throw suspended();
     const status = this.twoFactor.get(u.id);
     const methods = (['TOTP', 'EMAIL'] as const).filter((m) =>
       m === 'TOTP' ? status?.totp : status?.email,

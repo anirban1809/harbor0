@@ -90,7 +90,7 @@ const actions: Record<
   suspend: {
     title: 'Suspend account',
     description:
-      'Blocks sign-in and every app at once and signs all devices out. Files are kept and still count toward storage. You can restore the account later.',
+      'Blocks sign-in and every app at once and signs all devices out. Files are kept and still count toward storage. You can restore the account later. The email never includes your reason.',
     confirm: 'Suspend account',
     danger: true,
     done: 'Account suspended.',
@@ -181,6 +181,7 @@ function Detail({ id }: { id: string }) {
   const [confirmEmail, setConfirmEmail] = useState('');
   const [deletionReason, setDeletionReason] = useState<StaffDeletionReason | ''>('');
   const [notifyDeletion, setNotifyDeletion] = useState(true);
+  const [notifySuspension, setNotifySuspension] = useState(true);
   const [note, setNote] = useState('');
   const [allDevices, setAllDevices] = useState(false);
   const canQuota = useCan('quota');
@@ -235,6 +236,7 @@ function Detail({ id }: { id: string }) {
       setDeletionReason('');
       setNotifyDeletion(true);
     }
+    if (d.kind === 'action' && d.action === 'suspend') setNotifySuspension(true);
     setDialog(d);
   };
   const submitNote = (event: FormEvent) => {
@@ -555,6 +557,42 @@ function Detail({ id }: { id: string }) {
         )}
       </Card>
 
+      {detail.data.sameDevice.length > 0 && (
+        <Card
+          title="Same browser or device"
+          description="Other accounts that signed in with one of this account's device keys. Several new accounts on one key usually means one person making extra accounts."
+        >
+          <DataTable label="Accounts on the same device">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Status</th>
+                <th>First signed in there</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.data.sameDevice.map((a) => (
+                <tr key={a.userId}>
+                  <td>
+                    <Link href={`/user?id=${encodeURIComponent(a.userId)}`}>{a.email}</Link>
+                  </td>
+                  <td>
+                    {a.deleted ? (
+                      <Badge>Deleted</Badge>
+                    ) : a.suspended ? (
+                      <Badge tone="danger">Suspended</Badge>
+                    ) : (
+                      <Badge tone="success">Active</Badge>
+                    )}
+                  </td>
+                  <td className="admin-nowrap">{date(a.boundAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        </Card>
+      )}
+
       <Card title="Notes and activity" description="Internal only; the customer never sees these.">
         <form className="admin-note-form" onSubmit={submitNote}>
           <Textarea
@@ -582,10 +620,25 @@ function Detail({ id }: { id: string }) {
           confirmLabel={action.confirm}
           danger={action.danger}
           onConfirm={async (reason) => {
-            await api.action(id, dialog.action, reason);
+            await api.action(
+              id,
+              dialog.action,
+              reason,
+              dialog.action === 'suspend' ? { notify: notifySuspension } : undefined,
+            );
             done(action.done);
           }}
-        />
+        >
+          {dialog.action === 'suspend' && (
+            <label className="admin-checkbox">
+              <Checkbox
+                checked={notifySuspension}
+                onChange={(e) => setNotifySuspension(e.target.checked)}
+              />
+              Email the account holder at {account.email}
+            </label>
+          )}
+        </ReasonDialog>
       )}
       {dialog?.kind === 'flag' && (
         <ReasonDialog

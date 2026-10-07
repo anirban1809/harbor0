@@ -126,6 +126,27 @@ describe('beta sign-up', () => {
     expect((await beta.summary()).used).toBe(1);
   });
 
+  it('lets a test link sign up any email once, without a seat', async () => {
+    await setCap(0);
+    const code = await beta.createTestInvite(noAudit);
+    expect(await beta.inviteEmail(code)).toEqual({ email: null });
+    await beta.claim('Tess@Example.test', code);
+    // A retried sign-up with the same email still works; the link is now tied to it.
+    await beta.claim('tess@example.test', code);
+    expect(await beta.inviteEmail(code)).toEqual({ email: 'tess@example.test' });
+    await expect(beta.claim('bob@example.test', code)).rejects.toMatchObject({
+      code: 'INVITE_INVALID',
+    });
+    expect(await beta.summary()).toMatchObject({ used: 0, cap: 0, testAccounts: 1 });
+  });
+
+  it('takes a waitlisted email off the waitlist when it joins with a test link', async () => {
+    await setCap(0);
+    expect(await beta.request('ann@example.test')).toEqual({ status: 'WAITLISTED' });
+    await beta.claim('ann@example.test', await beta.createTestInvite(noAudit));
+    expect(await beta.summary()).toMatchObject({ used: 0, waitlisted: 0, testAccounts: 1 });
+  });
+
   it('reports an email that already has an account', async () => {
     await service.ensureUser({
       id: 'ann',

@@ -11,6 +11,7 @@ import type {
   TwoFactorMethod,
 } from '@harbor/contracts';
 import { authRoutes, loginDestination, privacyUrl, termsUrl, type AuthMode } from '../lib/routes';
+import { browserKey } from '../lib/device-key';
 import { BrandLogo } from './brand-logo';
 import { ThemeToggle } from './theme-toggle';
 import { Alert } from './ui/alert';
@@ -115,7 +116,8 @@ export function AuthPage({
   const inviteCode = mode === 'signup' ? searchParams.get('invite') : null;
   // Both stay undefined while loading; `invite` is null when there is no usable link.
   const [beta, setBeta] = useState<BetaStatus>();
-  const [invite, setInvite] = useState<{ code: string; email: string } | null>();
+  // A test link from staff has no email until it is used, and then works for any.
+  const [invite, setInvite] = useState<{ code: string; email: string | null } | null>();
   const [requested, setRequested] = useState<{
     email: string;
     status: AccessRequestResult['status'];
@@ -151,9 +153,10 @@ export function AuthPage({
     if (!inviteCode) setInvite(null);
     else
       api.request(`/v1/beta/invites/${encodeURIComponent(inviteCode)}`).then(
-        ({ email }: { email: string }) => {
+        ({ email }: { email: string | null }) => {
           if (!live) return;
           setInvite({ code: inviteCode, email });
+          if (!email) return;
           setEmail(email);
           setUsername(usernameFrom(email));
         },
@@ -197,7 +200,15 @@ export function AuthPage({
           setTwoFactor(result.twoFactor);
         } else onDone();
       } else {
-        await api.request(`/v1/auth/${mode}`, { method: 'POST', body: values });
+        // Sign-up names this browser's key, so one browser can't make many accounts.
+        const device =
+          mode === 'signup'
+            ? await browserKey().then(
+                (k) => ({ deviceKey: k.publicKey }),
+                () => ({}),
+              )
+            : {};
+        await api.request(`/v1/auth/${mode}`, { method: 'POST', body: { ...values, ...device } });
         if (mode === 'signup') {
           setCooldown(RESEND_COOLDOWN);
           go('confirm', `We sent a verification code to ${email}.`);
@@ -516,7 +527,7 @@ export function AuthPage({
                     if (!usernameEdited) setUsername(usernameFrom(e.target.value));
                   }}
                   // A beta sign-up link works only for the address it was sent to.
-                  readOnly={mode === 'signup' && !!invite}
+                  readOnly={mode === 'signup' && !!invite?.email}
                   required
                 />
               </Field>

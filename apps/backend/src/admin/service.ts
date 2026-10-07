@@ -16,6 +16,7 @@ import { StorageService, userPK, type Account, type Job } from '../domain';
 import { assert } from '../errors';
 import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
+import { accountsOnDevice, type DeviceAccount } from '../signup-guard';
 
 const AUDIT = 'ADMIN_AUDIT';
 const userAudit = (userId: string) => `ADMIN_AUDIT#${userId}`;
@@ -264,7 +265,32 @@ export class AdminService {
             devices: devices.items,
             backupCount: backups.filter((b) => b.state !== 'REMOVED').length,
             activity: activity.rows.map((r) => r.data as AuditEntry),
+            sameDevice: account ? await this.sameDevice(userId) : [],
         };
+    }
+    /** Other accounts that signed in with any device key this account has proved. */
+    private async sameDevice(userId: string) {
+        const keys = await new Transaction(this.repo).list<{ fingerprint: string }>(
+            userPK(userId),
+            'DEVICE_KEY#',
+        );
+        const fingerprints = [...new Set(keys.map((k) => k.fingerprint))];
+        const others = new Map<string, DeviceAccount>();
+        for (const fingerprint of fingerprints)
+            for (const a of await accountsOnDevice(this.repo, fingerprint))
+                if (a.userId !== userId && !others.has(a.userId)) others.set(a.userId, a);
+        return Promise.all(
+            [...others.values()]
+                .sort((a, b) => a.boundAt.localeCompare(b.boundAt))
+                .map(async (a) => {
+                    const profile = await this.profile(a.userId);
+                    return {
+                        ...a,
+                        suspended: !!profile?.suspendedAt,
+                        deleted: !!profile?.deletedAt,
+                    };
+                }),
+        );
     }
     private async live(userId: string) {
         const user = await this.directory.get(userId);
@@ -375,7 +401,7 @@ export class AdminService {
         return { device };
     }
     /** Blocks the account at once (API and sign-in) without touching its files. */
-    async suspend(staff: Staff, userId: string, reason: string) {
+    async suspend(staff: Staff, userId: string, reason: string, notify = true) {
         const user = await this.live(userId);
         await transact(this.repo, async (tx) => {
             const account = await tx.get<Account>(userPK(userId), 'PROFILE');
@@ -385,11 +411,19 @@ export class AdminService {
                 account.suspendedReason = reason;
                 await tx.put(userPK(userId), 'PROFILE', account);
             }
+            // The notice never includes the staff reason, which stays internal.
+            if (notify)
+                await this.service.email(tx, `suspended-${userId}-${Date.now()}`, {
+                    template: 'ACCOUNT_SUSPENDED',
+                    to: user.email,
+                    name: account?.displayName ?? '',
+                });
             await this.audit(tx, staff, {
                 action: 'SUSPENDED',
                 userId,
                 userEmail: user.email,
                 reason,
+                details: { notified: notify },
             });
         });
         await this.directory.setEnabled(userId, false);

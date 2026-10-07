@@ -115,6 +115,7 @@ export type Email = (
         at: string;
     }
     | { template: 'ACCOUNT_DELETED'; to: string; name: string; purgeAt: string; }
+    | { template: 'ACCOUNT_SUSPENDED'; to: string; name: string; }
     | {
         template: 'ACCOUNT_CLOSED';
         to: string;
@@ -368,6 +369,17 @@ function accountMessage(email: Email, webOrigin: string): Message {
         }
         case 'ACCOUNT_CLOSED':
             return closedMessage(email);
+        case 'ACCOUNT_SUSPENDED':
+            return {
+                subject: 'Your harbor0 account was suspended',
+                preheader: "Your account is suspended. Your files are kept, but you can't sign in for now.",
+                heading: 'Your account was suspended',
+                intro: greet(
+                    email.name,
+                    `the harbor0 team suspended your harbor0 account for ${escape(email.to)} and signed it out on every device.`,
+                ),
+                footnote: `Your files are kept, but you can't sign in or use them while the account is suspended. To find out more, or if you think this is a mistake, write to ${mailto}.`,
+            };
         case 'STORAGE': {
             const used = `${size(email.usedBytes)} of your ${size(email.quotaBytes)}`;
             const details: Message['details'] = [

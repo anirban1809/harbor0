@@ -17,6 +17,8 @@ import {
     adminPurgeResultSchema,
     adminQuotaBody,
     adminReasonBody,
+    adminSuspendBody,
+    adminTestInviteSchema,
     adminUserDetailSchema,
     adminUserPageSchema,
     adminUserSortSchema,
@@ -344,7 +346,10 @@ export function createAdminApp(
     );
     reasonAction('verification/confirm', 'confirm', (s, id, r) => admin.confirm(s, id, r));
     reasonAction('sign-out', 'sign-out', (s, id, r) => admin.signOut(s, id, r));
-    reasonAction('suspend', 'suspend', (s, id, r) => admin.suspend(s, id, r));
+    v1.post('/users/:id/suspend', guard('suspend'), async (ctx) => {
+        const { reason, notify } = await body(ctx, adminSuspendBody);
+        return ctx.json(await admin.suspend(ctx.get('staff'), userId(ctx), reason, notify));
+    });
     reasonAction('unsuspend', 'suspend', (s, id, r) => admin.unsuspend(s, id, r));
     v1.post('/users/:id/devices/:deviceId/sign-out', guard('sign-out'), async (ctx) => {
         const { reason } = await body(ctx, adminReasonBody);
@@ -386,6 +391,14 @@ export function createAdminApp(
         return ctx.json(
             adminBetaSchema.extend({ newlyInvited: z.number() }).parse(result),
         );
+    });
+    v1.post('/beta/test-invites', guard('beta'), async (ctx) => {
+        const { reason } = await body(ctx, adminReasonBody);
+        const code = await beta.createTestInvite((tx) =>
+            admin.audit(tx, ctx.get('staff'), { action: 'BETA_TEST_INVITE', reason }),
+        );
+        const url = `${options.webOrigin ?? ''}/signup?invite=${encodeURIComponent(code)}`;
+        return ctx.json(adminTestInviteSchema.parse({ url }));
     });
     const flagKey = (ctx: Context<Env>) => ctx.req.param('key') ?? '';
     v1.get('/flags', guard('read'), async (ctx) =>

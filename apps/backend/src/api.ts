@@ -19,6 +19,7 @@ import { UsageService } from './usage';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
 import { transact } from './repository';
+import { assertDeviceMayRegister, assertInboxFree } from './signup-guard';
 import { needsSecondStep, type AuthProvider, type Tokens } from './auth';
 import type { Realtime } from './realtime';
 import { PushRegistrations } from './push';
@@ -332,12 +333,19 @@ export function createApp(
         displayName: z.string().min(1).max(100),
         // The code from a beta sign-up link; required while the beta is invite-only.
         inviteCode: z.string().min(1).max(64).optional(),
+        // This browser's device public key (SPKI, base64url), to limit accounts per browser.
+        deviceKey: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{40,400}$/)
+          .optional(),
       })
       .strict(),
     anyObject,
-    async (_, input) => {
+    async (_, { deviceKey, ...input }) => {
       const existing = await service.lookup(input.username);
       assert(existing.users.length === 0, 'USERNAME_TAKEN', 'This username is taken.', 409);
+      await transact(service.repo, (tx) => assertInboxFree(tx, input.email));
+      if (deviceKey) await assertDeviceMayRegister(service.repo, deviceKey);
       // Cognito's sign-up trigger takes the seat too, for sign-ups that skip this API.
       await beta.claim(input.email, input.inviteCode);
       return auth.signup(input);
@@ -369,9 +377,9 @@ export function createApp(
   add(
     'get',
     '/v1/beta/invites/:code',
-    'The email address a beta sign-up link was sent to',
+    'The email address a beta sign-up link was sent to; null for a test link, which takes any',
     undefined,
-    z.object({ email: z.string() }),
+    z.object({ email: z.string().nullable() }),
     async (ctx) => beta.inviteEmail(z.string().min(1).max(64).parse(ctx.req.param('code'))),
     true,
   );

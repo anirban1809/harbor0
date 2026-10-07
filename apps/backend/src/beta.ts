@@ -4,6 +4,7 @@ import type { Job } from './domain';
 import type { Email } from './emails';
 import { assert, DomainError } from './errors';
 import { transact, type Repository, type Transaction } from './repository';
+import { assertInboxFree, inboxClaim, putInboxClaim } from './signup-guard';
 
 /**
  * Invite-only sign-up for the beta. Anyone can ask for access with their email. While the
@@ -20,11 +21,20 @@ type Entry = {
   invitedAt?: string;
   sentAt?: string;
   joinedAt?: string;
+  /** Joined through a staff test link, so it took no seat. */
+  test?: boolean;
 };
+/**
+ * A sign-up link. Links sent to someone are for their email only. A test link from staff
+ * works for any email, takes no seat, and is used up by the first sign-up: `usedBy` then
+ * holds that email, so a retried sign-up with it still works.
+ */
+type Invite = { email: string } | { test: true; createdAt: string; usedBy?: string };
 export type BetaSummary = Seats & {
   inviteRequired: boolean;
   invited: number;
   waitlisted: number;
+  testAccounts: number;
 };
 
 const SEATS = 'SEATS';
@@ -65,9 +75,14 @@ export class Beta {
   }
   /** Emails a sign-up link, or adds the email to the waitlist when the wave is full. */
   async request(rawEmail: string): Promise<AccessRequestResult> {
-    const email = normalizeEmail(rawEmail);
+    const typed = normalizeEmail(rawEmail);
     const empty = await this.waitlistEmpty();
     return transact(this.repo, async (tx) => {
+      // Another spelling of an inbox already in the beta is that address: same inbox, same link.
+      const holder = await inboxClaim(tx, typed);
+      if (holder?.userId) return { status: 'REGISTERED' };
+      const email = holder?.email ?? typed;
+      if (!holder) await putInboxClaim(tx, { email });
       if (await tx.get('EMAIL', email)) return { status: 'REGISTERED' };
       const entry = await tx.get<Entry>(ENTRY, email);
       if (entry?.state === 'WAITLISTED') return { status: 'WAITLISTED' };
@@ -86,11 +101,21 @@ export class Beta {
       return { status: 'WAITLISTED' };
     });
   }
-  /** The email a sign-up link was sent to. */
+  /** The email a sign-up link was sent to; null for an unused test link, which takes any. */
   async inviteEmail(code: string) {
-    const invite = await transact(this.repo, (tx) => tx.get<{ email: string }>(INVITE, code));
+    const invite = await transact(this.repo, (tx) => tx.get<Invite>(INVITE, code));
     assert(invite, 'INVITE_INVALID', 'This sign-up link is not valid. Request a new one.', 404);
-    return { email: invite.email };
+    return { email: 'test' in invite ? (invite.usedBy ?? null) : invite.email };
+  }
+  /** Makes a single-use test sign-up link that works for any email and takes no seat. */
+  async createTestInvite(audit: (tx: Transaction) => Promise<unknown>) {
+    const code = newCode();
+    await transact(this.repo, async (tx) => {
+      const invite: Invite = { test: true, createdAt: now() };
+      await tx.put(INVITE, code, invite);
+      await audit(tx);
+    });
+    return code;
   }
   /**
    * Takes a seat for the account being created. Repeating it for the same email is free, so a
@@ -107,7 +132,28 @@ export class Beta {
       403,
     );
     const full = await transact(this.repo, async (tx) => {
-      const invite = await tx.get<{ email: string }>(INVITE, code);
+      await assertInboxFree(tx, email);
+      const invite = await tx.get<Invite>(INVITE, code);
+      if (invite && 'test' in invite) {
+        assert(
+          !invite.usedBy || invite.usedBy === email,
+          'INVITE_INVALID',
+          'This sign-up link has already been used.',
+          403,
+        );
+        const entry = await tx.get<Entry>(ENTRY, email);
+        if (entry?.state === 'JOINED') return false;
+        await tx.put(INVITE, code, { ...invite, usedBy: email });
+        await tx.put(ENTRY, email, {
+          email,
+          state: 'JOINED',
+          requestedAt: entry?.requestedAt ?? now(),
+          joinedAt: now(),
+          test: true,
+        } satisfies Entry);
+        if (entry?.state === 'WAITLISTED') await tx.delete(WAITLIST, waitlistKey(entry));
+        return false;
+      }
       assert(
         invite?.email === email,
         'INVITE_INVALID',
@@ -142,6 +188,7 @@ export class Beta {
         inviteRequired: this.inviteRequired,
         invited: entries.filter((e) => e.state === 'INVITED').length,
         waitlisted: entries.filter((e) => e.state === 'WAITLISTED').length,
+        testAccounts: entries.filter((e) => e.test).length,
       };
     });
   }

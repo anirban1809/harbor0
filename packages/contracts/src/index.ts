@@ -329,6 +329,26 @@ export type Identity = {
 };
 export const normalizeName = (v: string) => v.normalize('NFC').toLowerCase();
 export const normalizeEmail = (v: string) => v.trim().toLowerCase();
+const GMAIL = new Set(['gmail.com', 'googlemail.com']);
+/**
+ * The inbox an address delivers to, so one inbox gets one account: `+tags` are dropped, and
+ * for Gmail so are dots (Gmail ignores both) and googlemail.com is gmail.com.
+ */
+export function canonicalEmail(v: string) {
+  const email = normalizeEmail(v);
+  const at = email.lastIndexOf('@');
+  if (at < 1) return email;
+  let local = email.slice(0, at).split('+')[0];
+  let domain = email.slice(at + 1);
+  if (GMAIL.has(domain)) {
+    local = local.replace(/\./g, '');
+    domain = 'gmail.com';
+  }
+  return `${local || email.slice(0, at)}@${domain}`;
+}
+/** New accounts one browser may create in `SIGNUP_DEVICE_WINDOW_MS` before sign-up is refused. */
+export const SIGNUP_DEVICE_LIMIT = 2;
+export const SIGNUP_DEVICE_WINDOW_MS = 7 * 86400_000;
 /**
  * Whether sign-up needs a link from the beta, and whether a request for one gets it at once
  * (`open`) or joins the waitlist until the next wave.

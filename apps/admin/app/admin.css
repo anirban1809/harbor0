@@ -123,6 +123,12 @@ body {
   flex-wrap: wrap;
   gap: 4px;
 }
+.admin-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .admin-back {
   display: inline-flex;
   align-items: center;
