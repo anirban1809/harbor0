@@ -77,6 +77,7 @@ import { folderState, syncRequirements, type SyncFolder } from './sync-state';
 import { SyncNotifications } from './sync-notifications';
 import { SharedSyncInvitations } from './sync-sharing';
 import { IncomingDialog } from './incoming-dialog';
+import { UpdatePanel, useUpdateStatus } from './update-panel';
 import type { IncomingContent } from './incoming';
 import { mergeSyncItems } from './sync-drive';
 import { Button } from '../../web/components/ui/button';
@@ -146,6 +147,7 @@ function App() {
   const [trail, setTrail] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const update = useUpdateStatus();
   // Set while an account with two-step verification is asked for its code.
   const [twoFactor, setTwoFactor] = useState<{
     credentials: { email: string; password: string };
@@ -924,6 +926,11 @@ function App() {
             >
               <Icon aria-hidden="true" />
               <span>{name}</span>
+              {name === 'Settings' && update?.state === 'available' && (
+                <Badge tone="accent" className="nav-badge">
+                  Update
+                </Badge>
+              )}
             </button>
           ))}
         </nav>
@@ -1618,6 +1625,7 @@ function App() {
                   </Button>
                 </div>
               </Card>
+              <UpdatePanel status={update} />
             </div>
           )}
         </main>

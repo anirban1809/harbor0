@@ -29,6 +29,9 @@ const channels = [
   'openSyncedItem',
   'diagnostics',
   'logout',
+  'updateStatus',
+  'checkForUpdate',
+  'installUpdate',
 ] as const;
 const bridge = Object.fromEntries(
   channels.map((name) => [
@@ -74,6 +77,11 @@ contextBridge.exposeInMainWorld('harbor', {
     const listener = (_: unknown, progress: unknown) => callback(progress);
     ipcRenderer.on('harbor:zip-progress', listener);
     return () => ipcRenderer.removeListener('harbor:zip-progress', listener);
+  },
+  onUpdate: (callback: (status: unknown) => void) => {
+    const listener = (_: unknown, status: unknown) => callback(status);
+    ipcRenderer.on('harbor:update', listener);
+    return () => ipcRenderer.removeListener('harbor:update', listener);
   },
   onStatus: (callback: (state: unknown) => void) => {
     const listener = (_: unknown, state: unknown) => callback(state);

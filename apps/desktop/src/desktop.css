@@ -14,8 +14,20 @@
 .platform-darwin :is(.sidebar, .topbar, .auth-story) {
   -webkit-app-region: drag;
 }
-.platform-darwin :is(.sidebar, .topbar, .auth-story)
-  :is(a, button, input, select, textarea, label, [role='button'], [tabindex], .nav-item, .search-box) {
+.platform-darwin
+  :is(.sidebar, .topbar, .auth-story)
+  :is(
+    a,
+    button,
+    input,
+    select,
+    textarea,
+    label,
+    [role='button'],
+    [tabindex],
+    .nav-item,
+    .search-box
+  ) {
   -webkit-app-region: no-drag;
 }
 .platform-darwin .desktop-auth::before {
@@ -185,4 +197,16 @@
 .auth-switch .btn svg {
   width: 12px;
   height: 12px;
+}
+
+/* Marks the Settings item while an app update is waiting. */
+.nav-item .nav-badge {
+  margin-left: auto;
+}
+.update-panel > .card-description,
+.update-panel > .progress {
+  margin-bottom: 16px;
+}
+.update-panel > .progress {
+  width: 100%;
 }

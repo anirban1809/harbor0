@@ -48,6 +48,7 @@ import { DesktopSession, RenewalError, isSessionError } from './session';
 import { retrying } from './retry';
 import { cloudLocation, localDirectory } from './sync-mapping';
 import { IncomingMonitor, type IncomingContent } from './incoming';
+import { Updater, runningBundle } from './updater';
 // fetch closes idle connections after 4s, so the first request after a quiet moment
 // paid a fresh TCP + TLS handshake (about 0.6s far from the API region). Keeping them
 // open longer lets a sync after a pause start immediately.
@@ -77,6 +78,7 @@ let stoppingSync: Promise<void> = Promise.resolve();
 const operations = new Set<Promise<unknown>>();
 let engine: SyncEngine | undefined;
 let quitting = false;
+let updater: Updater | undefined;
 let incomingMonitor: IncomingMonitor | undefined;
 let live: LiveUpdates | undefined;
 let incomingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -282,7 +284,14 @@ else {
   });
 }
 // The login page uses these, so they work without an account.
-const signedOutChannels = new Set(['status', 'openAccountPage', 'loginMethod']);
+const signedOutChannels = new Set([
+  'status',
+  'openAccountPage',
+  'loginMethod',
+  'updateStatus',
+  'checkForUpdate',
+  'installUpdate',
+]);
 function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<unknown>) {
   ipcMain.handle('harbor:' + name, async (event, input) => {
     if (
@@ -1117,6 +1126,27 @@ app
       );
       return { saved: true };
     });
+    updater = new Updater({
+      current: app.getVersion(),
+      bundle: runningBundle(app.isPackaged, process.platform, process.execPath),
+      arch: process.arch,
+      onChange: (status) => {
+        if (!window.isDestroyed()) window.webContents.send('harbor:update', status);
+      },
+      // Sync stops cleanly first so the journal is saved before the app is replaced.
+      quit: async () => {
+        quitting = true;
+        await engine?.stop();
+        setImmediate(() => app.quit());
+      },
+    });
+    updater.start();
+    ipc('updateStatus', z.undefined(), async () => updater!.status);
+    ipc('checkForUpdate', z.undefined(), () => updater!.check());
+    ipc('installUpdate', z.undefined(), async () => {
+      await updater!.install();
+      return { restarting: true };
+    });
     ipc('logout', z.undefined(), async () => {
       await engine?.stop();
       try {
@@ -1180,6 +1210,7 @@ app
   });
 app.on('before-quit', () => {
   quitting = true;
+  updater?.stop();
   clearTimeout(incomingTimer);
   live?.stop();
   incomingMonitor?.stop();

@@ -72,6 +72,11 @@ declare global {
       reveal: (input: { rootId: string }) => Promise<any>;
       diagnostics: () => Promise<any>;
       logout: () => Promise<any>;
+      updateStatus: () => Promise<import('./updater').UpdateStatus>;
+      checkForUpdate: () => Promise<import('./updater').UpdateStatus>;
+      /** Downloads and installs the available update, then restarts the app. */
+      installUpdate: () => Promise<{ restarting: boolean }>;
+      onUpdate: (callback: (status: import('./updater').UpdateStatus) => void) => () => void;
       onStatus: (callback: (state: any) => void) => () => void;
       /** Live updates connection changes and pushed hints to refresh. */
       onLive: (
