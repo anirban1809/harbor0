@@ -39,8 +39,9 @@ const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 const UPLOAD_BUFFER_BUDGET = 64 * 1024 * 1024;
 // Storage requests must end: a transfer slower than 32 KiB/s (or silent for a minute while
 // streaming) fails and resumes on the next attempt instead of holding up sync forever.
+// AbortSignal.timeout rejects fractional delays, so round up to whole milliseconds.
 const sizedTimeout = (bytes: number) =>
-  AbortSignal.timeout(Math.max(120_000, (bytes / (32 * 1024)) * 1000));
+  AbortSignal.timeout(Math.max(120_000, Math.ceil((bytes / (32 * 1024)) * 1000)));
 function idleTimeout(ms = 60_000) {
   const controller = new AbortController();
   const abort = () =>

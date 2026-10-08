@@ -7,6 +7,9 @@ directories:
 files:
   - dist/**/*
   - package.json
+  # esbuild bundles everything the app needs into dist. Without this, electron-builder packs the
+  # workspace root's dependencies (Next, AWS CDK, the AWS SDK…), which adds ~480 MB.
+  - '!node_modules{,/**/*}'
 mac:
   target: [dmg]
   category: public.app-category.productivity

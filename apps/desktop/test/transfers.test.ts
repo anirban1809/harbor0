@@ -108,6 +108,30 @@ it('starts sending a new upload without first asking for its status', async () =
   ]);
 });
 
+it('uploads a large part whose size is not a multiple of 4 KiB', async () => {
+  // Over ~3.75 MiB the timeout scales with size; 4,000,001 bytes gives a fractional delay.
+  const size = 4_000_001;
+  const filename = path.join(directory, 'upload');
+  await writeFile(filename, Buffer.alloc(size, 1));
+  const { api, complete } = uploadApi();
+  const timeout = vi.spyOn(AbortSignal, 'timeout');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => new Response(null, { headers: { etag: url } })),
+  );
+  await uploadFile(
+    api,
+    filename,
+    'upload',
+    null,
+    { operationId: 'op', uploadId: 'upload', partSize: size },
+    () => {},
+  );
+  expect(timeout.mock.calls.map(([ms]) => Number.isInteger(ms))).toEqual([true]);
+  expect(complete).toHaveBeenCalledOnce();
+  timeout.mockRestore();
+});
+
 it('waits for in-flight uploads after failure and preserves successful receipts for retry', async () => {
   const filename = path.join(directory, 'upload');
   await writeFile(filename, 'abcdefghijklmnop');
