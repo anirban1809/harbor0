@@ -232,12 +232,15 @@ function AddMembers({ groupId, onAdded }: { groupId: string; onAdded: (message: 
 function GroupDetail({ id }: { id: string }) {
   const router = useRouter();
   const queries = useQueryClient();
-  const canEdit = useCan('campaigns');
+  const canChange = useCan('campaigns');
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const detail = useQuery({ queryKey: ['email-group', id], queryFn: () => api.group(id) });
+  // Built-in groups (other than Everyone, which has its own page) list members but can't change.
+  const builtIn = !!detail.data?.group.builtIn;
+  const canEdit = canChange && !builtIn;
   const members = useInfiniteQuery({
     queryKey: ['email-group-members', id],
     queryFn: ({ pageParam }) => api.groupMembers(id, pageParam),
@@ -278,7 +281,16 @@ function GroupDetail({ id }: { id: string }) {
       ) : (
         <>
           <PageHeader
-            title={detail.data.group.name}
+            title={
+              builtIn ? (
+                <span className="admin-title-row">
+                  {detail.data.group.name}
+                  <Badge>Built in</Badge>
+                </span>
+              ) : (
+                detail.data.group.name
+              )
+            }
             description={
               <>
                 {detail.data.group.description && <>{detail.data.group.description} · </>}
@@ -305,6 +317,21 @@ function GroupDetail({ id }: { id: string }) {
             </Alert>
           )}
           {error && <Alert tone="error">{error}</Alert>}
+          {builtIn && (
+            <Card title="Who is in it">
+              <p>
+                Every account that has signed in to the Mac app, or to harbor0 in a browser on
+                macOS (Safari, Chrome, Firefox or Edge), even if it has since signed out. It is
+                worked out again when a campaign starts sending, so new Mac users are included. As
+                with any group, deleted, suspended and unverified accounts are skipped, and product
+                updates skip people who unsubscribed.
+              </p>
+              <p className="admin-muted">
+                The list below is refreshed every 15 minutes. It can&apos;t be renamed, edited or
+                deleted.
+              </p>
+            </Card>
+          )}
           {canEdit && (
             <Card
               title="Add members"

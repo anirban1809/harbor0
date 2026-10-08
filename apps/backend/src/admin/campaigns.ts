@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeEmail } from '@harbor/contracts';
 import type { AdminUserEmail, AuditEntry, Staff } from '../../../../packages/contracts/src/admin';
-import { EVERYONE_GROUP } from '../../../../packages/contracts/src/campaigns';
+import {
+  BUILT_IN_GROUPS,
+  EVERYONE_GROUP,
+  MAC_USERS_GROUP,
+} from '../../../../packages/contracts/src/campaigns';
 import type {
   CampaignBody,
   CampaignContent,
@@ -19,6 +23,7 @@ import {
   emptyCounts,
   getRow,
   GROUP_PK,
+  macUserIds,
   memberPK,
   memberSK,
   read,
@@ -52,6 +57,11 @@ const stamp = (staff: Staff, row: { updatedAt: string }) => {
   };
 };
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** The Mac users group's accounts as last worked out, for the console; sends always rescan. */
+type MacUsersCache = { computedAt: string; userIds: string[] };
+const MAC_USERS_CACHE = { pk: 'ADMIN_STATS', sk: 'MAC_USERS' };
+const MAC_USERS_MAX_AGE_MS = 15 * 60_000;
+const MAC_MEMBER_PAGE = 50;
 const MAX_SCHEDULE_AHEAD_MS = 90 * 86400_000;
 // Group writes go in chunks; a transaction holds at most 100 items.
 const CHUNK = 40;
@@ -232,23 +242,56 @@ export class AdminCampaigns {
       updatedBy: 'Built in',
     };
   }
+  /** Accounts that have used a Mac, rescanned when the cached list is over 15 minutes old. */
+  private async macUserIds(): Promise<MacUsersCache> {
+    const cached = (await this.repo.get(MAC_USERS_CACHE))?.data as MacUsersCache | undefined;
+    if (cached && Date.now() - Date.parse(cached.computedAt) < MAC_USERS_MAX_AGE_MS)
+      return cached;
+    const fresh = { computedAt: new Date().toISOString(), userIds: (await macUserIds(this.repo)).sort() };
+    await transact(this.repo, (tx) => tx.put(MAC_USERS_CACHE.pk, MAC_USERS_CACHE.sk, fresh)).catch(
+      () => undefined,
+    );
+    return fresh;
+  }
+  /** The built-in group of accounts that have used the Mac app or a browser on macOS. */
+  private async macUsers(): Promise<StoredGroup> {
+    const { computedAt, userIds } = await this.macUserIds();
+    return {
+      id: MAC_USERS_GROUP,
+      name: 'Mac users',
+      description:
+        'Accounts that have used the Mac app or a browser on macOS, worked out when a campaign starts sending.',
+      memberCount: userIds.length,
+      builtIn: true,
+      createdAt: '',
+      createdBy: 'Built in',
+      updatedAt: computedAt,
+      updatedBy: 'Built in',
+    };
+  }
+  private builtIn(id: string) {
+    return id === EVERYONE_GROUP ? this.everyone() : this.macUsers();
+  }
   private notBuiltIn(id: string) {
     assert(
-      id !== EVERYONE_GROUP,
+      !BUILT_IN_GROUPS.includes(id),
       'BUILT_IN_GROUP',
-      'The Everyone group is built in: it always holds every account and cannot be changed.',
+      'This group is built in: its members are worked out for you, and it cannot be changed.',
       409,
     );
   }
   async groups() {
-    const [everyone, groups] = await Promise.all([
+    const [everyone, macUsers, groups] = await Promise.all([
       this.everyone(),
+      this.macUsers(),
       allRows<StoredGroup>(this.repo, GROUP_PK),
     ]);
-    return { items: [everyone, ...groups.sort((a, b) => a.name.localeCompare(b.name))] };
+    return {
+      items: [everyone, macUsers, ...groups.sort((a, b) => a.name.localeCompare(b.name))],
+    };
   }
   async group(id: string) {
-    if (id === EVERYONE_GROUP) return { group: await this.everyone(), history: [] };
+    if (BUILT_IN_GROUPS.includes(id)) return { group: await this.builtIn(id), history: [] };
     const [group, log] = await Promise.all([
       getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group'),
       this.log('GROUP', id),
@@ -329,6 +372,26 @@ export class AdminCampaigns {
   async members(id: string, cursor?: string) {
     // Everyone has no stored members; the console lists accounts on the Users page.
     if (id === EVERYONE_GROUP) return { items: [], nextCursor: null };
+    if (id === MAC_USERS_GROUP) {
+      const { computedAt, userIds } = await this.macUserIds();
+      const start = Number(cursor ?? 0) || 0;
+      const items = await Promise.all(
+        userIds.slice(start, start + MAC_MEMBER_PAGE).map(async (userId): Promise<StoredMember> => {
+          const account = (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
+            | Account
+            | undefined;
+          return {
+            userId,
+            email: account?.email ?? null,
+            name: account?.displayName ?? null,
+            addedAt: computedAt,
+            addedBy: 'Built in',
+          };
+        }),
+      );
+      const next = start + MAC_MEMBER_PAGE;
+      return { items, nextCursor: next < userIds.length ? String(next) : null };
+    }
     await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const page = await this.repo.query(memberPK(id), 'MEMBER#', 50, cursor);
     return { items: page.rows.map((r) => r.data as StoredMember), nextCursor: page.cursor };
@@ -496,9 +559,9 @@ export class AdminCampaigns {
       this.log('CAMPAIGN', id),
       Promise.all(
         c.audience.groupIds.map(async (groupId) => {
-          if (groupId === EVERYONE_GROUP) {
-            const everyone = await this.everyone();
-            return { id: groupId, name: everyone.name, memberCount: everyone.memberCount };
+          if (BUILT_IN_GROUPS.includes(groupId)) {
+            const group = await this.builtIn(groupId);
+            return { id: groupId, name: group.name, memberCount: group.memberCount };
           }
           const g = (await this.repo.get({ pk: GROUP_PK, sk: groupId }))?.data as StoredGroup | undefined;
           return { id: groupId, name: g?.name ?? null, memberCount: g?.memberCount ?? 0 };

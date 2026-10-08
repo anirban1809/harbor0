@@ -461,7 +461,7 @@ describe('the Everyone group', () => {
   it('is listed first, holds every account, and cannot be changed', async () => {
     const mine = await ok(admin, 'POST', '/email/groups', { name: 'Testers' });
     const groups = (await ok(support, 'GET', '/email/groups')).items;
-    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', mine.id]);
+    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', 'mac-users', mine.id]);
     expect(groups[0]).toMatchObject({ name: 'Everyone', builtIn: true, memberCount: 2 });
     expect((await ok(admin, 'GET', '/email/groups/everyone')).group.builtIn).toBe(true);
     for (const [method, path, body] of [
@@ -511,6 +511,48 @@ describe('the Everyone group', () => {
       'alice@example.test',
       'bob@example.test',
       'carol@example.test',
+    ]);
+  });
+});
+
+describe('the Mac users group', () => {
+  it('holds accounts that used the Mac app or a browser on macOS, and cannot be changed', async () => {
+    await service.registerDevice('alice', { name: 'Safari on macOS', platform: 'WEB' });
+    await service.registerDevice('bob', { name: 'Chrome on Windows', platform: 'WEB' });
+    await service.registerDevice('bob', { name: 'Pixel 9', platform: 'ANDROID' });
+    const groups = (await ok(support, 'GET', '/email/groups')).items;
+    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', 'mac-users']);
+    expect(groups[1]).toMatchObject({ name: 'Mac users', builtIn: true, memberCount: 1 });
+    const members = await ok(admin, 'GET', '/email/groups/mac-users/members');
+    expect(members.items.map((m: { email: string }) => m.email)).toEqual(['alice@example.test']);
+    for (const [method, path, body] of [
+      ['PUT', '/email/groups/mac-users', { name: 'x', description: '', expectedUpdatedAt: '' }],
+      ['DELETE', '/email/groups/mac-users', undefined],
+      ['POST', '/email/groups/mac-users/members', { userIds: ['bob'] }],
+    ] as const) {
+      const r = await call(admin, method, path, body);
+      expect(r.status, path).toBe(409);
+      expect(r.data.error.code).toBe('BUILT_IN_GROUP');
+    }
+
+    // A campaign rescans when it sends, so a Mac first seen after scheduling is included.
+    const t = await ok(admin, 'POST', '/email/templates', template('SERVICE'));
+    const campaign = await ok(admin, 'POST', '/email/campaigns', {
+      name: 'Mac app',
+      templateId: t.id,
+      audience: { groupIds: ['mac-users'], userIds: [] },
+    });
+    await ok(admin, 'POST', `/email/campaigns/${campaign.id}/schedule`, {
+      at: null,
+      reason: 'Mac release',
+      expectedUpdatedAt: campaign.updatedAt,
+    });
+    await service.registerDevice('bob', { name: 'MacBook Air', platform: 'MACOS' });
+    await service.runJobs(async () => {});
+    const sent = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=SENT`);
+    expect(sent.items.map((r: { email: string }) => r.email).sort()).toEqual([
+      'alice@example.test',
+      'bob@example.test',
     ]);
   });
 });

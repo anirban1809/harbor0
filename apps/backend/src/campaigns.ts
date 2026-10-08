@@ -10,14 +10,14 @@ import type {
   RecipientSkipReason,
 } from '../../../packages/contracts/src/campaigns';
 import { normalizeEmail } from '@harbor/contracts';
-import { EVERYONE_GROUP } from '../../../packages/contracts/src/campaigns';
+import { EVERYONE_GROUP, MAC_USERS_GROUP } from '../../../packages/contracts/src/campaigns';
 import { signupLinkFor } from './beta';
 import { campaignVars } from './campaign-content';
 import { userPK, type Account, type StorageService } from './domain';
 import type { Email } from './emails';
 import { addressOptedOut, EmailSuppressions, type EmailLinks } from './email-preferences';
 import { assert } from './errors';
-import { Transaction, transact, type Repository } from './repository';
+import { Transaction, transact, type DeviceSighting, type Repository } from './repository';
 
 /*
  * Rows (pk / sk):
@@ -90,6 +90,21 @@ export async function accountIdFor(repo: Repository, email: string) {
 }
 
 /**
+ * Whether a device session was a Mac: the desktop app on macOS, or a browser the web app named
+ * "<browser> on macOS" (browserName in apps/web/lib/device-key.ts).
+ */
+export const isMacDevice = (device: DeviceSighting) =>
+  device.platform === 'MACOS' || (device.platform === 'WEB' && / on macOS$/.test(device.name ?? ''));
+
+/** Accounts that have used a Mac, signed out or not; the Mac users group. */
+export async function macUserIds(repo: Repository) {
+  const ids = new Set<string>();
+  for (const device of await repo.scanDevices())
+    if (device.userId && isMacDevice(device)) ids.add(device.userId);
+  return [...ids];
+}
+
+/**
  * The distinct recipients in an audience, and any groups that no longer exist. An address
  * that an account uses now counts as that account.
  */
@@ -101,6 +116,10 @@ export async function audienceRecipients(repo: Repository, audience: CampaignAud
     if (groupId === EVERYONE_GROUP) {
       // Every account with a profile; eligibility then skips deleted and suspended ones.
       for (const profile of await repo.scanProfiles()) if (profile.id) ids.add(profile.id);
+      continue;
+    }
+    if (groupId === MAC_USERS_GROUP) {
+      for (const id of await macUserIds(repo)) ids.add(id);
       continue;
     }
     if (!(await repo.get({ pk: GROUP_PK, sk: groupId }))) {

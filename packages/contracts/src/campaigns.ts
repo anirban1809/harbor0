@@ -87,12 +87,18 @@ export const emailGroupInput = z
  * campaign starts sending, so people who sign up after it is scheduled are included.
  */
 export const EVERYONE_GROUP = 'everyone';
+/**
+ * The built-in group of accounts that have used a Mac: the desktop app on macOS or a browser
+ * on macOS. Like Everyone it has no stored members and is worked out when a campaign sends.
+ */
+export const MAC_USERS_GROUP = 'mac-users';
+export const BUILT_IN_GROUPS: readonly string[] = [EVERYONE_GROUP, MAC_USERS_GROUP];
 export const emailGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string(),
   memberCount: z.number(),
-  /** The Everyone group, which can't be renamed, edited or deleted. */
+  /** A built-in group (Everyone, Mac users), which can't be renamed, edited or deleted. */
   builtIn: z.boolean().optional(),
   ...staffStamp,
 });
