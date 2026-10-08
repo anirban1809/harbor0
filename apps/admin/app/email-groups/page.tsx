@@ -173,8 +173,12 @@ function AddMembers({ groupId, onAdded }: { groupId: string; onAdded: (message: 
       setText(result.unmatched.join('\n'));
       onAdded(
         [
-          `Added ${plural(result.added, 'account')}.`,
-          result.alreadyMembers ? `${plural(result.alreadyMembers, 'account')} already in it.` : '',
+          `Added ${plural(result.added - result.addedEmails, 'account')}${
+            result.addedEmails
+              ? ` and ${plural(result.addedEmails, 'email')} without an account`
+              : ''
+          }.`,
+          result.alreadyMembers ? `${plural(result.alreadyMembers, 'member')} already in it.` : '',
         ]
           .filter(Boolean)
           .join(' '),
@@ -203,8 +207,9 @@ function AddMembers({ groupId, onAdded }: { groupId: string; onAdded: (message: 
       </Field>
       {unmatched.length > 0 && (
         <Alert tone="warning" role="none">
-          {unmatched.length === 1 ? '1 entry matches' : `${unmatched.length} entries match`} no
-          account and {unmatched.length === 1 ? 'is' : 'are'} left above:{' '}
+          {unmatched.length === 1 ? '1 entry is' : `${unmatched.length} entries are`} not an
+          email and {unmatched.length === 1 ? 'matches' : 'match'} no username, so{' '}
+          {unmatched.length === 1 ? 'it is' : 'they are'} left above:{' '}
           {unmatched.slice(0, 10).join(', ')}
           {unmatched.length > 10 && '…'}
         </Alert>
@@ -246,10 +251,10 @@ function GroupDetail({ id }: { id: string }) {
     void queries.invalidateQueries({ queryKey: ['user'] });
     void queries.invalidateQueries({ queryKey: ['audit'] });
   };
-  const remove = async (userId: string, email: string | null) => {
+  const remove = async (userId: string | null, email: string | null) => {
     setError('');
     try {
-      await api.removeGroupMembers(id, [userId]);
+      await api.removeGroupMembers(id, userId ? { userIds: [userId] } : { emails: [email!] });
       setNotice(`Removed ${email ?? userId}.`);
       refresh();
     } catch (e) {
@@ -277,7 +282,7 @@ function GroupDetail({ id }: { id: string }) {
             description={
               <>
                 {detail.data.group.description && <>{detail.data.group.description} · </>}
-                {plural(detail.data.group.memberCount, 'account')}
+                {plural(detail.data.group.memberCount, 'member')}
               </>
             }
             action={
@@ -301,7 +306,10 @@ function GroupDetail({ id }: { id: string }) {
           )}
           {error && <Alert tone="error">{error}</Alert>}
           {canEdit && (
-            <Card title="Add accounts" description="Paste emails or usernames of existing accounts.">
+            <Card
+              title="Add members"
+              description="Paste emails or usernames. An email with no account is added as an address on its own."
+            >
               <AddMembers
                 groupId={id}
                 onAdded={(message) => {
@@ -311,28 +319,35 @@ function GroupDetail({ id }: { id: string }) {
               />
             </Card>
           )}
-          <Card title="Accounts">
+          <Card title="Members">
             {members.isPending ? (
               <Skeleton className="admin-skeleton-block" />
             ) : !all.length ? (
-              <p className="admin-empty">No accounts in this group yet.</p>
+              <p className="admin-empty">No one in this group yet.</p>
             ) : (
               <>
-                <DataTable label="Accounts in the group">
+                <DataTable label="Members of the group">
                   <thead>
                     <tr>
-                      <th>Account</th>
+                      <th>Member</th>
                       <th>Added</th>
                       <th aria-label="Actions" />
                     </tr>
                   </thead>
                   <tbody>
                     {all.map((m) => (
-                      <tr key={m.userId}>
+                      <tr key={m.userId ?? m.email}>
                         <td>
-                          <Link href={`/user?id=${encodeURIComponent(m.userId)}`}>
-                            {m.email ?? m.userId}
-                          </Link>
+                          {m.userId ? (
+                            <Link href={`/user?id=${encodeURIComponent(m.userId)}`}>
+                              {m.email ?? m.userId}
+                            </Link>
+                          ) : (
+                            <>
+                              {m.email}
+                              <div className="admin-muted">No account</div>
+                            </>
+                          )}
                           {m.name && <div className="admin-muted">{m.name}</div>}
                         </td>
                         <td className="admin-nowrap">

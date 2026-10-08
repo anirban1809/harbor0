@@ -28,9 +28,9 @@ import { storageAudit } from './storage-audit';
 import { Beta } from './beta';
 import { featureFlagsFor, recordFlagUsage, type FeatureFlags, type UsageInput } from './flags';
 import {
-  emailSubscription,
-  setProductUpdates,
-  unsubscribeUser,
+  linkSubscription,
+  setLinkProductUpdates,
+  unsubscribeSubject,
   type EmailLinks,
 } from './email-preferences';
 type Env = {
@@ -614,12 +614,13 @@ export function createApp(
     z.object({ user: c.userSchema }),
     async (ctx, i) => service.updateProfile(userId(ctx), i),
   );
-  // Unsubscribe links work without signing in: the signed token in `t` names the account.
+  // Unsubscribe links work without signing in: the signed token in `t` names the account, or
+  // the address for one without an account.
   // The POST takes no JSON body, as mail apps' one-click requests send a form body (RFC 8058).
-  const linkUser = async (ctx: Context<Env>) => {
+  const linkSubject = async (ctx: Context<Env>) => {
     const token = ctx.req.query('t');
     await rateLimit(`email-link:${token ?? ''}`, 30);
-    return unsubscribeUser(emailLinks, token);
+    return unsubscribeSubject(emailLinks, token);
   };
   add(
     'get',
@@ -627,7 +628,7 @@ export function createApp(
     'Which optional emails the account behind an unsubscribe link gets',
     undefined,
     z.object({ subscription: c.emailSubscriptionSchema }),
-    async (ctx) => ({ subscription: await emailSubscription(service, await linkUser(ctx)) }),
+    async (ctx) => ({ subscription: await linkSubscription(service, await linkSubject(ctx)) }),
     true,
   );
   add(
@@ -637,7 +638,7 @@ export function createApp(
     undefined,
     z.object({ subscription: c.emailSubscriptionSchema }),
     async (ctx) => ({
-      subscription: await setProductUpdates(service, await linkUser(ctx), false),
+      subscription: await setLinkProductUpdates(service, await linkSubject(ctx), false),
     }),
     true,
   );
@@ -648,7 +649,7 @@ export function createApp(
     undefined,
     z.object({ subscription: c.emailSubscriptionSchema }),
     async (ctx) => ({
-      subscription: await setProductUpdates(service, await linkUser(ctx), true),
+      subscription: await setLinkProductUpdates(service, await linkSubject(ctx), true),
     }),
     true,
   );

@@ -7,7 +7,7 @@ Staff need to tell users about important changes, such as pricing and quota chan
 Scope: a **Campaigns** section in the admin console with three parts:
 
 - **Templates:** reusable, branded emails.
-- **Groups:** named lists of accounts that staff create and maintain by hand.
+- **Groups:** named lists of accounts, and of email addresses without an account, that staff create and maintain by hand.
 - **Campaigns:** one send of a template to an audience, either now or at a scheduled time.
 
 Not in scope for v1: automated drip or lifecycle sequences such as "7 days after sign-up", A/B tests, and open or click tracking.
@@ -34,7 +34,7 @@ Not in scope for v1: automated drip or lifecycle sequences such as "7 days after
 ## How it will work
 
 1. **Templates.** An admin opens Campaigns → Templates → New. They give it a name, a category (*Product updates* or *Service notices*), a subject, and a Markdown body with variables such as `{{name}}`, `{{username}}` and `{{quota}}`. The preview on the right uses the real backend renderer, so it matches what users receive. They save it.
-2. **Groups.** Under Groups → New, they name the group (e.g. "Android testers", "Early supporters") and add accounts: search and pick from the users table, or paste a list of emails or usernames. Pasted entries that don't match an account are listed back and not added. Accounts can also be added to or removed from groups from a user's page. A group is just its members. There are no predefined or rule-based groups.
+2. **Groups.** Under Groups → New, they name the group (e.g. "Android testers", "Early supporters") and add accounts: search and pick from the users table, or paste a list of emails or usernames. A pasted email that no account uses is added as an address on its own (added 2026-10-08, e.g. for beta invitees who haven't signed up); usernames that match no account are listed back and not added. Accounts can also be added to or removed from groups from a user's page. A group is just its members. There are no predefined or rule-based groups.
 3. **Campaigns.** Under Campaigns → New, they:
    - pick a template;
    - add recipients from any mix of groups and individual accounts;
@@ -53,18 +53,19 @@ Code: `apps/backend/src/campaigns.ts` (rows, eligibility, sending), `apps/backen
 | --- | --- |
 | `EMAIL_TEMPLATE` / `<id>` | name, category `PRODUCT`·`SERVICE`, subject, preheader, markdown, created/updated at and by |
 | `EMAIL_GROUP` / `<id>` | name, description, memberCount, created/updated at and by |
-| `EMAIL_GROUP#<id>` / `MEMBER#<userId>` | userId, email and name when added, addedAt, addedBy |
+| `EMAIL_GROUP#<id>` / `MEMBER#<key>` | userId (null for an address), email and name when added, addedAt, addedBy. The key is the userId, or `@<email>` for an address without an account. |
 | `CAMPAIGN` / `<id>` | name, templateId, templateName, audience {groupIds, userIds}, state, content (template snapshot, set when scheduled), scheduledAt/By, startedAt, finishedAt, counts {total, pending, sent, skipped, failed}, resolvedAt, cursor, leaseUntil |
-| `CAMPAIGN#<id>` / `RCPT#<userId>` | userId, email, name, status `PENDING`·`SENT`·`SKIPPED`·`FAILED`, reason, error, at |
+| `CAMPAIGN#<id>` / `RCPT#<key>` | userId (null for an address), email, name, status `PENDING`·`SENT`·`SKIPPED`·`FAILED`, reason, error, at |
 | `JOB` / `CAMPAIGN#<id>` | the `CAMPAIGN_SEND` job, due at `scheduledAt` |
 | `USER#<id>` / `PROFILE` | `emailPreferences: { productUpdates: boolean }`. A missing field means `true`. |
 | `EMAIL_SUPPRESSION` / `<normalized email>` | source `BOUNCE`·`COMPLAINT`, at, messageId |
+| `EMAIL_OPTOUT` / `<normalized email>` | an address without an account that turned product updates off, at |
 
 - A campaign copies its template when it is scheduled. Editing the template later does not change a campaign that is already queued.
 - Group membership is read when sending starts, so members added or removed before then are included or left out.
 - **Everyone** (id `everyone`) is a built-in group with no stored rows. When a campaign resolves it, it scans every account profile, so accounts created after scheduling are included and eligibility skips the rest. The console lists it first with its count taken from the cached storage totals (up to 15 minutes old). It can't be renamed, edited, deleted or have members added or removed (`BUILT_IN_GROUP`), and it isn't shown on account pages. Resolving or counting it is a full-table scan, fine at today's size.
 - An account's groups are found by checking each group for its member row; there is no reverse index, as there are few groups.
-- Recipients are always accounts. Emails go to the account's current address, read again at send time.
+- Recipients are accounts or addresses. A campaign's audience also takes `emails` added one by one. An address that an account uses (when resolving or at send time) is sent to as that account. Accounts get their current address, read again at send time. Addresses are skipped when suppressed, or for `PRODUCT` when opted out.
 
 ## Sending
 
@@ -86,11 +87,11 @@ States: `DRAFT → SCHEDULED → SENDING → SENT`, or `STOPPED` if stopped mid-
 - **Email content.**
   - **Rendering:** the `CAMPAIGN` member of the `Email` union renders the snapshot's Markdown into `renderEmail()`, with variables filled in per recipient.
   - **Markdown:** `#`/`##`/`###` headings, paragraphs, `-` and `1.` lists, `**bold**`, `*italic*`, `` `code` ``, `[links](https://…)`, `---`, and `[[Button]](https://…)`. Raw HTML is shown as text. Links must be `https://`, `http://` or `mailto:`.
-  - **Variables:** `{{name}}`, `{{firstName}}`, `{{username}}`, `{{email}}`, `{{storageUsed}}`, `{{storageQuota}}`. They are filled in after rendering and escaped, so a display name can't add markup or links. An unknown variable stops the template from saving.
+  - **Variables:** `{{name}}`, `{{firstName}}`, `{{username}}`, `{{email}}`, `{{storageUsed}}`, `{{storageQuota}}`, `{{signupLink}}` (an address with an unused beta invite gets its own `/signup?invite=` link, everyone else `/signup`; it may stand alone as a link or button URL). They are filled in after rendering and escaped, so a display name can't add markup or links. An unknown variable stops the template from saving.
   - **Sender:** campaigns send from `CAMPAIGN_EMAIL_FROM` (`updates@<domain of EmailFrom>`), allowed in the jobs function's `ses:FromAddress` condition. Account notices keep `EMAIL_FROM`.
   - **Unsubscribe:** `PRODUCT` emails get a footer unsubscribe link and `List-Unsubscribe` plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers. `SERVICE` emails have neither.
 - **Unsubscribe endpoints** (public):
-  - The token in `t` is `<userId>.<HMAC-SHA256("unsubscribe:PRODUCT:<userId>")>`, signed with the `EmailLinkSecret` secret. It names the account rather than the address, so it keeps working after an email change.
+  - The token in `t` is `<userId>.<HMAC-SHA256("unsubscribe:PRODUCT:<userId>")>`, signed with the `EmailLinkSecret` secret. It names the account rather than the address, so it keeps working after an email change. An address without an account gets `~<base64url(email)>.<HMAC("unsubscribe:PRODUCT:~<base64url(email)>")>`, and unsubscribing writes an `EMAIL_OPTOUT` row.
   - `GET /v1/email/unsubscribe?t=` returns `{subscription: {email (masked), productUpdates}}` for the page.
   - `POST /v1/email/unsubscribe?t=` turns product updates off. It ignores the body, so mail apps' one-click form POST works. The browser proxy lets this one endpoint through without an Origin check and forwards no cookies.
   - `POST /v1/email/resubscribe?t=` turns them back on (same-origin only).

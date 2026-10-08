@@ -11,6 +11,7 @@ import type {
 } from '../../../../packages/contracts/src/campaigns';
 import { campaignVars, contentProblems, sampleVars } from '../campaign-content';
 import {
+  addressKey,
   allRows,
   CAMPAIGN_PK,
   campaignJobId,
@@ -21,6 +22,7 @@ import {
   memberPK,
   memberSK,
   read,
+  recipientKey,
   recipientPage,
   TEMPLATE_PK,
   type StoredCampaign,
@@ -49,6 +51,7 @@ const stamp = (staff: Staff, row: { updatedAt: string }) => {
     updatedBy: staff.email,
   };
 };
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_SCHEDULE_AHEAD_MS = 90 * 86400_000;
 // Group writes go in chunks; a transaction holds at most 100 items.
 const CHUNK = 40;
@@ -168,7 +171,7 @@ export class AdminCampaigns {
       | Account
       | undefined;
     assert(account, 'USER_NOT_FOUND', 'No account has this ID.', 404);
-    return campaignVars(account);
+    return campaignVars(account, `${this.webOrigin}/signup`);
   }
   /** The email as a recipient would get it: product updates show the unsubscribe footer. */
   private compose(content: CampaignContent, vars: Awaited<ReturnType<AdminCampaigns['vars']>>, to: string): Email {
@@ -311,7 +314,8 @@ export class AdminCampaigns {
     const members = await allRows<StoredMember>(this.repo, memberPK(id), 'MEMBER#');
     for (let i = 0; i < members.length; i += CHUNK)
       await transact(this.repo, async (tx) => {
-        for (const m of members.slice(i, i + CHUNK)) await tx.delete(memberPK(id), memberSK(m.userId));
+        for (const m of members.slice(i, i + CHUNK))
+          await tx.delete(memberPK(id), memberSK(recipientKey(m)));
       });
     await transact(this.repo, async (tx) => {
       await tx.delete(GROUP_PK, id);
@@ -346,44 +350,54 @@ export class AdminCampaigns {
     if (!userId) return undefined;
     return (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as Account | undefined;
   }
+  /**
+   * Adds accounts, by ID or by email or username, to a group. An email that no account uses is
+   * added as an address on its own; usernames and IDs must name an account.
+   */
   async addMembers(staff: Staff, id: string, userIds: string[], identifiers: string[]) {
     this.notBuiltIn(id);
     await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const unmatched: string[] = [];
-    const accounts = new Map<string, Account>();
+    const found = new Map<string, Omit<StoredMember, 'addedAt' | 'addedBy'>>();
+    const addAccount = (account: Account) =>
+      found.set(account.id, { userId: account.id, email: account.email, name: account.displayName });
     for (const userId of userIds) {
       const account = (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
         | Account
         | undefined;
-      if (account) accounts.set(account.id, account);
+      if (account) addAccount(account);
       else unmatched.push(userId);
     }
     for (const identifier of identifiers) {
       const account = await this.findAccount(identifier);
-      if (account) accounts.set(account.id, account);
-      else unmatched.push(identifier);
+      if (account) addAccount(account);
+      else if (EMAIL.test(identifier.trim())) {
+        const email = normalizeEmail(identifier);
+        found.set(addressKey(email), { userId: null, email, name: null });
+      } else unmatched.push(identifier);
     }
-    const list = [...accounts.values()];
+    const list = [...found.values()];
     let added = 0;
+    let addedEmails = 0;
     let alreadyMembers = 0;
     let group: StoredGroup | undefined;
     for (let i = 0; i < list.length || (i === 0 && !group); i += CHUNK) {
       group = await transact(this.repo, async (tx) => {
         const g = await getRow<StoredGroup>(tx, GROUP_PK, id, 'group');
         let fresh = 0;
-        for (const account of list.slice(i, i + CHUNK)) {
-          if (await tx.get(memberPK(id), memberSK(account.id))) {
+        for (const entry of list.slice(i, i + CHUNK)) {
+          const key = recipientKey(entry);
+          if (await tx.get(memberPK(id), memberSK(key))) {
             alreadyMembers++;
             continue;
           }
           const member: StoredMember = {
-            userId: account.id,
-            email: account.email,
-            name: account.displayName,
+            ...entry,
             addedAt: new Date().toISOString(),
             addedBy: staff.email,
           };
-          await tx.put(memberPK(id), memberSK(account.id), member);
+          await tx.put(memberPK(id), memberSK(key), member);
+          if (!entry.userId) addedEmails++;
           fresh++;
         }
         if (fresh) {
@@ -404,23 +418,24 @@ export class AdminCampaigns {
           ...(added <= 20 ? { emails: list.map((a) => a.email).slice(0, 20) } : {}),
         }),
       );
-    return { group: group!, added, alreadyMembers, unmatched };
+    return { group: group!, added, addedEmails, alreadyMembers, unmatched };
   }
-  async removeMembers(staff: Staff, id: string, userIds: string[]) {
+  /** Removes members: accounts by ID, and addresses without an account by email. */
+  async removeMembers(staff: Staff, id: string, userIds: string[], addresses: string[] = []) {
     this.notBuiltIn(id);
     let removed = 0;
     let group: StoredGroup | undefined;
     const emails: string[] = [];
-    const ids = [...new Set(userIds)];
-    for (let i = 0; i < ids.length; i += CHUNK)
+    const keys = [...new Set([...userIds, ...addresses.map(addressKey)])];
+    for (let i = 0; i < keys.length; i += CHUNK)
       group = await transact(this.repo, async (tx) => {
         const g = await getRow<StoredGroup>(tx, GROUP_PK, id, 'group');
         let gone = 0;
-        for (const userId of ids.slice(i, i + CHUNK)) {
-          const member = await tx.get<StoredMember>(memberPK(id), memberSK(userId));
+        for (const key of keys.slice(i, i + CHUNK)) {
+          const member = await tx.get<StoredMember>(memberPK(id), memberSK(key));
           if (!member) continue;
-          await tx.delete(memberPK(id), memberSK(userId));
-          emails.push(member.email ?? userId);
+          await tx.delete(memberPK(id), memberSK(key));
+          emails.push(member.email ?? key);
           gone++;
         }
         if (gone) {
@@ -496,7 +511,7 @@ export class AdminCampaigns {
         })),
       ),
     ]);
-    return { campaign: view, groups, users, history: log };
+    return { campaign: view, groups, users, emails: c.audience.emails ?? [], history: log };
   }
   private async checkTemplate(templateId: string) {
     return getRow<StoredTemplate>(read(this.repo), TEMPLATE_PK, templateId, 'template');
@@ -549,6 +564,7 @@ export class AdminCampaigns {
         template: template.name,
         groups: next.audience.groupIds.length,
         accounts: next.audience.userIds.length,
+        addresses: next.audience.emails.length,
       });
       return next;
     });

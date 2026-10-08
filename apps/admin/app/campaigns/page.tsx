@@ -140,6 +140,8 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
   const [templateId, setTemplateId] = useState(saved?.templateId ?? '');
   const [groupIds, setGroupIds] = useState<string[]>(saved?.audience.groupIds ?? []);
   const [accounts, setAccounts] = useState<Account[]>(detail?.users ?? []);
+  // Addresses with no account, added one by one.
+  const [addresses, setAddresses] = useState<string[]>(detail?.emails ?? []);
   const [email, setEmail] = useState('');
   const [lookup, setLookup] = useState('');
   const [busy, setBusy] = useState(false);
@@ -151,18 +153,23 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
   const templates = useQuery({ queryKey: ['email-templates'], queryFn: api.templates });
   const groups = useQuery({ queryKey: ['email-groups'], queryFn: api.groups });
   const template = templates.data?.items.find((t) => t.id === templateId);
-  const audience: CampaignAudience = { groupIds, userIds: accounts.map((a) => a.id) };
+  const audience: CampaignAudience = {
+    groupIds,
+    userIds: accounts.map((a) => a.id),
+    emails: addresses,
+  };
   const count = useQuery({
     queryKey: ['audience-count', audience, template?.category],
     queryFn: () => api.audienceCount(audience, template!.category),
-    enabled: !!template && (groupIds.length > 0 || accounts.length > 0),
+    enabled: !!template && (groupIds.length > 0 || accounts.length > 0 || addresses.length > 0),
   });
   const changed =
     !saved ||
     name !== saved.name ||
     templateId !== saved.templateId ||
     groupIds.join() !== saved.audience.groupIds.join() ||
-    audience.userIds.join() !== saved.audience.userIds.join();
+    audience.userIds.join() !== saved.audience.userIds.join() ||
+    audience.emails.join() !== (saved.audience.emails ?? []).join();
   const complete = !!name.trim() && !!templateId;
 
   const run = async (work: () => Promise<void>) => {
@@ -194,13 +201,14 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
   const add = async (event: FormEvent) => {
     event.preventDefault();
     const wanted = email.trim().toLowerCase();
-    if (accounts.some((a) => a.email?.toLowerCase() === wanted))
-      return setLookup('This account is already added.');
+    if (accounts.some((a) => a.email?.toLowerCase() === wanted) || addresses.includes(wanted))
+      return setLookup('This email is already added.');
     try {
       const page = await api.users(wanted, null);
       const match = page.items.find((u) => u.email.toLowerCase() === wanted && !u.deleted);
-      if (!match) return setLookup('No account uses this email.');
-      setAccounts((list) => [...list, { id: match.id, email: match.email }]);
+      // An email no account uses is sent to as an address on its own.
+      if (!match) setAddresses((list) => [...list, wanted]);
+      else setAccounts((list) => [...list, { id: match.id, email: match.email }]);
       setEmail('');
       setLookup('');
     } catch (e) {
@@ -267,7 +275,7 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
           </Card>
           <Card
             title="Recipients"
-            description="Accounts in any of the chosen groups, plus any added one by one. Each gets one email."
+            description="Members of any of the chosen groups, plus accounts and addresses added one by one. Each gets one email."
           >
             {groups.data && !groups.data.items.length ? (
               <p className="admin-empty">
@@ -288,7 +296,9 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
                     />
                     <span>
                       <strong>{g.name}</strong>
-                      <span className="admin-muted">{plural(g.memberCount, 'account')}</span>
+                      <span className="admin-muted">
+                        {plural(g.memberCount, g.builtIn ? 'account' : 'member')}
+                      </span>
                     </span>
                   </label>
                 ))}
@@ -298,8 +308,8 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
               <form className="admin-flag-add" onSubmit={add}>
                 <Input
                   type="email"
-                  aria-label="Account email"
-                  placeholder="Add one account by email"
+                  aria-label="Email to add"
+                  placeholder="Add one account or address by email"
                   value={email}
                   onChange={(e) => {
                     setEmail(e.target.value);
@@ -312,7 +322,7 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
               </form>
             )}
             {lookup && <Alert tone="error">{lookup}</Alert>}
-            {accounts.length > 0 && (
+            {accounts.length + addresses.length > 0 && (
               <ul className="admin-flag-users">
                 {accounts.map((a) => (
                   <li key={a.id}>
@@ -323,6 +333,23 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
                         size="icon-sm"
                         aria-label={`Remove ${a.email ?? a.id}`}
                         onClick={() => setAccounts((list) => list.filter((x) => x.id !== a.id))}
+                      >
+                        <X aria-hidden="true" />
+                      </Button>
+                    )}
+                  </li>
+                ))}
+                {addresses.map((address) => (
+                  <li key={address}>
+                    <span>
+                      {address} <span className="admin-muted">· no account</span>
+                    </span>
+                    {canEdit && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${address}`}
+                        onClick={() => setAddresses((list) => list.filter((x) => x !== address))}
                       >
                         <X aria-hidden="true" />
                       </Button>
@@ -506,16 +533,23 @@ function Recipients({ id, live }: { id: string; live: boolean }) {
           <DataTable label="Recipients">
             <thead>
               <tr>
-                <th>Account</th>
+                <th>Recipient</th>
                 <th>Status</th>
                 <th>When</th>
               </tr>
             </thead>
             <tbody>
               {all.map((r) => (
-                <tr key={r.userId}>
+                <tr key={r.userId ?? r.email}>
                   <td>
-                    <Link href={`/user?id=${encodeURIComponent(r.userId)}`}>{r.email ?? r.userId}</Link>
+                    {r.userId ? (
+                      <Link href={`/user?id=${encodeURIComponent(r.userId)}`}>{r.email ?? r.userId}</Link>
+                    ) : (
+                      <>
+                        {r.email}
+                        <div className="admin-muted">No account</div>
+                      </>
+                    )}
                     {r.name && <div className="admin-muted">{r.name}</div>}
                   </td>
                   <td>

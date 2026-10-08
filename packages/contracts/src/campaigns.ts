@@ -4,8 +4,8 @@ import { id } from './index';
 
 /**
  * Email campaigns sent from the management console: templates written in Markdown, named
- * groups of accounts, and one-off sends to them, now or at a set time. Only accounts ever get
- * campaign email.
+ * groups of recipients, and one-off sends to them, now or at a set time. Recipients are
+ * accounts, or plain email addresses without one (such as beta invitees who haven't signed up).
  */
 
 /** Product updates can be unsubscribed from; service notices (terms, pricing) cannot. */
@@ -20,7 +20,10 @@ export const campaignVariables = {
   email: 'Email address',
   storageUsed: 'Storage used, e.g. 3.2 GB',
   storageQuota: 'Storage limit, e.g. 50 GB',
+  signupLink: 'Sign-up page; for a beta invitee without an account, their own sign-up link',
 } as const;
+/** Variables that hold a whole link, so they may stand in for a link or button URL. */
+export const campaignUrlVariables: readonly CampaignVariable[] = ['signupLink'];
 export type CampaignVariable = keyof typeof campaignVariables;
 export type CampaignVars = Record<CampaignVariable, string>;
 
@@ -99,8 +102,9 @@ export const emailGroupDetailSchema = z.object({
   group: emailGroupSchema,
   history: z.array(auditEntrySchema),
 });
+/** A member is an account, or an email address that has no account (`userId` null). */
 export const emailGroupMemberSchema = z.object({
-  userId: z.string(),
+  userId: z.string().nullable(),
   email: z.string().nullable(),
   name: z.string().nullable(),
   addedAt: z.string(),
@@ -114,20 +118,27 @@ export const MAX_GROUP_ADD = 1000;
 export const emailGroupAddBody = z
   .object({
     userIds: z.array(id).max(MAX_GROUP_ADD).default([]),
-    /** Emails or usernames, e.g. pasted from a spreadsheet. */
+    /**
+     * Emails or usernames, e.g. pasted from a spreadsheet. An email with no account is added
+     * as an address on its own.
+     */
     identifiers: z.array(z.string().trim().min(1).max(254)).max(MAX_GROUP_ADD).default([]),
   })
   .strict();
 export const emailGroupAddResultSchema = z.object({
   group: emailGroupSchema,
   added: z.number(),
+  /** Of those added, addresses that have no account. */
+  addedEmails: z.number(),
   alreadyMembers: z.number(),
-  /** Identifiers that match no account; they were not added. */
+  /** Usernames and malformed entries that match no account; they were not added. */
   unmatched: z.array(z.string()),
 });
+const memberEmails = z.array(z.email().max(254)).max(MAX_GROUP_ADD).default([]);
 export const emailGroupRemoveBody = z
-  .object({ userIds: z.array(id).min(1).max(MAX_GROUP_ADD) })
-  .strict();
+  .object({ userIds: z.array(id).max(MAX_GROUP_ADD).default([]), emails: memberEmails })
+  .strict()
+  .refine((b) => b.userIds.length + b.emails.length > 0, 'Choose members to remove.');
 
 export const campaignState = z.enum(['DRAFT', 'SCHEDULED', 'SENDING', 'SENT', 'STOPPED']);
 export type CampaignState = z.infer<typeof campaignState>;
@@ -135,6 +146,8 @@ export const campaignAudienceSchema = z
   .object({
     groupIds: z.array(id).max(50).default([]),
     userIds: z.array(id).max(MAX_GROUP_ADD).default([]),
+    /** Addresses added one by one; one that has an account is sent to as that account. */
+    emails: memberEmails,
   })
   .strict();
 export type CampaignAudience = z.infer<typeof campaignAudienceSchema>;
@@ -187,6 +200,7 @@ export const campaignDetailSchema = z.object({
   campaign: campaignSchema,
   groups: z.array(z.object({ id: z.string(), name: z.string().nullable(), memberCount: z.number() })),
   users: z.array(z.object({ id: z.string(), email: z.string().nullable() })),
+  emails: z.array(z.string()),
   history: z.array(auditEntrySchema),
 });
 export const campaignScheduleBody = z
@@ -202,14 +216,15 @@ export const audienceCountBody = z
   .object({ audience: campaignAudienceSchema, category: campaignCategory })
   .strict();
 export const audienceCountSchema = z.object({
-  /** Distinct accounts across the groups and individual accounts. */
+  /** Distinct recipients across the groups, individual accounts and addresses. */
   total: z.number(),
   eligible: z.number(),
   skipped: z.partialRecord(recipientSkipReason, z.number()),
 });
 export const recipientStatus = z.enum(['PENDING', 'SENT', 'SKIPPED', 'FAILED']);
 export const recipientSchema = z.object({
-  userId: z.string(),
+  /** Null for an address without an account. */
+  userId: z.string().nullable(),
   email: z.string().nullable(),
   name: z.string().nullable(),
   status: recipientStatus,

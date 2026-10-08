@@ -5,37 +5,61 @@ import { assert } from './errors';
 import { Transaction, transact, type Repository } from './repository';
 import type { Unsubscribe } from './emails';
 
+/** Who an unsubscribe link is for: an account, or an address that has no account. */
+export type LinkSubject = { userId: string } | { email: string };
+// Address tokens start with this, which account IDs never contain.
+const ADDRESS = '~';
+
 /**
- * Signed links that let an email's recipient stop product updates without signing in. The token
- * names the account, not the address, so it keeps working after the email changes.
+ * Signed links that let an email's recipient stop product updates without signing in. An
+ * account's token names the account, not the address, so it keeps working after the email
+ * changes; an address without an account gets a token naming the address.
  */
 export class EmailLinks {
   constructor(
     private secret: string,
-    private webOrigin: string,
+    readonly webOrigin: string,
   ) {}
-  private sign(userId: string) {
+  private sign(subject: string) {
     return createHmac('sha256', this.secret)
-      .update(`unsubscribe:PRODUCT:${userId}`)
+      .update(`unsubscribe:PRODUCT:${subject}`)
       .digest('base64url');
   }
   token(userId: string) {
     return `${userId}.${this.sign(userId)}`;
   }
-  /** The account a token was issued for, or undefined if it was not signed with our secret. */
-  verify(token: string) {
-    const [userId, signature, ...rest] = token.split('.');
-    if (!userId || !signature || rest.length) return undefined;
-    const expected = Buffer.from(this.sign(userId));
-    const given = Buffer.from(signature);
-    return given.length === expected.length && timingSafeEqual(given, expected) ? userId : undefined;
+  addressToken(rawEmail: string) {
+    const subject = `${ADDRESS}${Buffer.from(normalizeEmail(rawEmail)).toString('base64url')}`;
+    return `${subject}.${this.sign(subject)}`;
   }
-  unsubscribe(userId: string): Unsubscribe {
-    const t = encodeURIComponent(this.token(userId));
+  /** Who a token was issued for, or undefined if it was not signed with our secret. */
+  verifySubject(token: string): LinkSubject | undefined {
+    const [subject, signature, ...rest] = token.split('.');
+    if (!subject || !signature || rest.length) return undefined;
+    const expected = Buffer.from(this.sign(subject));
+    const given = Buffer.from(signature);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined;
+    return subject.startsWith(ADDRESS)
+      ? { email: Buffer.from(subject.slice(ADDRESS.length), 'base64url').toString() }
+      : { userId: subject };
+  }
+  /** The account a token was issued for, or undefined if not signed by us or for an address. */
+  verify(token: string) {
+    const subject = this.verifySubject(token);
+    return subject && 'userId' in subject ? subject.userId : undefined;
+  }
+  private links(token: string): Unsubscribe {
+    const t = encodeURIComponent(token);
     return {
       page: `${this.webOrigin}/unsubscribe?t=${t}`,
       oneClick: `${this.webOrigin}/api/v1/email/unsubscribe?t=${t}`,
     };
+  }
+  unsubscribe(userId: string): Unsubscribe {
+    return this.links(this.token(userId));
+  }
+  unsubscribeAddress(email: string): Unsubscribe {
+    return this.links(this.addressToken(email));
   }
 }
 
@@ -71,6 +95,40 @@ export async function setProductUpdates(
     }
     return { email: maskEmail(account.email), productUpdates };
   });
+}
+
+/**
+ * Addresses without an account that turned product updates off from an unsubscribe link.
+ * Row: EMAIL_OPTOUT / <normalized email>.
+ */
+export const OPTOUT_PK = 'EMAIL_OPTOUT';
+export const addressOptedOut = async (repo: Repository, rawEmail: string) =>
+  !!(await new Transaction(repo).get(OPTOUT_PK, normalizeEmail(rawEmail)));
+
+/** What a link's subject gets now: an account's preference, or an address's opt-out. */
+export async function linkSubscription(
+  service: StorageService,
+  subject: LinkSubject,
+): Promise<EmailSubscription> {
+  if ('userId' in subject) return emailSubscription(service, subject.userId);
+  return {
+    email: maskEmail(subject.email),
+    productUpdates: !(await addressOptedOut(service.repo, subject.email)),
+  };
+}
+export async function setLinkProductUpdates(
+  service: StorageService,
+  subject: LinkSubject,
+  productUpdates: boolean,
+): Promise<EmailSubscription> {
+  if ('userId' in subject) return setProductUpdates(service, subject.userId, productUpdates);
+  const email = normalizeEmail(subject.email);
+  await transact(service.repo, async (tx) => {
+    if (productUpdates) {
+      if (await tx.get(OPTOUT_PK, email)) await tx.delete(OPTOUT_PK, email);
+    } else await tx.put(OPTOUT_PK, email, { email, at: new Date().toISOString() });
+  });
+  return { email: maskEmail(email), productUpdates };
 }
 
 export type SuppressionSource = 'BOUNCE' | 'COMPLAINT';
@@ -123,8 +181,8 @@ export async function recordMailEvent(suppressions: EmailSuppressions, detail: S
   return emails.length;
 }
 
-export const unsubscribeUser = (links: EmailLinks | undefined, token: string | undefined) => {
-  const userId = links && token ? links.verify(token) : undefined;
-  assert(userId, 'INVALID_LINK', 'This unsubscribe link is not valid.', 400);
-  return userId;
+export const unsubscribeSubject = (links: EmailLinks | undefined, token: string | undefined) => {
+  const subject = links && token ? links.verifySubject(token) : undefined;
+  assert(subject, 'INVALID_LINK', 'This unsubscribe link is not valid.', 400);
+  return subject;
 };

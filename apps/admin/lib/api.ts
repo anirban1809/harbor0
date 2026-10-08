@@ -161,11 +161,11 @@ export const api = {
         ),
     addGroupMembers: (id: string, body: { userIds?: string[]; identifiers?: string[]; }) =>
         request<EmailGroupAddResult>('POST', `${email('groups', id)}/members`, body),
-    removeGroupMembers: (id: string, userIds: string[]) =>
+    removeGroupMembers: (id: string, members: { userIds?: string[]; emails?: string[]; }) =>
         request<{ group: EmailGroup; removed: number; }>(
             'POST',
             `${email('groups', id)}/members/remove`,
-            { userIds },
+            members,
         ),
     audienceCount: (audience: CampaignAudience, category: CampaignCategory) =>
         request<AudienceCount>('POST', '/email/audience/count', { audience, category }),

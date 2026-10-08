@@ -1,4 +1,5 @@
 import {
+  campaignUrlVariables,
   campaignVariables,
   type CampaignContent,
   type CampaignVariable,
@@ -22,9 +23,15 @@ const unescape = (text: string) =>
     /&(amp|lt|gt|quot|#39);/g,
     (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]!,
   );
-const safeUrl = (url: string) => /^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i.test(url);
 const VARIABLE = /\{\{\s*([a-zA-Z]+)\s*\}\}/g;
 const isVariable = (name: string): name is CampaignVariable => name in campaignVariables;
+// A link variable alone (`{{signupLink}}`) is a URL too: it is always filled with an https link.
+const urlVariable = (url: string) => {
+  const name = url.match(/^\{\{\s*([a-zA-Z]+)\s*\}\}$/)?.[1];
+  return !!name && isVariable(name) && campaignUrlVariables.includes(name);
+};
+const safeUrl = (url: string) =>
+  /^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i.test(url) || urlVariable(url);
 
 const style = {
   h1: 'margin:0 0 12px;font-size:22px;line-height:1.3;font-weight:650;letter-spacing:-0.01em;color:#16181d;',
@@ -172,16 +179,23 @@ export function renderCampaign(content: CampaignContent, vars: CampaignVars) {
 const size = (bytes: number) =>
   bytes >= 1e9 ? `${+(bytes / 1e9).toFixed(1)} GB` : `${Math.max(0, Math.round(bytes / 1e6))} MB`;
 
-/** Variables for an account, from its profile. */
-export function campaignVars(account: {
-  displayName?: string;
-  username?: string;
-  email: string;
-  storageUsedBytes?: number;
-  storageQuotaBytes?: number;
-}): CampaignVars {
+/**
+ * Variables for a recipient: an account, from its profile, or an address without one, which
+ * only has its email. `signupLink` is filled in by the sender.
+ */
+export function campaignVars(
+  account: {
+    displayName?: string;
+    username?: string;
+    email: string;
+    storageUsedBytes?: number;
+    storageQuotaBytes?: number;
+  },
+  signupLink: string,
+): CampaignVars {
   const name = account.displayName?.trim() || account.username || account.email.split('@')[0]!;
   return {
+    signupLink,
     name,
     firstName: name.split(/\s+/)[0]!,
     username: account.username ?? '',
@@ -199,4 +213,5 @@ export const sampleVars: CampaignVars = {
   email: 'alex@example.com',
   storageUsed: '3.2 GB',
   storageQuota: '50 GB',
+  signupLink: 'https://app.harbor0.com/signup?invite=sample',
 };

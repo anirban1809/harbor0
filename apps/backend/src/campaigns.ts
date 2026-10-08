@@ -9,11 +9,13 @@ import type {
   Recipient,
   RecipientSkipReason,
 } from '../../../packages/contracts/src/campaigns';
+import { normalizeEmail } from '@harbor/contracts';
 import { EVERYONE_GROUP } from '../../../packages/contracts/src/campaigns';
+import { signupLinkFor } from './beta';
 import { campaignVars } from './campaign-content';
 import { userPK, type Account, type StorageService } from './domain';
 import type { Email } from './emails';
-import { EmailSuppressions, type EmailLinks } from './email-preferences';
+import { addressOptedOut, EmailSuppressions, type EmailLinks } from './email-preferences';
 import { assert } from './errors';
 import { Transaction, transact, type Repository } from './repository';
 
@@ -21,23 +23,30 @@ import { Transaction, transact, type Repository } from './repository';
  * Rows (pk / sk):
  *   EMAIL_TEMPLATE / <id>              a template
  *   EMAIL_GROUP / <id>                 a group, with its member count
- *   EMAIL_GROUP#<id> / MEMBER#<userId> one member
+ *   EMAIL_GROUP#<id> / MEMBER#<key>    one member
  *   CAMPAIGN / <id>                    a campaign, with its counts and send progress
- *   CAMPAIGN#<id> / RCPT#<userId>      one recipient and what happened to their email
+ *   CAMPAIGN#<id> / RCPT#<key>         one recipient and what happened to their email
+ * A member's or recipient's key is the account ID, or "@" and the address for an address
+ * without an account.
  */
 export const TEMPLATE_PK = 'EMAIL_TEMPLATE';
 export const GROUP_PK = 'EMAIL_GROUP';
 export const CAMPAIGN_PK = 'CAMPAIGN';
 export const memberPK = (groupId: string) => `EMAIL_GROUP#${groupId}`;
-export const memberSK = (userId: string) => `MEMBER#${userId}`;
+export const addressKey = (email: string) => `@${normalizeEmail(email)}`;
+/** The key of a member or recipient: its account, or its address when it has none. */
+export const recipientKey = (r: { userId: string | null; email: string | null }) =>
+  r.userId ?? addressKey(r.email!);
+export const memberSK = (key: string) => `MEMBER#${key}`;
 export const recipientPK = (campaignId: string) => `CAMPAIGN#${campaignId}`;
-export const recipientSK = (userId: string) => `RCPT#${userId}`;
+export const recipientSK = (key: string) => `RCPT#${key}`;
 export const campaignJobId = (campaignId: string) => `CAMPAIGN#${campaignId}`;
 
 export type StoredTemplate = EmailTemplate;
 export type StoredGroup = EmailGroup;
 export type StoredMember = {
-  userId: string;
+  /** Null for an address without an account. */
+  userId: string | null;
   email: string | null;
   name: string | null;
   addedAt: string;
@@ -73,9 +82,20 @@ export async function allRows<T>(repo: Repository, pk: string, prefix = '') {
   return out;
 }
 
-/** The distinct accounts in an audience, and any groups that no longer exist. */
-export async function audienceUserIds(repo: Repository, audience: CampaignAudience) {
+/** The account that uses an address now, if any. */
+export async function accountIdFor(repo: Repository, email: string) {
+  return ((await repo.get({ pk: 'EMAIL', sk: normalizeEmail(email) }))?.data as
+    | { userId: string }
+    | undefined)?.userId;
+}
+
+/**
+ * The distinct recipients in an audience, and any groups that no longer exist. An address
+ * that an account uses now counts as that account.
+ */
+export async function audienceRecipients(repo: Repository, audience: CampaignAudience) {
   const ids = new Set(audience.userIds);
+  const addresses = new Set((audience.emails ?? []).map(normalizeEmail));
   const missingGroups: string[] = [];
   for (const groupId of audience.groupIds) {
     if (groupId === EVERYONE_GROUP) {
@@ -88,9 +108,16 @@ export async function audienceUserIds(repo: Repository, audience: CampaignAudien
       continue;
     }
     for (const member of await allRows<StoredMember>(repo, memberPK(groupId), 'MEMBER#'))
-      ids.add(member.userId);
+      if (member.userId) ids.add(member.userId);
+      else addresses.add(normalizeEmail(member.email!));
   }
-  return { ids: [...ids], missingGroups };
+  const emails: string[] = [];
+  for (const email of addresses) {
+    const userId = await accountIdFor(repo, email);
+    if (userId) ids.add(userId);
+    else emails.push(email);
+  }
+  return { ids: [...ids], emails, missingGroups };
 }
 
 /** Whether an account can get a campaign of this category now, and if not, why. */
@@ -113,20 +140,34 @@ export async function eligibility(
   return { account };
 }
 
+/** Whether an address without an account can get a campaign of this category now. */
+export async function addressEligibility(
+  repo: Repository,
+  email: string,
+  category: CampaignCategory,
+): Promise<RecipientSkipReason | undefined> {
+  if (await new EmailSuppressions(repo).get(email)) return 'SUPPRESSED';
+  if (category === 'PRODUCT' && (await addressOptedOut(repo, email))) return 'UNSUBSCRIBED';
+  return undefined;
+}
+
 export async function countAudience(
   repo: Repository,
   audience: CampaignAudience,
   category: CampaignCategory,
 ): Promise<AudienceCount> {
-  const { ids } = await audienceUserIds(repo, audience);
+  const { ids, emails } = await audienceRecipients(repo, audience);
   const skipped: AudienceCount['skipped'] = {};
   let eligible = 0;
-  for (const id of ids) {
-    const { reason } = await eligibility(repo, id, category);
+  const reasons = [
+    ...(await Promise.all(ids.map(async (id) => (await eligibility(repo, id, category)).reason))),
+    ...(await Promise.all(emails.map((email) => addressEligibility(repo, email, category)))),
+  ];
+  for (const reason of reasons) {
     if (reason) skipped[reason] = (skipped[reason] ?? 0) + 1;
     else eligible++;
   }
-  return { total: ids.length, eligible, skipped };
+  return { total: reasons.length, eligible, skipped };
 }
 
 /** Counts every recipient row; used when a campaign finishes so its totals are exact. */
@@ -210,6 +251,7 @@ export async function campaignStep(
   }
 
   const gap = 1000 / Math.max(1, options.ratePerSecond ?? 10);
+  const origin = options.emailLinks?.webOrigin ?? '';
   let cursor = campaign.cursor ?? undefined;
   for (;;) {
     const page = await repo.query(recipientPK(campaignId), 'RCPT#', 25, cursor);
@@ -229,9 +271,10 @@ export async function campaignStep(
       if (state === 'STOPPED') {
         update = { status: 'SKIPPED', reason: 'STOPPED' };
       } else {
-        // Checked again at send time: the account may have unsubscribed since the list was made.
-        const { account, reason } = await eligibility(repo, r.userId, campaign.content!.category);
-        if (reason) update = { status: 'SKIPPED', reason };
+        // Checked again at send time: the account may have unsubscribed since the list was made,
+        // and an address may have signed up, so it gets the email as that account.
+        const target = await sendTarget(repo, r, campaign.content!.category, origin);
+        if (target.reason) update = { status: 'SKIPPED', reason: target.reason };
         else {
           const started = Date.now();
           try {
@@ -245,12 +288,18 @@ export async function campaignStep(
             );
             await options.sendEmail({
               template: 'CAMPAIGN',
-              to: account!.email,
+              to: target.to,
               content: campaign.content!,
-              vars: campaignVars(account!),
-              ...(product ? { unsubscribe: options.emailLinks!.unsubscribe(r.userId) } : {}),
+              vars: target.vars,
+              ...(product
+                ? {
+                    unsubscribe: target.userId
+                      ? options.emailLinks!.unsubscribe(target.userId)
+                      : options.emailLinks!.unsubscribeAddress(target.to),
+                  }
+                : {}),
             });
-            update = { status: 'SENT', email: account!.email };
+            update = { status: 'SENT', email: target.to };
           } catch (error) {
             const name = (error as { name?: string; code?: string }).name ?? 'Error';
             if (THROTTLED.has(name) || (error as { code?: string }).code === 'EMAIL_NOT_CONFIGURED') {
@@ -263,7 +312,7 @@ export async function campaignStep(
         }
       }
       await transact(repo, (tx) =>
-        tx.put(recipientPK(campaignId), recipientSK(r.userId), {
+        tx.put(recipientPK(campaignId), recipientSK(recipientKey(r)), {
           ...r,
           ...update,
           at: now(),
@@ -298,25 +347,59 @@ export async function campaignStep(
   }
 }
 
+type SendTarget =
+  | { reason: RecipientSkipReason; to?: undefined; userId?: undefined; vars?: undefined }
+  | { reason?: undefined; to: string; userId: string | null; vars: ReturnType<typeof campaignVars> };
+/** Where one recipient's email goes and what fills its variables, or why it is skipped. */
+async function sendTarget(
+  repo: Repository,
+  r: StoredRecipient,
+  category: CampaignCategory,
+  origin: string,
+): Promise<SendTarget> {
+  const userId = r.userId ?? (await accountIdFor(repo, r.email!));
+  if (userId) {
+    const { account, reason } = await eligibility(repo, userId, category);
+    if (reason) return { reason };
+    return { to: account!.email, userId, vars: campaignVars(account!, `${origin}/signup`) };
+  }
+  const reason = await addressEligibility(repo, r.email!, category);
+  if (reason) return { reason };
+  return {
+    to: r.email!,
+    userId: null,
+    vars: campaignVars({ email: r.email! }, await signupLinkFor(repo, origin, r.email!)),
+  };
+}
+
 /**
- * Writes a PENDING or SKIPPED row for every account in the audience. Rows already written are
+ * Writes a PENDING or SKIPPED row for every recipient in the audience. Rows already written are
  * kept, so a run cut short by its deadline picks up where it stopped. Undefined if cut short.
  */
 async function resolve(service: StorageService, campaign: StoredCampaign, deadline: number) {
   const { repo } = service;
-  const { ids } = await audienceUserIds(repo, campaign.audience);
+  const { ids, emails } = await audienceRecipients(repo, campaign.audience);
+  const targets = [
+    ...ids.map((userId) => ({ userId, email: null })),
+    ...emails.map((email) => ({ userId: null, email })),
+  ];
+  const category = campaign.content!.category;
   const counts = emptyCounts();
-  for (let i = 0; i < ids.length; i += CHUNK) {
+  for (let i = 0; i < targets.length; i += CHUNK) {
     if (Date.now() >= deadline) return undefined;
     const chunk = await Promise.all(
-      ids.slice(i, i + CHUNK).map(async (userId) => {
-        const existing = (await repo.get({ pk: recipientPK(campaign.id), sk: recipientSK(userId) }))
+      targets.slice(i, i + CHUNK).map(async (target) => {
+        const key = recipientKey(target);
+        const existing = (await repo.get({ pk: recipientPK(campaign.id), sk: recipientSK(key) }))
           ?.data as StoredRecipient | undefined;
         if (existing) return { row: existing, isNew: false };
-        const { account, reason } = await eligibility(repo, userId, campaign.content!.category);
+        let reason: RecipientSkipReason | undefined;
+        let account: Account | undefined;
+        if (target.userId) ({ account, reason } = await eligibility(repo, target.userId, category));
+        else reason = await addressEligibility(repo, target.email!, category);
         const row: StoredRecipient = {
-          userId,
-          email: account?.email ?? null,
+          userId: target.userId,
+          email: account?.email ?? target.email,
           name: account?.displayName ?? null,
           status: reason ? 'SKIPPED' : 'PENDING',
           reason: reason ?? null,
@@ -329,7 +412,8 @@ async function resolve(service: StorageService, campaign: StoredCampaign, deadli
     const fresh = chunk.filter((c) => c.isNew);
     if (fresh.length)
       await transact(repo, async (tx) => {
-        for (const { row } of fresh) await tx.put(recipientPK(campaign.id), recipientSK(row.userId), row);
+        for (const { row } of fresh)
+          await tx.put(recipientPK(campaign.id), recipientSK(recipientKey(row)), row);
       });
     for (const { row } of chunk) {
       counts.total++;

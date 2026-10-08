@@ -53,6 +53,20 @@ async function queueEmail(tx: Transaction, id: string, email: Email) {
   await tx.put('JOB', id, job, { gpk: 'JOB', gsk: job.dueAt });
 }
 
+/**
+ * Where someone without an account signs up: their own link while they hold an unused beta
+ * invite, otherwise the sign-up page.
+ */
+export async function signupLinkFor(repo: Repository, webOrigin: string, rawEmail: string) {
+  return transact(repo, async (tx) => {
+    const entry = await tx.get<Entry>(ENTRY, normalizeEmail(rawEmail));
+    const live = entry?.state === 'INVITED' && entry.code && (await tx.get(INVITE, entry.code));
+    return live
+      ? `${webOrigin}/signup?invite=${encodeURIComponent(entry.code!)}`
+      : `${webOrigin}/signup`;
+  });
+}
+
 export class Beta {
   constructor(
     private repo: Repository,

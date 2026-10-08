@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
 import { StorageService, type Job } from '../src/domain';
-import { MemoryRepository } from '../src/repository';
+import { MemoryRepository, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
@@ -218,18 +218,32 @@ describe('groups', () => {
   it('hold accounts added by email, username or ID, and show on the account page', async () => {
     const group = await ok(admin, 'POST', '/email/groups', { name: 'Testers' });
     const added = await ok(admin, 'POST', `/email/groups/${group.id}/members`, {
-      identifiers: ['ALICE@example.test', 'bob', 'nobody@example.test'],
+      identifiers: ['ALICE@example.test', 'bob', 'Nobody@example.test', 'no-such-user'],
       userIds: ['alice'],
     });
-    expect(added).toMatchObject({ added: 2, alreadyMembers: 0, unmatched: ['nobody@example.test'] });
-    expect(added.group.memberCount).toBe(2);
-    const again = await ok(admin, 'POST', `/email/groups/${group.id}/members`, { userIds: ['bob'] });
-    expect(again).toMatchObject({ added: 0, alreadyMembers: 1 });
+    expect(added).toMatchObject({
+      added: 3,
+      addedEmails: 1,
+      alreadyMembers: 0,
+      unmatched: ['no-such-user'],
+    });
+    expect(added.group.memberCount).toBe(3);
+    const again = await ok(admin, 'POST', `/email/groups/${group.id}/members`, {
+      userIds: ['bob'],
+      identifiers: ['nobody@example.test'],
+    });
+    expect(again).toMatchObject({ added: 0, alreadyMembers: 2 });
     const members = await ok(admin, 'GET', `/email/groups/${group.id}/members`);
     expect(members.items.map((m: { email: string }) => m.email).sort()).toEqual([
       'alice@example.test',
       'bob@example.test',
+      'nobody@example.test',
     ]);
+    expect(members.items.find((m: { email: string }) => m.email === 'nobody@example.test').userId).toBeNull();
+    const gone = await ok(admin, 'POST', `/email/groups/${group.id}/members/remove`, {
+      emails: ['nobody@example.test'],
+    });
+    expect(gone).toMatchObject({ removed: 1, group: { memberCount: 2 } });
     expect((await ok(support, 'GET', '/users/alice')).email).toEqual({
       productUpdates: true,
       suppressed: null,
@@ -498,5 +512,92 @@ describe('the Everyone group', () => {
       'bob@example.test',
       'carol@example.test',
     ]);
+  });
+});
+
+describe('addresses without an account', () => {
+  async function invite(email: string, code: string) {
+    await transact(service.repo, async (tx) => {
+      await tx.put('BETA_EMAIL', email, { email, state: 'INVITED', code, requestedAt: '2026-10-01T00:00:00.000Z' });
+      await tx.put('BETA_INVITE', code, { email });
+    });
+  }
+  async function draft(audience: { groupIds?: string[]; emails?: string[] }) {
+    const t = await ok(admin, 'POST', '/email/templates', {
+      ...template(),
+      markdown: 'Hi {{name}}\n\n[[Create your account]]({{signupLink}})',
+    });
+    return ok(admin, 'POST', '/email/campaigns', {
+      name: 'Nudge',
+      templateId: t.id,
+      audience: { groupIds: [], userIds: [], ...audience },
+    });
+  }
+  const send = (c: { id: string; updatedAt: string }) =>
+    ok(admin, 'POST', `/email/campaigns/${c.id}/schedule`, {
+      at: null,
+      reason: 'Nudge invitees',
+      expectedUpdatedAt: c.updatedAt,
+    });
+
+  it("get their own sign-up link and an unsubscribe link for the address", async () => {
+    await invite('invitee@example.test', 'code-1');
+    const group = await ok(admin, 'POST', '/email/groups', { name: 'Invitees' });
+    await ok(admin, 'POST', `/email/groups/${group.id}/members`, {
+      identifiers: ['invitee@example.test', 'stranger@example.test', 'alice@example.test'],
+    });
+    const campaign = await draft({ groupIds: [group.id], emails: ['INVITEE@example.test'] });
+    const count = await ok(support, 'POST', '/email/audience/count', {
+      audience: campaign.audience,
+      category: 'PRODUCT',
+    });
+    expect(count).toEqual({ total: 3, eligible: 3, skipped: {} });
+    await send(campaign);
+    const sent = await runJobs();
+    const to = (email: string) => sent.find((e) => e.to === email)!;
+    expect(sent).toHaveLength(3);
+    expect(to('invitee@example.test')).toMatchObject({
+      vars: { name: 'invitee', signupLink: 'https://app.test/signup?invite=code-1' },
+      unsubscribe: links.unsubscribeAddress('invitee@example.test'),
+    });
+    expect(to('stranger@example.test').vars.signupLink).toBe('https://app.test/signup');
+    expect(to('alice@example.test').unsubscribe).toEqual(links.unsubscribe('alice'));
+    const html = composeEmail(to('invitee@example.test'), 'https://app.test').html;
+    expect(html).toContain('href="https://app.test/signup?invite=code-1"');
+    const recipients = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients`);
+    expect(recipients.items).toContainEqual(
+      expect.objectContaining({ userId: null, email: 'stranger@example.test', status: 'SENT' }),
+    );
+  });
+
+  it('can unsubscribe from product updates and back with the address link', async () => {
+    const token = encodeURIComponent(links.addressToken('stranger@example.test'));
+    const unsubscribed = await userApp.request(`/v1/email/unsubscribe?t=${token}`, { method: 'POST' });
+    expect(await unsubscribed.json()).toEqual({
+      subscription: { email: 's•••@example.test', productUpdates: false },
+    });
+    const campaign = await draft({ emails: ['stranger@example.test', 'other@example.test'] });
+    const count = await ok(support, 'POST', '/email/audience/count', {
+      audience: campaign.audience,
+      category: 'PRODUCT',
+    });
+    expect(count).toEqual({ total: 2, eligible: 1, skipped: { UNSUBSCRIBED: 1 } });
+    const page = await userApp.request(`/v1/email/unsubscribe?t=${token}`);
+    expect((await page.json()).subscription.productUpdates).toBe(false);
+    expect(links.verify(decodeURIComponent(token))).toBeUndefined();
+    const forged = links.addressToken('a@example.test').replace(/\.[^.]+$/, '.x');
+    expect((await userApp.request(`/v1/email/unsubscribe?t=${forged}`)).status).toBe(400);
+  });
+
+  it('are sent to as the account once one uses the address', async () => {
+    const campaign = await draft({ emails: ['alice@example.test'] });
+    expect(
+      await ok(support, 'POST', '/email/audience/count', { audience: campaign.audience, category: 'PRODUCT' }),
+    ).toEqual({ total: 1, eligible: 1, skipped: {} });
+    await send(campaign);
+    const sent = await runJobs();
+    expect(sent[0]).toMatchObject({ to: 'alice@example.test', unsubscribe: links.unsubscribe('alice') });
+    const recipients = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients`);
+    expect(recipients.items[0]).toMatchObject({ userId: 'alice' });
   });
 });

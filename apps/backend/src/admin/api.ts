@@ -494,7 +494,7 @@ export function createAdminApp(
         return ctx.json(
             z
                 .object({ group: emailGroupSchema, removed: z.number() })
-                .parse(await campaigns.removeMembers(ctx.get('staff'), itemId(ctx), i.userIds)),
+                .parse(await campaigns.removeMembers(ctx.get('staff'), itemId(ctx), i.userIds, i.emails)),
         );
     });
     v1.post('/email/audience/count', guard('read'), async (ctx) => {

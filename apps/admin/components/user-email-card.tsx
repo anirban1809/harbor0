@@ -69,7 +69,7 @@ export function UserEmailCard({ userId, email }: { userId: string; email: AdminU
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => void change(() => api.removeGroupMembers(g.id, [userId]))}
+                  onClick={() => void change(() => api.removeGroupMembers(g.id, { userIds: [userId] }))}
                 >
                   Remove
                 </Button>
