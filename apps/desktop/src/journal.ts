@@ -161,6 +161,17 @@ export class Journal {
       this.db.prepare('SELECT data FROM files WHERE root_id=?').all(rootId) as { data: string }[]
     ).map((r) => JSON.parse(r.data));
   }
+  /** The synced items directly inside `folder`, a relative path ('' for the top of the root). */
+  children(rootId: string, folder: string): LocalFile[] {
+    const prefix = folder ? folder + '/' : '';
+    return (
+      this.db
+        .prepare(
+          "SELECT data FROM files WHERE root_id=? AND substr(relative_path, 1, ?) = ? AND instr(substr(relative_path, ?), '/') = 0",
+        )
+        .all(rootId, [...prefix].length, prefix, [...prefix].length + 1) as { data: string }[]
+    ).map((row) => JSON.parse(row.data));
+  }
   folders(rootId: string): LocalFile[] {
     return (
       this.db

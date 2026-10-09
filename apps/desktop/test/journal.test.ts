@@ -106,3 +106,33 @@ it('looks up remote identities within their root and counts queued work without 
     journal.close();
   }
 });
+
+it('lists only the items directly inside a folder', () => {
+  const journal = new Journal(':memory:');
+  try {
+    const file = { rootId: 'sync', itemId: 'i', revision: 1, hash: null, type: 'FILE' as const };
+    for (const relativePath of [
+      'top.txt',
+      '😀 top.txt',
+      'Docs',
+      'Docs/a.txt',
+      'Docs/😀 b.txt',
+      'Docs/Inner',
+      'Docs/Inner/c.txt',
+      'Docs 2/d.txt',
+    ])
+      journal.putFile({ ...file, relativePath });
+    journal.putFile({ ...file, rootId: 'other', relativePath: 'Docs/e.txt' });
+    const names = (folder: string) =>
+      journal
+        .children('sync', folder)
+        .map((f) => f.relativePath)
+        .sort();
+    expect(names('')).toEqual(['Docs', 'top.txt', '😀 top.txt']);
+    expect(names('Docs')).toEqual(['Docs/Inner', 'Docs/a.txt', 'Docs/😀 b.txt']);
+    expect(names('Docs/Inner')).toEqual(['Docs/Inner/c.txt']);
+    expect(names('Missing')).toEqual([]);
+  } finally {
+    journal.close();
+  }
+});

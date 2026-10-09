@@ -118,6 +118,14 @@ function App() {
     if (!status?.signedIn) clearBrowserCaches();
     setModal(null);
   }, [status?.signedIn, status?.accountId]);
+  // The tray's "Send a file": choose a person, then the files to send them.
+  useEffect(
+    () =>
+      bridge.onSend(() => {
+        if (status?.signedIn) setModal({ mode: 'send-files', item: null });
+      }),
+    [status?.signedIn],
+  );
   const activity = useActivityFeed(status?.signedIn ? status.accountId : undefined);
   useAccountAppearance(
     status?.signedIn ? (status.accountId ?? 'desktop-session') : undefined,
@@ -1669,7 +1677,7 @@ function App() {
             ? 'Empty Trash?'
             : modal?.mode === 'permanent'
               ? 'Delete permanently?'
-              : modal?.mode === 'send'
+              : modal?.mode === 'send' || modal?.mode === 'send-files'
                 ? 'Send to a person'
                 : modal?.mode === 'folder'
                   ? 'Create a folder'
@@ -1686,7 +1694,9 @@ function App() {
             ? 'Permanently delete all items in Trash, including items on other pages and their version history? This cannot be undone. Content needed by sent transfers remains stored until those transfers end.'
             : modal?.mode === 'permanent'
               ? 'Permanently delete this item and its version history? This cannot be undone. Content needed by sent transfers remains stored until those transfers end.'
-              : undefined
+              : modal?.mode === 'send-files'
+                ? 'Choose who to send to, then pick the files. They are also saved in My Drive.'
+                : undefined
         }
       >
         <form
@@ -1721,6 +1731,8 @@ function App() {
                   },
                   items: [{ driveItemId: modal.item.id }],
                 });
+              if (modal?.mode === 'send-files')
+                await bridge.upload({ parentId: null, recipient: data.recipient });
               if (modal?.mode === 'folder')
                 await request('/v1/drive/folders', 'POST', { ...op(), parentId, name: data.name });
               if (modal?.mode === 'rename')
@@ -1761,7 +1773,7 @@ function App() {
               <Input name="name" required defaultValue={modal?.item?.name} />
             </Field>
           )}
-          {modal?.mode === 'send' && (
+          {(modal?.mode === 'send' || modal?.mode === 'send-files') && (
             <RecipientPicker
               autoFocus
               search={(path) => request(path)}
@@ -1814,11 +1826,13 @@ function App() {
                   ? 'Empty Trash'
                   : modal?.mode === 'permanent'
                     ? 'Delete permanently'
-                    : modal?.mode === 'send'
-                      ? recipientKind === 'invite'
-                        ? 'Send invite'
-                        : 'Send'
-                      : 'Save'}
+                    : modal?.mode === 'send-files'
+                      ? 'Choose files…'
+                      : modal?.mode === 'send'
+                        ? recipientKind === 'invite'
+                          ? 'Send invite'
+                          : 'Send'
+                        : 'Save'}
             </Button>
           </DialogActions>
         </form>

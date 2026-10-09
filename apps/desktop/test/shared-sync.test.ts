@@ -20,6 +20,8 @@ vi.mock('../src/local-watcher', () => ({
     async close() {},
   }),
 }));
+// Windows paths are full of backslashes.
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 it('syncs real files across separate accounts, preserves conflicts and detaches safely on revocation', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-shared-sync-'));
   const storage = new MemoryStorage();
@@ -165,7 +167,7 @@ it('syncs real files across separate accounts, preserves conflicts and detaches 
         code: 'SYNC_DETACHED',
         message: expect.stringMatching(
           new RegExp(
-            `stopped sharing “bob” with you\\. Your local files are still in ${bob.root.localPath}`,
+            `stopped sharing “bob” with you\\. Your local files are still in ${escapeRegExp(bob.root.localPath)}`,
           ),
         ),
       }),

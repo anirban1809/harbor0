@@ -276,6 +276,8 @@ async function connected() {
   window?.webContents.send('harbor:authenticated');
   return { user };
 }
+// Windows shows notifications only for the app ID the installer gave the Start menu shortcut.
+if (process.platform === 'win32') app.setAppUserModelId('com.harbor.storage');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
@@ -406,6 +408,7 @@ app
       title: 'harbor0',
       icon: path.join(__dirname, 'icon.png'),
       backgroundColor: '#f4f5f7',
+      autoHideMenuBar: true,
       ...(process.platform === 'darwin' && {
         titleBarStyle: 'hiddenInset' as const,
         trafficLightPosition: { x: 18, y: 18 },

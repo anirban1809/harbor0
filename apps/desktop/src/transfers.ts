@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs';
-import { open, stat, lstat, rename, rm } from 'node:fs/promises';
+import { chmod, open, stat, lstat, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -367,7 +367,7 @@ export async function downloadFile(
           throw new Error('Download integrity check failed. The original local file was kept.');
         }
         await beforeReplace?.();
-        await rename(part, destination);
+        await replaceWith(part, destination);
         return signed.contentHash;
       }
     } finally {
@@ -379,8 +379,25 @@ export async function downloadFile(
     throw new Error('Download integrity check failed. The original local file was kept.');
   }
   await beforeReplace?.();
-  await rename(part, destination);
+  await replaceWith(part, destination);
   return signed.contentHash;
+}
+
+/**
+ * Puts a finished download in place of the local file. Windows refuses to replace a read-only
+ * file, which macOS and Linux allow; clearing the flag first gives the same result everywhere.
+ */
+async function replaceWith(part: string, destination: string) {
+  try {
+    await rename(part, destination);
+  } catch (error) {
+    if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM')
+      throw error;
+    const current = await lstat(destination).catch(() => undefined);
+    if (!current?.isFile() || current.mode & 0o200) throw error;
+    await chmod(destination, current.mode | 0o200);
+    await rename(part, destination);
+  }
 }
 
 async function readRange(

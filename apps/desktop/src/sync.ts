@@ -30,6 +30,20 @@ import { uploadFile, downloadFile, hashFile, cancelUpload, type UploadState } fr
 // Watchers can miss events (sleep, a full event buffer, edits while the app was closed),
 // so every folder is also compared against the journal on this schedule.
 export const LOCAL_SCAN_INTERVAL = 5 * 60_000;
+/**
+ * Jobs in queue order, except that folder deletions run after everything else, deepest first.
+ * A file inside a deleted folder may yet turn out to have moved (a renamed folder is reported as
+ * a deletion and an addition, in any order); deleting the folder in the cloud first would delete
+ * the file with it.
+ */
+function foldersDeletedLast(jobs: LocalJob[], isFolder: (job: LocalJob) => boolean) {
+  const folders = jobs.filter((job) => job.kind === 'delete' && isFolder(job));
+  const depth = (job: LocalJob) => job.relativePath.split('/').length;
+  return [
+    ...jobs.filter((job) => !folders.includes(job)),
+    ...folders.sort((a, b) => depth(b) - depth(a)),
+  ];
+}
 // A pass waiting this long on one server request is aborted and started again.
 export const STALL_TIMEOUT = 3 * 60_000;
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
@@ -61,6 +75,9 @@ export class SyncEngine {
   private timer?: ReturnType<typeof setInterval>;
   private wakeTimer?: ReturnType<typeof setTimeout>;
   private queueEmitTimer?: ReturnType<typeof setTimeout>;
+  // Folders, by root id, to check for synced items that disappeared without being reported.
+  private siblingChecks = new Map<string, Set<string>>();
+  private siblingTimer?: ReturnType<typeof setTimeout>;
   private pendingWake = false;
   private lastProgressEmit = 0;
   private running = false;
@@ -186,6 +203,9 @@ export class SyncEngine {
     this.wakeTimer = undefined;
     if (this.queueEmitTimer) clearTimeout(this.queueEmitTimer);
     this.queueEmitTimer = undefined;
+    if (this.siblingTimer) clearTimeout(this.siblingTimer);
+    this.siblingTimer = undefined;
+    this.siblingChecks.clear();
     if (this.timer) clearInterval(this.timer);
     if (this.watchdog) clearInterval(this.watchdog);
     await Promise.all([...this.watchers.values()].map((w) => w.close()));
@@ -210,8 +230,10 @@ export class SyncEngine {
     const queue =
       (kind: 'upsert' | 'delete', changed = false) =>
       (full: string, info?: Stats) => {
-        if (this.observe(root.id, this.relativeTo(root, full), kind, info, 'watch', changed))
-          this.changesFound();
+        const relative = this.relativeTo(root, full);
+        if (kind === 'upsert' && !this.journal.file(root.id, relative))
+          this.checkSiblings(root.id, path.posix.dirname(relative));
+        if (this.observe(root.id, relative, kind, info, 'watch', changed)) this.changesFound();
       };
     watcher
       .on('add', queue('upsert'))
@@ -229,6 +251,44 @@ export class SyncEngine {
         this.scheduleTick();
       });
     this.watchers.set(root.id, watcher);
+  }
+  /**
+   * A new item may be a synced one renamed or moved, and the OS does not always report the old
+   * path: the synced items beside it are checked, so the rename is seen as a move rather than as
+   * a new copy and a folder left behind until the next full scan. Batched, one listing a folder.
+   */
+  private checkSiblings(rootId: string, folder: string) {
+    const folders = this.siblingChecks.get(rootId) ?? new Set<string>();
+    folders.add(folder);
+    this.siblingChecks.set(rootId, folders);
+    this.siblingTimer ??= setTimeout(() => void this.findVanished(), 100);
+  }
+  private async findVanished() {
+    this.siblingTimer = undefined;
+    const checks = [...this.siblingChecks];
+    this.siblingChecks.clear();
+    let found = false;
+    for (const [rootId, folders] of checks) {
+      const root = this.journal.roots().find((item) => item.id === rootId);
+      if (!root || this.stopped) continue;
+      for (const folder of folders) {
+        let listed: string[];
+        try {
+          listed = await readdir(
+            folder === '.' ? root.localPath : contained(root.localPath, folder),
+          );
+        } catch {
+          continue; // Gone or unreadable itself: its own report or the next scan covers it.
+        }
+        for (const file of this.journal.children(rootId, folder === '.' ? '' : folder))
+          if (
+            !listed.includes(path.posix.basename(file.relativePath)) &&
+            this.observe(rootId, file.relativePath, 'delete', undefined, 'watch')
+          )
+            found = true;
+      }
+    }
+    if (found) this.changesFound();
   }
   private changesFound() {
     // Batch large scans while still showing new files promptly, including when paused.
@@ -1056,7 +1116,10 @@ export class SyncEngine {
       await this.releaseUploads();
       // Free cloud storage by folder, once an upload was refused for lack of it this pass.
       const full = new Map<string, number>();
-      for (const job of this.journal.jobs()) {
+      for (const job of foldersDeletedLast(
+        this.journal.jobs(),
+        (job) => this.journal.file(job.rootId, job.relativePath)?.type === 'FOLDER',
+      )) {
         if (this.stopped || this.state.paused) return;
         const root = this.journal.roots().find((r) => r.id === job.rootId);
         if (
@@ -1373,6 +1436,19 @@ export class SyncEngine {
     }
     if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory()))
       return this.abandonUpload(job);
+    // A recapitalized parent folder is renamed first: its contents are reported in any order.
+    if (root.mode === 'sync' && !known) {
+      const segments = job.relativePath.split('/');
+      for (let i = 1; i < segments.length; i++) {
+        const folder = segments.slice(0, i).join('/');
+        if (
+          !this.journal.file(root.id, folder) &&
+          (await this.recapitalized(root, folder, 'FOLDER')) === 'alias'
+        )
+          return this.abandonUpload(job);
+      }
+      known = this.journal.file(root.id, job.relativePath);
+    }
     this.state.active = {
       rootId: root.id,
       direction: 'upload',
@@ -1387,6 +1463,12 @@ export class SyncEngine {
         : undefined;
     const parentId = await this.remoteParent(root, job.relativePath, backup);
     if (info.isDirectory()) {
+      if (
+        root.mode === 'sync' &&
+        !known &&
+        (await this.recapitalized(root, job.relativePath, 'FOLDER'))
+      )
+        return;
       if (!known) {
         const item = await this.ensureFolder(path.basename(absolute), parentId, job.id, backup);
         this.journal.putFile({
@@ -1401,6 +1483,11 @@ export class SyncEngine {
         this.activity(root, job.relativePath, 'upload', item);
       }
       return;
+    }
+    if (root.mode === 'sync' && !known) {
+      const recapitalized = await this.recapitalized(root, job.relativePath, 'FILE');
+      if (recapitalized === 'alias') return this.abandonUpload(job);
+      if (recapitalized === 'renamed') known = this.journal.file(root.id, job.relativePath);
     }
     if (root.mode === 'sync' && !known && (await this.renamedFrom(root, job.relativePath)))
       return this.abandonUpload(job);
@@ -1650,6 +1737,51 @@ export class SyncEngine {
       return false;
     }
   }
+  /**
+   * A path that differs from a synced item's only in capitalization. macOS and Windows disks
+   * resolve both spellings to the same item, and the cloud treats both names as one, so uploading
+   * it as a new item would collide with the old. The folder listing tells the cases apart:
+   * - only the new spelling is listed: the item was renamed, so its cloud item is renamed too
+   *   (an edit made at the same time then syncs as a normal change of that item);
+   * - only the old one is listed: the path is another spelling of the synced item, as reported by
+   *   the watcher after a rename, and there is nothing to upload;
+   * - both are listed: two distinct items on a case-sensitive disk.
+   */
+  private async recapitalized(
+    root: Root,
+    relative: string,
+    type: 'FILE' | 'FOLDER',
+  ): Promise<'renamed' | 'alias' | false> {
+    const directory = path.posix.dirname(relative);
+    const name = path.posix.basename(relative);
+    const fold = (value: string) => value.normalize('NFC').toLowerCase();
+    const previous = this.journal
+      .files(root.id)
+      .find(
+        (file) =>
+          file.type === type &&
+          file.relativePath !== relative &&
+          path.posix.dirname(file.relativePath) === directory &&
+          fold(path.posix.basename(file.relativePath)) === fold(name),
+      );
+    if (!previous) return false;
+    const parent = directory === '.' ? root.localPath : contained(root.localPath, directory);
+    const listed = await readdir(parent);
+    const current = listed.includes(name);
+    const old = listed.includes(path.posix.basename(previous.relativePath));
+    if (current && !old) return (await this.moveRemote(root, previous, relative)) && 'renamed';
+    if (old && !current) return 'alias';
+    return false;
+  }
+  /** Records a folder's synced contents under its new local path. */
+  private moveChildren(root: Root, from: string, to: string) {
+    for (const child of this.journal
+      .files(root.id)
+      .filter((f) => f.relativePath.startsWith(from + '/'))) {
+      this.journal.deleteFile(root.id, child.relativePath);
+      this.journal.putFile({ ...child, relativePath: to + child.relativePath.slice(from.length) });
+    }
+  }
   /** Moves and renames `known`'s cloud item to `relative`; false when the cloud refuses. */
   private async moveRemote(root: Root, known: LocalFile, relative: string) {
     const info = await lstat(contained(root.localPath, relative));
@@ -1687,9 +1819,9 @@ export class SyncEngine {
       ...known,
       relativePath: relative,
       revision: item.revision,
-      sizeBytes: info.size,
-      mtimeMs: info.mtimeMs,
+      ...(known.type === 'FILE' && { sizeBytes: info.size, mtimeMs: info.mtimeMs }),
     });
+    if (known.type === 'FOLDER') this.moveChildren(root, known.relativePath, relative);
     this.receipts.queue(root, relative, item, known.hash);
     this.activity(root, relative, 'upload', item);
     return true;
@@ -1799,31 +1931,37 @@ export class SyncEngine {
       return;
     }
     if (this.ignored(root, relative)) return;
+    // Unchanged in the cloud since it was synced, yet gone from this computer: it was deleted,
+    // moved or renamed here, and that change is about to sync. Bringing it back would undo it.
+    if (
+      known?.relativePath === relative &&
+      item.revision <= known.revision &&
+      !(await this.exists(root, relative))
+    )
+      return;
     const destination = await safeParents(root.localPath, relative);
     if (known && known.relativePath !== relative) {
       const previous = contained(root.localPath, known.relativePath);
-      try {
-        await lstat(destination);
+      const blocking = await lstat(destination).catch((e) => {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw e;
+      });
+      // A capitalization change: macOS and Windows disks resolve the new name to the item itself.
+      const itself =
+        blocking &&
+        (await lstat(previous).then(
+          (own) => own.dev === blocking.dev && own.ino === blocking.ino,
+          () => false,
+        ));
+      if (blocking && !itself)
         throw new Error('A local item blocks a remote move. Move it aside to continue safely.');
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-      }
       try {
         await rename(previous, destination);
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       }
       this.journal.deleteFile(root.id, known.relativePath);
-      if (known.type === 'FOLDER')
-        for (const child of this.journal
-          .files(root.id)
-          .filter((f) => f.relativePath.startsWith(known.relativePath + '/'))) {
-          this.journal.deleteFile(root.id, child.relativePath);
-          this.journal.putFile({
-            ...child,
-            relativePath: relative + child.relativePath.slice(known.relativePath.length),
-          });
-        }
+      if (known.type === 'FOLDER') this.moveChildren(root, known.relativePath, relative);
     }
     if (item.type === 'FOLDER') {
       await mkdir(destination, { recursive: true });

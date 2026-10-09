@@ -119,6 +119,8 @@ const issueText: Record<SyncIssue['code'], string> = {
     MAPPING_REQUIRED: 'Finish setting up this local folder to start syncing.',
     FOLDER_MISSING: 'The local folder can no longer be found.',
     PERMISSION_DENIED: 'harbor0 no longer has permission to access this folder.',
+    FILE_IN_USE:
+        'This file is open in another app. Once that app closes it, syncing retries automatically.',
     STORAGE_QUOTA_EXCEEDED: 'Your cloud storage is full. New changes cannot be uploaded.',
     DISK_FULL: 'This computer does not have enough free disk space to download new changes.',
     AUTH_INVALID: 'Your session ended. Sign in again to continue syncing.',

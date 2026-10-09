@@ -67,61 +67,65 @@ async function fixture() {
   };
 }
 
-it('keeps syncing other work when one file cannot be read', async () => {
-  const { local, journal, root, close } = await fixture();
-  const requests: string[] = [];
-  const api = new ApiClient(async (endpoint, init) => {
-    requests.push(`${init?.method ?? 'GET'} ${endpoint}`);
-    return endpoint.startsWith('/v1/sync/changes')
-      ? { changes: [], nextCursor: 7, hasMore: false }
-      : {};
-  });
-  const engine = new SyncEngine(api, journal, 'device', () => {});
-  try {
-    await writeFile(path.join(local, 'locked.txt'), 'secret');
-    await chmod(path.join(local, 'locked.txt'), 0o000);
-    journal.enqueue(root.id, 'locked.txt', 'upsert');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    journal.putFile({
-      rootId: root.id,
-      relativePath: 'gone.txt',
-      itemId: 'gone',
-      revision: 1,
-      hash: 'hash',
-      type: 'FILE',
+// chmod can't take away read access on Windows, so the file would upload normally there.
+it.skipIf(process.platform === 'win32')(
+  'keeps syncing other work when one file cannot be read',
+  async () => {
+    const { local, journal, root, close } = await fixture();
+    const requests: string[] = [];
+    const api = new ApiClient(async (endpoint, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${endpoint}`);
+      return endpoint.startsWith('/v1/sync/changes')
+        ? { changes: [], nextCursor: 7, hasMore: false }
+        : {};
     });
-    journal.enqueue(root.id, 'gone.txt', 'delete');
-    await engine.tick();
-    // The later deletion and the remote feed still ran.
-    expect(requests).toContain('DELETE /v1/drive/items/gone');
-    expect(journal.get('cursor')).toBe(7);
-    expect(engine.state.lastSync).toBeTruthy();
-    const [failed] = journal.jobs();
-    expect(journal.jobs()).toHaveLength(1);
-    expect(failed).toMatchObject({ relativePath: 'locked.txt', attempts: 1 });
-    expect(failed.payload.retryAt).toBeGreaterThan(Date.now());
-    expect(engine.state.issues).toEqual([
-      expect.objectContaining({
-        code: 'PERMISSION_DENIED',
-        scope: 'item',
-        jobId: failed.id,
-        relativePath: 'locked.txt',
-      }),
-    ]);
-    // The failed file waits for its retry time rather than being hammered every tick.
-    await engine.tick();
-    expect(journal.jobs()[0].attempts).toBe(1);
-    expect(engine.state.issues).toHaveLength(1);
-    // Resuming retries immediately; once readable, the problem clears by itself.
-    engine.pause(true);
-    engine.pause(false);
-    expect(journal.jobs()[0].payload.retryAt).toBeUndefined();
-  } finally {
-    await chmod(path.join(local, 'locked.txt'), 0o600).catch(() => {});
-    await engine.stop();
-    await close();
-  }
-});
+    const engine = new SyncEngine(api, journal, 'device', () => {});
+    try {
+      await writeFile(path.join(local, 'locked.txt'), 'secret');
+      await chmod(path.join(local, 'locked.txt'), 0o000);
+      journal.enqueue(root.id, 'locked.txt', 'upsert');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      journal.putFile({
+        rootId: root.id,
+        relativePath: 'gone.txt',
+        itemId: 'gone',
+        revision: 1,
+        hash: 'hash',
+        type: 'FILE',
+      });
+      journal.enqueue(root.id, 'gone.txt', 'delete');
+      await engine.tick();
+      // The later deletion and the remote feed still ran.
+      expect(requests).toContain('DELETE /v1/drive/items/gone');
+      expect(journal.get('cursor')).toBe(7);
+      expect(engine.state.lastSync).toBeTruthy();
+      const [failed] = journal.jobs();
+      expect(journal.jobs()).toHaveLength(1);
+      expect(failed).toMatchObject({ relativePath: 'locked.txt', attempts: 1 });
+      expect(failed.payload.retryAt).toBeGreaterThan(Date.now());
+      expect(engine.state.issues).toEqual([
+        expect.objectContaining({
+          code: 'PERMISSION_DENIED',
+          scope: 'item',
+          jobId: failed.id,
+          relativePath: 'locked.txt',
+        }),
+      ]);
+      // The failed file waits for its retry time rather than being hammered every tick.
+      await engine.tick();
+      expect(journal.jobs()[0].attempts).toBe(1);
+      expect(engine.state.issues).toHaveLength(1);
+      // Resuming retries immediately; once readable, the problem clears by itself.
+      engine.pause(true);
+      engine.pause(false);
+      expect(journal.jobs()[0].payload.retryAt).toBeUndefined();
+    } finally {
+      await chmod(path.join(local, 'locked.txt'), 0o600).catch(() => {});
+      await engine.stop();
+      await close();
+    }
+  },
+);
 
 it('does not mistake one missing file for a missing sync folder', () => {
   const missing = Object.assign(new Error('gone'), { code: 'ENOENT' });

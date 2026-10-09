@@ -93,6 +93,12 @@ contextBridge.exposeInMainWorld('harbor', {
     ipcRenderer.on('harbor:live', listener);
     return () => ipcRenderer.removeListener('harbor:live', listener);
   },
+  // The tray's "Send a file".
+  onSend: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('harbor:send', listener);
+    return () => ipcRenderer.removeListener('harbor:send', listener);
+  },
   onAuthenticated: (callback: () => void) => {
     const listener = () => callback();
     ipcRenderer.on('harbor:authenticated', listener);

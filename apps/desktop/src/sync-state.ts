@@ -3,6 +3,7 @@ export type SyncIssueCode =
   | 'MAPPING_REQUIRED'
   | 'FOLDER_MISSING'
   | 'PERMISSION_DENIED'
+  | 'FILE_IN_USE'
   | 'STORAGE_QUOTA_EXCEEDED'
   | 'DISK_FULL'
   | 'AUTH_INVALID'
@@ -151,6 +152,8 @@ export function syncIssueCode(error: unknown, item = false): SyncIssueCode {
   const code = (error as { code?: string })?.code;
   // A single missing file is not a missing sync folder.
   if (code === 'ENOENT' || code === 'ENOTDIR') return item ? 'SYNC_ERROR' : 'FOLDER_MISSING';
+  // Windows: another app has the file open without sharing it, as Office and Outlook do.
+  if (code === 'EBUSY') return 'FILE_IN_USE';
   if (code === 'EACCES' || code === 'EPERM') return 'PERMISSION_DENIED';
   if (code === 'ENOSPC') return 'DISK_FULL';
   if (code === 'STORAGE_QUOTA_EXCEEDED' || code === 'OWNER_STORAGE_FULL')

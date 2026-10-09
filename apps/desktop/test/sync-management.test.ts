@@ -251,6 +251,7 @@ describe('sync states and error actions', () => {
     ['ENOENT', 'FOLDER_MISSING'],
     ['EACCES', 'PERMISSION_DENIED'],
     ['EPERM', 'PERMISSION_DENIED'],
+    ['EBUSY', 'FILE_IN_USE'],
     ['ENOSPC', 'DISK_FULL'],
     ['AUTH_INVALID', 'AUTH_INVALID'],
     ['STORAGE_QUOTA_EXCEEDED', 'STORAGE_QUOTA_EXCEEDED'],

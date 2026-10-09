@@ -12,6 +12,21 @@ type Receipt = {
   item: DriveItem;
   hash: string | null;
 };
+/**
+ * Windows flushes a file only through a handle that may write it: fsync on a read-only handle
+ * fails with EPERM. A file that cannot be opened for writing there (read-only, or locked by the
+ * app editing it) is confirmed without the flush rather than never.
+ */
+async function openToFlush(full: string) {
+  if (process.platform !== 'win32') return { file: await open(full, 'r'), flushable: true };
+  try {
+    return { file: await open(full, 'r+'), flushable: true };
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? ''))
+      throw error;
+    return { file: await open(full, 'r'), flushable: false };
+  }
+}
 type Candidate = { rootId: string; itemId: string; isRoot: boolean };
 // A pass that finds every copy confirmed waits an hour, or until nudge() reports new activity.
 const AUDIT_RETRY = 15_000;
@@ -181,7 +196,7 @@ export class SyncReceipts {
             this.remove(id, receipt);
             continue;
           }
-          const file = await open(full, 'r');
+          const { file, flushable } = await openToFlush(full);
           try {
             const verified = await file.stat();
             if (
@@ -192,7 +207,7 @@ export class SyncReceipts {
               this.remove(id, receipt);
               continue;
             }
-            await file.sync();
+            if (flushable) await file.sync();
           } finally {
             await file.close();
           }
