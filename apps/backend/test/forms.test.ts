@@ -25,13 +25,7 @@ async function signIn(email: string) {
       headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
       body: JSON.stringify(body),
     });
-  const first = await (await post('/auth/login', { email, password: 'Development-only-123!' })).json();
-  const second = await post('/auth/challenge', {
-    email,
-    session: first.session,
-    challenge: 'MFA',
-    code: '123456',
-  });
+  const second = await post('/auth/login', { email, password: 'Development-only-123!' });
   return second.headers
     .getSetCookie()
     .map((c) => c.split(';')[0])
