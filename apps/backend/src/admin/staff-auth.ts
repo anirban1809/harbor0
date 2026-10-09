@@ -2,8 +2,6 @@ import {
     CognitoIdentityProviderClient,
     InitiateAuthCommand,
     RespondToAuthChallengeCommand,
-    AssociateSoftwareTokenCommand,
-    VerifySoftwareTokenCommand,
     GetTokensFromRefreshTokenCommand,
     RevokeTokenCommand,
     GetUserCommand,
@@ -15,16 +13,15 @@ import type { Staff, StaffRole } from '../../../../packages/contracts/src/admin'
 import { assert, DomainError } from '../errors';
 
 export type StaffTokens = { accessToken: string; refreshToken: string; expiresIn: number };
-export type StaffChallenge = 'NEW_PASSWORD' | 'MFA_SETUP' | 'MFA';
+export type StaffChallenge = 'NEW_PASSWORD';
 export type StaffAuthStep =
     | { status: 'SIGNED_IN'; tokens: StaffTokens }
-    | { status: 'CHALLENGE'; challenge: StaffChallenge; session: string; secret?: string };
+    | { status: 'CHALLENGE'; challenge: StaffChallenge; session: string };
 export type StaffChallengeInput = {
     email: string;
     session: string;
     challenge: StaffChallenge;
-    newPassword?: string;
-    code?: string;
+    newPassword: string;
 };
 /** Sign-in for console staff. Staff live in their own pool; customer tokens are never accepted. */
 export interface StaffAuth {
@@ -77,20 +74,6 @@ export class CognitoStaffAuth implements StaffAuth {
         assert(response.Session, 'AUTH_INVALID', 'Sign-in could not be completed. Start again.', 401);
         if (response.ChallengeName === 'NEW_PASSWORD_REQUIRED')
             return { status: 'CHALLENGE', challenge: 'NEW_PASSWORD', session: response.Session };
-        if (response.ChallengeName === 'SOFTWARE_TOKEN_MFA')
-            return { status: 'CHALLENGE', challenge: 'MFA', session: response.Session };
-        if (response.ChallengeName === 'MFA_SETUP') {
-            const token = await this.client.send(
-                new AssociateSoftwareTokenCommand({ Session: response.Session }),
-            );
-            assert(token.SecretCode && token.Session, 'AUTH_INVALID', 'Authenticator setup failed.', 401);
-            return {
-                status: 'CHALLENGE',
-                challenge: 'MFA_SETUP',
-                session: token.Session,
-                secret: token.SecretCode,
-            };
-        }
         throw new DomainError(
             'AUTH_CHALLENGE_UNSUPPORTED',
             'This sign-in step is not supported by the console.',
@@ -109,53 +92,17 @@ export class CognitoStaffAuth implements StaffAuth {
         );
     }
     async respond(input: StaffChallengeInput) {
-        const USERNAME = input.email.toLowerCase();
-        if (input.challenge === 'NEW_PASSWORD') {
-            assert(input.newPassword, 'VALIDATION_ERROR', 'Choose a new password.');
-            return this.step(
-                await this.client.send(
-                    new RespondToAuthChallengeCommand({
-                        ClientId: this.clientId,
-                        ChallengeName: 'NEW_PASSWORD_REQUIRED',
-                        Session: input.session,
-                        ChallengeResponses: { USERNAME, NEW_PASSWORD: input.newPassword },
-                    }),
-                ),
-            );
-        }
-        assert(input.code, 'VALIDATION_ERROR', 'Enter the code from your authenticator app.');
-        if (input.challenge === 'MFA_SETUP') {
-            const verified = await this.client.send(
-                new VerifySoftwareTokenCommand({
-                    Session: input.session,
-                    UserCode: input.code,
-                    FriendlyDeviceName: 'harbor0 console',
-                }),
-            );
-            assert(
-                verified.Status === 'SUCCESS' && verified.Session,
-                'AUTH_INVALID',
-                'That code did not match. Try the next one.',
-                400,
-            );
-            return this.step(
-                await this.client.send(
-                    new RespondToAuthChallengeCommand({
-                        ClientId: this.clientId,
-                        ChallengeName: 'MFA_SETUP',
-                        Session: verified.Session,
-                        ChallengeResponses: { USERNAME },
-                    }),
-                ),
-            );
-        }
+        assert(input.newPassword, 'VALIDATION_ERROR', 'Choose a new password.');
         return this.step(
             await this.client.send(
                 new RespondToAuthChallengeCommand({
                     ClientId: this.clientId,
-                    ChallengeName: 'SOFTWARE_TOKEN_MFA',
+                    ChallengeName: 'NEW_PASSWORD_REQUIRED',
                     Session: input.session,
-                    ChallengeResponses: { USERNAME, SOFTWARE_TOKEN_MFA_CODE: input.code },
+                    ChallengeResponses: {
+                        USERNAME: input.email.toLowerCase(),
+                        NEW_PASSWORD: input.newPassword,
+                    },
                 }),
             ),
         );
@@ -198,11 +145,7 @@ export class CognitoStaffAuth implements StaffAuth {
 }
 
 export const DEV_STAFF_PASSWORD = 'Development-only-123!';
-export const DEV_STAFF_CODE = '123456';
-/**
- * Local staff: admin@example.test (ADMIN) and support@example.test (SUPPORT). Sign-in always
- * asks for an authenticator code (123456) so the console's MFA step is exercised locally.
- */
+/** Local staff: admin@example.test (ADMIN) and support@example.test (SUPPORT). */
 export class DevelopmentStaffAuth implements StaffAuth {
     staff = new Map<string, Staff>([
         ['admin@example.test', { id: 'staff-admin', email: 'admin@example.test', role: 'ADMIN' }],
@@ -220,22 +163,15 @@ export class DevelopmentStaffAuth implements StaffAuth {
             'Email or password is incorrect.',
             401,
         );
-        return { status: 'CHALLENGE', challenge: 'MFA', session: `dev-mfa:${staff.email}` };
-    }
-    async respond(input: StaffChallengeInput): Promise<StaffAuthStep> {
-        const staff = this.staff.get(input.email.toLowerCase());
-        assert(
-            staff && input.session === `dev-mfa:${staff.email}` && input.code === DEV_STAFF_CODE,
-            'AUTH_INVALID',
-            'That code did not match. The development code is 123456.',
-            400,
-        );
         const token = `staff-${crypto.randomUUID()}`;
         this.sessions.set(token, staff);
         return {
             status: 'SIGNED_IN',
             tokens: { accessToken: token, refreshToken: token, expiresIn: 900 },
         };
+    }
+    async respond(): Promise<StaffAuthStep> {
+        throw new DomainError('AUTH_EXPIRED', 'This sign-in step expired. Start again.', 400);
     }
     async refresh(refreshToken: string) {
         await this.identity(refreshToken);

@@ -395,14 +395,13 @@ realtimeStream.addEventSource(
     ),
   }),
 );
-// Management console: staff sign in to their own pool (admin-created, TOTP required), and the
+// Management console: staff sign in to their own pool (admin-created, password only), and the
 // console API runs in its own Lambda behind its own HTTP API with no R2 access.
 const staffPool = new cognito.UserPool(stack, 'Staff', {
   selfSignUpEnabled: false,
   signInAliases: { email: true },
   signInCaseSensitive: false,
-  mfa: cognito.Mfa.REQUIRED,
-  mfaSecondFactor: { sms: false, otp: true },
+  mfa: cognito.Mfa.OFF,
   passwordPolicy: {
     minLength: 14,
     requireDigits: true,
@@ -416,7 +415,7 @@ const staffPool = new cognito.UserPool(stack, 'Staff', {
   userInvitation: {
     emailSubject: 'Your harbor0 console account',
     emailBody:
-      'An administrator added you to the harbor0 management console. Sign in with {username} and the temporary password {####}, then set a password and add an authenticator app.',
+      'An administrator added you to the harbor0 management console. Sign in with {username} and the temporary password {####}, then set a password.',
   },
   removalPolicy,
 });

@@ -97,12 +97,8 @@ const challengeBody = z
     .object({
         email,
         session: z.string().min(1).max(4096),
-        challenge: z.enum(['NEW_PASSWORD', 'MFA_SETUP', 'MFA']),
-        newPassword: z.string().min(14).max(256).optional(),
-        code: z
-            .string()
-            .regex(/^\d{6}$/)
-            .optional(),
+        challenge: z.enum(['NEW_PASSWORD']),
+        newPassword: z.string().min(14).max(256),
     })
     .strict();
 const searchQuery = z.object({
@@ -210,9 +206,7 @@ export function createAdminApp(
         else {
             const name = (error as { name?: string; }).name ?? 'Error';
             const known: Record<string, [string, string, number]> = {
-                NotAuthorizedException: ['AUTH_INVALID', 'Email, password, or code is incorrect.', 401],
-                CodeMismatchException: ['AUTH_INVALID', 'That code did not match. Try the next one.', 400],
-                EnableSoftwareTokenMFAException: ['AUTH_INVALID', 'That code did not match.', 400],
+                NotAuthorizedException: ['AUTH_INVALID', 'Email or password is incorrect.', 401],
                 ExpiredCodeException: ['AUTH_EXPIRED', 'This sign-in step expired. Start again.', 400],
                 InvalidPasswordException: ['VALIDATION_ERROR', 'Choose a stronger password.', 400],
                 PasswordResetRequiredException: [

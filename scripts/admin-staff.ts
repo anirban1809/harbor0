@@ -6,7 +6,6 @@ import {
   AdminDisableUserCommand,
   AdminEnableUserCommand,
   AdminResetUserPasswordCommand,
-  AdminSetUserMFAPreferenceCommand,
   AdminUserGlobalSignOutCommand,
   ListUsersCommand,
   AdminListGroupsForUserCommand,
@@ -16,7 +15,7 @@ import { readOutputs } from '../infra/environment';
 //   npm run admin:staff -- list
 //   npm run admin:staff -- add someone@harbor0.com support|admin
 //   npm run admin:staff -- role someone@harbor0.com admin|support
-//   npm run admin:staff -- disable|enable|reset-mfa someone@harbor0.com
+//   npm run admin:staff -- disable|enable someone@harbor0.com
 const outputs = await readOutputs('storage');
 const UserPoolId: string = outputs.StaffUserPoolId;
 if (!UserPoolId)
@@ -93,19 +92,6 @@ switch (command) {
     await client.send(new AdminResetUserPasswordCommand({ UserPoolId, Username }));
     console.log(`Reset the password of ${Username}.`);
     break;
-  case 'reset-mfa':
-    // Clears the authenticator so the next sign-in enrols a new one (lost phone).
-    need(Username, 'reset-mfa <email>');
-    await client.send(
-      new AdminSetUserMFAPreferenceCommand({
-        UserPoolId,
-        Username,
-        SoftwareTokenMfaSettings: { Enabled: false, PreferredMfa: false },
-      }),
-    );
-    await client.send(new AdminUserGlobalSignOutCommand({ UserPoolId, Username }));
-    console.log(`Cleared the authenticator of ${Username}.`);
-    break;
   default:
-    need(false, 'list | add | role | disable | enable | reset-password | reset-mfa');
+    need(false, 'list | add | role | disable | enable | reset-password');
 }

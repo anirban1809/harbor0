@@ -256,8 +256,7 @@ body {
   align-items: center;
   gap: 4px;
 }
-.admin-id code,
-.admin-secret code {
+.admin-id code {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
@@ -420,19 +419,6 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-.admin-secret {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border-radius: var(--radius);
-  background: var(--fill-1);
-  border: 1px solid var(--line);
-}
-.admin-secret code {
-  font-size: var(--text-base);
-  letter-spacing: 0.04em;
-  user-select: all;
 }
 .admin-login {
   display: grid;

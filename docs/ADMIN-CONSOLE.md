@@ -7,7 +7,7 @@ separate from the product at every layer:
 | ------- | ------------------------------------ | ----------------------------------------------------- |
 | Web app | `apps/web` on app.harbor0.com        | `apps/admin` (static export) on its own distribution  |
 | API     | `Api` Lambda, `HttpApi`              | `Admin` Lambda (`index.admin`), `AdminHttpApi`        |
-| Sign-in | `Users` Cognito pool                 | `Staff` pool: no self sign-up, TOTP MFA required      |
+| Sign-in | `Users` Cognito pool                 | `Staff` pool: no self sign-up, password sign-in       |
 | Session | `harbor_access` cookies via `/api/*` | `harbor_staff_*` HTTP-only cookies, `SameSite=Strict` |
 | Storage | R2 credentials                       | none — no console action reads file bytes             |
 
@@ -57,7 +57,7 @@ the entry in the same transaction as the change.
 `npm run dev` (with `DEV_AUTH=true`) also starts the console API on `127.0.0.1:8789`; then
 `npm run dev:admin` serves the console at http://localhost:3300 (it proxies `/api/*` to 8789).
 Staff: `admin@example.test` (admin) and `support@example.test` (support), password
-`Development-only-123!`, authenticator code `123456`. Tests: `apps/backend/test/admin.test.ts`.
+`Development-only-123!`. Tests: `apps/backend/test/admin.test.ts`.
 
 ## Deploying
 
@@ -68,7 +68,7 @@ Staff: `admin@example.test` (admin) and `support@example.test` (support), passwo
    Optional `.env.cloud` settings: `ADMIN_DOMAIN` + `ADMIN_CERT_ARN` (us-east-1 ACM) for a custom
    hostname, `ADMIN_ALLOWED_IPS` (comma-separated) to restrict the console to office/VPN IPs.
 3. Invite staff: `npm run admin:staff -- add someone@harbor0.com admin|support`. Cognito emails
-   a temporary password; the first sign-in sets a password (14+ characters) and enrols an
-   authenticator app. Also `list`, `role`, `disable`, `enable`, `reset-password`, `reset-mfa`.
+   a temporary password; the first sign-in sets a password (14+ characters). Also `list`,
+   `role`, `disable`, `enable`, `reset-password`.
 
 Staff sessions: 15-minute access tokens, 12-hour refresh, refresh rotation and revocation on.

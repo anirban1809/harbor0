@@ -63,7 +63,7 @@ const staticCache = new cloudfront.CachePolicy(stack, 'AdminCache', {
     queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
 });
 // Optional network allowlist: ADMIN_ALLOWED_IPS="203.0.113.7,198.51.100.0" limits the whole
-// console (pages and API) to those addresses. Staff sign-in and MFA apply either way.
+// console (pages and API) to those addresses. Staff sign-in applies either way.
 const allowed = (process.env.ADMIN_ALLOWED_IPS ?? '')
     .split(',')
     .map((ip) => ip.trim())

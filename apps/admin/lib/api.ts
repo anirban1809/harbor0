@@ -87,9 +87,8 @@ export const api = {
   challenge: (input: {
     email: string;
     session: string;
-    challenge: 'NEW_PASSWORD' | 'MFA_SETUP' | 'MFA';
-    newPassword?: string;
-    code?: string;
+    challenge: 'NEW_PASSWORD';
+    newPassword: string;
   }) => request<StaffLoginResult>('POST', '/auth/challenge', input),
   logout: () => request<{ signedOut: boolean }>('POST', '/auth/logout', {}),
   me: () => request<{ staff: Staff }>('GET', '/me'),

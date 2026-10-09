@@ -36,15 +36,13 @@ export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];
 export const can = (role: z.infer<typeof staffRole>, permission: StaffPermission) =>
   (staffPermissions[role] as readonly string[]).includes(permission);
 
-// Sign-in is password, then a TOTP code. New staff set a password and enrol an authenticator.
+// Sign-in is email and password. New staff replace their temporary password first.
 export const staffLoginResultSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('SIGNED_IN'), staff: staffSchema }),
   z.object({
     status: z.literal('CHALLENGE'),
-    challenge: z.enum(['NEW_PASSWORD', 'MFA_SETUP', 'MFA']),
+    challenge: z.enum(['NEW_PASSWORD']),
     session: z.string(),
-    /** Base32 secret to add to an authenticator app (MFA_SETUP only). */
-    secret: z.string().optional(),
   }),
 ]);
 

@@ -38,7 +38,7 @@ beforeEach(async () => {
   }
 });
 
-/** Signs a staff member in through both steps and returns their session cookie header. */
+/** Signs a staff member in and returns their session cookie header. */
 async function signIn(email: string) {
   const post = (path: string, body: unknown) =>
     adminApp.request(`/api/v1/admin${path}`, {
@@ -46,15 +46,7 @@ async function signIn(email: string) {
       headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
       body: JSON.stringify(body),
     });
-  const first = await post('/auth/login', { email, password: 'Development-only-123!' });
-  const challenge = await first.json();
-  expect(challenge).toMatchObject({ status: 'CHALLENGE', challenge: 'MFA' });
-  const second = await post('/auth/challenge', {
-    email,
-    session: challenge.session,
-    challenge: 'MFA',
-    code: '123456',
-  });
+  const second = await post('/auth/login', { email, password: 'Development-only-123!' });
   expect(await second.json()).toMatchObject({ status: 'SIGNED_IN', staff: { email } });
   const cookies = second.headers.getSetCookie().map((c) => c.split(';')[0]);
   expect(cookies.join(' ')).toContain('harbor_staff_access=');
@@ -72,23 +64,18 @@ const asUser = (path: string) =>
   userApp.request(path, { headers: { Authorization: 'Bearer dev-alice' } });
 
 describe('management console API', () => {
-  it('requires staff sign-in with a second factor, and refuses customer tokens', async () => {
+  it('requires staff sign-in, and refuses customer tokens', async () => {
     expect((await adminApp.request('/api/v1/admin/users')).status).toBe(401);
     const customer = await adminApp.request('/api/v1/admin/users', {
       headers: { Cookie: 'harbor_staff_access=dev-alice' },
     });
     expect(customer.status).toBe(401);
-    const wrongCode = await adminApp.request('/api/v1/admin/auth/challenge', {
+    const wrongPassword = await adminApp.request('/api/v1/admin/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
-      body: JSON.stringify({
-        email: 'admin@example.test',
-        session: 'dev-mfa:admin@example.test',
-        challenge: 'MFA',
-        code: '000000',
-      }),
+      body: JSON.stringify({ email: 'admin@example.test', password: 'not-the-password' }),
     });
-    expect(wrongCode.status).toBe(400);
+    expect(wrongPassword.status).toBe(401);
     const cookie = await signIn('admin@example.test');
     expect(await (await call(cookie, 'GET', '/me')).json()).toMatchObject({
       staff: { role: 'ADMIN' },
