@@ -295,6 +295,70 @@ describe('groups', () => {
     ).not.toBe(200);
   });
 
+  it('follow filters when dynamic: members are worked out on read and again at send', async () => {
+    const repo = service.repo as MemoryRepository;
+    const rule = { q: '', filters: { storage: 'gb-0.001', joined: '7d' } };
+    // Bob stores 2 MB; Alice stores nothing.
+    (repo.rows.get('USER#bob|PROFILE')!.data as Record<string, number>).storageUsedBytes = 2e6;
+    const group = await ok(admin, 'POST', '/email/groups', { name: 'Uploaders', rule });
+    expect(group).toMatchObject({ memberCount: 1, rule });
+    const members = await ok(admin, 'GET', `/email/groups/${group.id}/members`);
+    expect(members.items).toMatchObject([{ userId: 'bob', email: 'bob@example.test' }]);
+    expect((await ok(admin, 'GET', '/users/bob')).email.groups).toEqual([
+      { id: group.id, name: 'Uploaders' },
+    ]);
+    // Members come from the filters only.
+    const add = await call(admin, 'POST', `/email/groups/${group.id}/members`, {
+      userIds: ['alice'],
+    });
+    expect(add.status).toBe(409);
+    const remove = await call(admin, 'POST', `/email/groups/${group.id}/members/remove`, {
+      userIds: ['bob'],
+    });
+    expect(remove.status).toBe(409);
+    // Sends read the filters again: Alice uploads after the campaign is scheduled.
+    const t = await ok(admin, 'POST', '/email/templates', template());
+    const campaign = await ok(admin, 'POST', '/email/campaigns', {
+      name: 'For uploaders',
+      templateId: t.id,
+      audience: { groupIds: [group.id] },
+    });
+    await ok(admin, 'POST', `/email/campaigns/${campaign.id}/schedule`, {
+      at: null,
+      reason: 'Tips for people who upload',
+      expectedUpdatedAt: campaign.updatedAt,
+    });
+    (repo.rows.get('USER#alice|PROFILE')!.data as Record<string, number>).storageUsedBytes = 5e6;
+    const sent = await runJobs();
+    expect(sent.map((e) => e.to).sort()).toEqual(['alice@example.test', 'bob@example.test']);
+    // Its filters can change, and the change is audited; a fixed group can't gain filters.
+    const narrowed = await ok(admin, 'PUT', `/email/groups/${group.id}`, {
+      name: 'Big uploaders',
+      rule: { q: 'bo', filters: rule.filters },
+      expectedUpdatedAt: group.updatedAt,
+    });
+    expect(narrowed).toMatchObject({ name: 'Big uploaders', rule: { q: 'bo' } });
+    const detail = await ok(admin, 'GET', `/email/groups/${group.id}`);
+    expect(detail.history[0].details).toMatchObject({ rule: { q: 'bo' }, previousRule: rule });
+    const renamed = await ok(admin, 'PUT', `/email/groups/${group.id}`, {
+      name: 'Uploaders again',
+      expectedUpdatedAt: narrowed.updatedAt,
+    });
+    expect(renamed.rule).toMatchObject({ q: 'bo' });
+    const fixed = await ok(admin, 'POST', '/email/groups', { name: 'Fixed' });
+    const convert = await call(admin, 'PUT', `/email/groups/${fixed.id}`, {
+      name: 'Fixed',
+      rule,
+      expectedUpdatedAt: fixed.updatedAt,
+    });
+    expect(convert.status).toBe(409);
+    const unsendable = await call(admin, 'POST', '/email/groups', {
+      name: 'Never signed in',
+      rule: { filters: { state: 'never-signed-in' } },
+    });
+    expect(unsendable.status).toBe(400);
+  });
+
   it('cannot be deleted while a campaign not yet sent uses them', async () => {
     const group = await ok(admin, 'POST', '/email/groups', { name: 'Testers' });
     const t = await ok(admin, 'POST', '/email/templates', template());

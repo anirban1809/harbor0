@@ -10,6 +10,7 @@ import type {
   CampaignBody,
   CampaignContent,
   EmailGroupBody,
+  EmailGroupRule,
   EmailTemplateBody,
   Recipient,
 } from '../../../../packages/contracts/src/campaigns';
@@ -42,6 +43,7 @@ import { assert } from '../errors';
 import { transact, type Transaction } from '../repository';
 import { FORM_PK } from '../forms';
 import type { AdminService } from './service';
+import { indexAccounts, matchUsers, type IndexedUser } from '../user-filters';
 
 const history = (kind: 'TEMPLATE' | 'GROUP' | 'CAMPAIGN', id: string) =>
   `ADMIN_AUDIT#${kind}#${id}`;
@@ -63,10 +65,16 @@ type MacUsersCache = { computedAt: string; userIds: string[] };
 const MAC_USERS_CACHE = { pk: 'ADMIN_STATS', sk: 'MAC_USERS' };
 const MAC_USERS_MAX_AGE_MS = 15 * 60_000;
 const MAC_MEMBER_PAGE = 50;
+// Dynamic groups' counts and member lists reread every profile and device; one read serves a while.
+const DYNAMIC_INDEX_MAX_AGE_MS = 2 * 60_000;
 const MAX_SCHEDULE_AHEAD_MS = 90 * 86400_000;
 // Group writes go in chunks; a transaction holds at most 100 items.
 const CHUNK = 40;
-const changedSince = (what: string, row: { updatedAt: string; updatedBy: string }, expected: string | null) =>
+const changedSince = (
+  what: string,
+  row: { updatedAt: string; updatedBy: string },
+  expected: string | null,
+) =>
   assert(
     row.updatedAt === expected,
     'CHANGED',
@@ -180,20 +188,25 @@ export class AdminCampaigns {
     await transact(this.repo, async (tx) => {
       const template = await getRow<StoredTemplate>(tx, TEMPLATE_PK, id, 'template');
       await tx.delete(TEMPLATE_PK, id);
-      await this.audit(tx, staff, 'TEMPLATE', id, 'EMAIL_TEMPLATE_DELETED', { name: template.name });
+      await this.audit(tx, staff, 'TEMPLATE', id, 'EMAIL_TEMPLATE_DELETED', {
+        name: template.name,
+      });
     });
     return { deleted: true };
   }
   private async vars(sampleUserId?: string) {
     if (!sampleUserId) return sampleVars;
     const account = (await this.repo.get({ pk: userPK(sampleUserId), sk: 'PROFILE' }))?.data as
-      | Account
-      | undefined;
+      Account | undefined;
     assert(account, 'USER_NOT_FOUND', 'No account has this ID.', 404);
     return campaignVars(account, `${this.webOrigin}/signup`);
   }
   /** The email as a recipient would get it: product updates show the unsubscribe footer. */
-  private compose(content: CampaignContent, vars: Awaited<ReturnType<AdminCampaigns['vars']>>, to: string): Email {
+  private compose(
+    content: CampaignContent,
+    vars: Awaited<ReturnType<AdminCampaigns['vars']>>,
+    to: string,
+  ): Email {
     return {
       template: 'CAMPAIGN',
       to,
@@ -256,9 +269,11 @@ export class AdminCampaigns {
   /** Accounts that have used a Mac, rescanned when the cached list is over 15 minutes old. */
   private async macUserIds(): Promise<MacUsersCache> {
     const cached = (await this.repo.get(MAC_USERS_CACHE))?.data as MacUsersCache | undefined;
-    if (cached && Date.now() - Date.parse(cached.computedAt) < MAC_USERS_MAX_AGE_MS)
-      return cached;
-    const fresh = { computedAt: new Date().toISOString(), userIds: (await macUserIds(this.repo)).sort() };
+    if (cached && Date.now() - Date.parse(cached.computedAt) < MAC_USERS_MAX_AGE_MS) return cached;
+    const fresh = {
+      computedAt: new Date().toISOString(),
+      userIds: (await macUserIds(this.repo)).sort(),
+    };
     await transact(this.repo, (tx) => tx.put(MAC_USERS_CACHE.pk, MAC_USERS_CACHE.sk, fresh)).catch(
       () => undefined,
     );
@@ -297,19 +312,55 @@ export class AdminCampaigns {
       this.macUsers(),
       allRows<StoredGroup>(this.repo, GROUP_PK),
     ]);
+    const live = await Promise.all(groups.map((g) => this.live(g)));
     return {
-      items: [everyone, macUsers, ...groups.sort((a, b) => a.name.localeCompare(b.name))],
+      items: [everyone, macUsers, ...live.sort((a, b) => a.name.localeCompare(b.name))],
     };
+  }
+  private dynamicIndex?: { at: number; users: Promise<IndexedUser[]> };
+  /** Every profile as the user list's filters see it, without the sign-in directory, as sends do. */
+  private dynamicUsers() {
+    if (this.dynamicIndex && Date.now() - this.dynamicIndex.at < DYNAMIC_INDEX_MAX_AGE_MS)
+      return this.dynamicIndex.users;
+    const users = Promise.all([this.repo.scanProfiles(), this.repo.scanDevices()]).then(
+      ([profiles, devices]) => indexAccounts(profiles, devices),
+    );
+    users.catch(() => (this.dynamicIndex = undefined));
+    this.dynamicIndex = { at: Date.now(), users };
+    return users;
+  }
+  /** Who a dynamic group's filters match now, by email. */
+  private async followers(rule: EmailGroupRule) {
+    return matchUsers(await this.dynamicUsers(), rule.q, rule.filters).sort((a, b) =>
+      a.email.localeCompare(b.email),
+    );
+  }
+  /** The group with a dynamic group's member count worked out now. */
+  private async live(group: StoredGroup): Promise<StoredGroup> {
+    return group.rule
+      ? { ...group, memberCount: (await this.followers(group.rule)).length }
+      : group;
+  }
+  private notDynamic(group: StoredGroup) {
+    assert(
+      !group.rule,
+      'DYNAMIC_GROUP',
+      "This group follows filters, so its members can't be added or removed by hand. Change its filters instead.",
+      409,
+    );
   }
   async group(id: string) {
     if (BUILT_IN_GROUPS.includes(id)) return { group: await this.builtIn(id), history: [] };
     const [group, log] = await Promise.all([
-      getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group'),
+      getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group').then((g) => this.live(g)),
       this.log('GROUP', id),
     ]);
     return { group, history: log };
   }
-  async createGroup(staff: Staff, input: { name: string; description: string }) {
+  async createGroup(
+    staff: Staff,
+    input: { name: string; description: string; rule?: EmailGroupRule },
+  ) {
     const id = randomUUID();
     const at = new Date().toISOString();
     const group: StoredGroup = {
@@ -317,6 +368,7 @@ export class AdminCampaigns {
       name: input.name,
       description: input.description,
       memberCount: 0,
+      ...(input.rule ? { rule: input.rule } : {}),
       createdAt: at,
       createdBy: staff.email,
       updatedAt: at,
@@ -324,34 +376,49 @@ export class AdminCampaigns {
     };
     await transact(this.repo, async (tx) => {
       await tx.put(GROUP_PK, id, group);
-      await this.audit(tx, staff, 'GROUP', id, 'EMAIL_GROUP_CREATED', { name: input.name });
+      await this.audit(tx, staff, 'GROUP', id, 'EMAIL_GROUP_CREATED', {
+        name: input.name,
+        ...(input.rule ? { rule: input.rule } : {}),
+      });
     });
-    return group;
+    return this.live(group);
   }
   async updateGroup(staff: Staff, id: string, input: EmailGroupBody) {
     this.notBuiltIn(id);
     return transact(this.repo, async (tx) => {
       const group = await getRow<StoredGroup>(tx, GROUP_PK, id, 'group');
       changedSince('group', group, input.expectedUpdatedAt);
+      assert(
+        !input.rule || group.rule,
+        'STATIC_GROUP',
+        'This group has a fixed member list. Make a new group to follow filters.',
+        409,
+      );
       const next: StoredGroup = {
         ...group,
         name: input.name,
         description: input.description,
+        // Leaving the rule out (a rename) keeps the filters.
+        ...(input.rule ? { rule: input.rule } : {}),
         ...stamp(staff, group),
       };
+      const ruleChanged = !!input.rule && JSON.stringify(input.rule) !== JSON.stringify(group.rule);
       await tx.put(GROUP_PK, id, next);
       await this.audit(tx, staff, 'GROUP', id, 'EMAIL_GROUP_CHANGED', {
         name: next.name,
         ...(group.name !== next.name ? { renamedFrom: group.name } : {}),
+        ...(ruleChanged ? { rule: input.rule, previousRule: group.rule } : {}),
       });
       return next;
-    });
+    }).then((g) => this.live(g));
   }
   /** Campaigns that will still read this group's members when they send. */
   private async pendingCampaignsUsing(groupId: string) {
     return (await allRows<StoredCampaign>(this.repo, CAMPAIGN_PK)).filter(
       (c) =>
-        (c.state === 'DRAFT' || c.state === 'SCHEDULED' || (c.state === 'SENDING' && !c.resolvedAt)) &&
+        (c.state === 'DRAFT' ||
+          c.state === 'SCHEDULED' ||
+          (c.state === 'SENDING' && !c.resolvedAt)) &&
         c.audience.groupIds.includes(groupId),
     );
   }
@@ -389,8 +456,7 @@ export class AdminCampaigns {
       const items = await Promise.all(
         userIds.slice(start, start + MAC_MEMBER_PAGE).map(async (userId): Promise<StoredMember> => {
           const account = (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
-            | Account
-            | undefined;
+            Account | undefined;
           return {
             userId,
             email: account?.email ?? null,
@@ -403,7 +469,22 @@ export class AdminCampaigns {
       const next = start + MAC_MEMBER_PAGE;
       return { items, nextCursor: next < userIds.length ? String(next) : null };
     }
-    await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
+    const group = await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
+    if (group.rule) {
+      const followers = await this.followers(group.rule);
+      const start = Number(cursor ?? 0) || 0;
+      const next = start + MAC_MEMBER_PAGE;
+      return {
+        items: followers.slice(start, next).map((u) => ({
+          userId: u.id,
+          email: u.email,
+          name: u.displayName,
+          addedAt: new Date(this.dynamicIndex?.at ?? Date.now()).toISOString(),
+          addedBy: 'Matches the filters',
+        })),
+        nextCursor: next < followers.length ? String(next) : null,
+      };
+    }
     const page = await this.repo.query(memberPK(id), 'MEMBER#', 50, cursor);
     return { items: page.rows.map((r) => r.data as StoredMember), nextCursor: page.cursor };
   }
@@ -412,17 +493,20 @@ export class AdminCampaigns {
     const value = identifier.trim();
     let userId: string | undefined;
     if (value.includes('@'))
-      userId = ((await this.repo.get({ pk: 'EMAIL', sk: normalizeEmail(value) }))?.data as
-        | { userId: string }
-        | undefined)?.userId;
+      userId = (
+        (await this.repo.get({ pk: 'EMAIL', sk: normalizeEmail(value) }))?.data as
+          { userId: string } | undefined
+      )?.userId;
     else {
-      userId = ((await this.repo.get({ pk: 'USERNAME', sk: value.toLowerCase() }))?.data as
-        | { userId: string }
-        | undefined)?.userId;
+      userId = (
+        (await this.repo.get({ pk: 'USERNAME', sk: value.toLowerCase() }))?.data as
+          { userId: string } | undefined
+      )?.userId;
       if (!userId && (await this.repo.get({ pk: userPK(value), sk: 'PROFILE' }))) userId = value;
     }
     if (!userId) return undefined;
-    return (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as Account | undefined;
+    return (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
+      Account | undefined;
   }
   /**
    * Adds accounts, by ID or by email or username, to a group. An email that no account uses is
@@ -437,15 +521,18 @@ export class AdminCampaigns {
     source?: Record<string, unknown>,
   ) {
     this.notBuiltIn(id);
-    await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
+    this.notDynamic(await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group'));
     const unmatched: string[] = [];
     const found = new Map<string, Omit<StoredMember, 'addedAt' | 'addedBy'>>();
     const addAccount = (account: Account) =>
-      found.set(account.id, { userId: account.id, email: account.email, name: account.displayName });
+      found.set(account.id, {
+        userId: account.id,
+        email: account.email,
+        name: account.displayName,
+      });
     for (const userId of userIds) {
       const account = (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
-        | Account
-        | undefined;
+        Account | undefined;
       if (account) addAccount(account);
       else unmatched.push(userId);
     }
@@ -505,6 +592,7 @@ export class AdminCampaigns {
   /** Removes members: accounts by ID, and addresses without an account by email. */
   async removeMembers(staff: Staff, id: string, userIds: string[], addresses: string[] = []) {
     this.notBuiltIn(id);
+    this.notDynamic(await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group'));
     let removed = 0;
     let group: StoredGroup | undefined;
     const emails: string[] = [];
@@ -541,13 +629,21 @@ export class AdminCampaigns {
   /** One account's email settings and groups, for its page in the console. */
   async forUser(userId: string): Promise<AdminUserEmail> {
     const [account, groups] = await Promise.all([
-      this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }).then((r) => r?.data as Account | undefined),
+      this.repo
+        .get({ pk: userPK(userId), sk: 'PROFILE' })
+        .then((r) => r?.data as Account | undefined),
       allRows<StoredGroup>(this.repo, GROUP_PK),
     ]);
     const member = await Promise.all(
-      groups.map((g) => this.repo.get({ pk: memberPK(g.id), sk: memberSK(userId) })),
+      groups.map(async (g) =>
+        g.rule
+          ? (await this.followers(g.rule)).some((u) => u.id === userId)
+          : !!(await this.repo.get({ pk: memberPK(g.id), sk: memberSK(userId) })),
+      ),
     );
-    const suppressed = account ? await new EmailSuppressions(this.repo).get(account.email) : undefined;
+    const suppressed = account
+      ? await new EmailSuppressions(this.repo).get(account.email)
+      : undefined;
     return {
       productUpdates: account?.emailPreferences?.productUpdates !== false,
       suppressed: suppressed ? { source: suppressed.source, at: suppressed.at } : null,
@@ -561,8 +657,7 @@ export class AdminCampaigns {
   // Campaigns -------------------------------------------------------------------------------
   private async view(c: StoredCampaign) {
     const template = (await this.repo.get({ pk: TEMPLATE_PK, sk: c.templateId }))?.data as
-      | StoredTemplate
-      | undefined;
+      StoredTemplate | undefined;
     const { resolvedAt: _r, cursor: _c, leaseUntil: _l, ...campaign } = c;
     return { ...campaign, templateName: template?.name ?? c.templateName };
   }
@@ -582,7 +677,9 @@ export class AdminCampaigns {
             const group = await this.builtIn(groupId);
             return { id: groupId, name: group.name, memberCount: group.memberCount };
           }
-          const g = (await this.repo.get({ pk: GROUP_PK, sk: groupId }))?.data as StoredGroup | undefined;
+          const stored = (await this.repo.get({ pk: GROUP_PK, sk: groupId }))?.data as
+            StoredGroup | undefined;
+          const g = stored && (await this.live(stored));
           return { id: groupId, name: g?.name ?? null, memberCount: g?.memberCount ?? 0 };
         }),
       ),
@@ -631,7 +728,12 @@ export class AdminCampaigns {
     const campaign = await transact(this.repo, async (tx) => {
       const c = await getRow<StoredCampaign>(tx, CAMPAIGN_PK, id, 'campaign');
       changedSince('campaign', c, input.expectedUpdatedAt);
-      assert(c.state === 'DRAFT', 'INVALID_STATE', 'Only a draft can be edited. Cancel the schedule first.', 409);
+      assert(
+        c.state === 'DRAFT',
+        'INVALID_STATE',
+        'Only a draft can be edited. Cancel the schedule first.',
+        409,
+      );
       const next: StoredCampaign = {
         ...c,
         name: input.name,
@@ -668,7 +770,13 @@ export class AdminCampaigns {
    * Freezes the template into the campaign and queues its send for `at` (now when null). The
    * jobs function picks it up within a minute of that time.
    */
-  async schedule(staff: Staff, id: string, at: string | null, reason: string, expectedUpdatedAt: string | null) {
+  async schedule(
+    staff: Staff,
+    id: string,
+    at: string | null,
+    reason: string,
+    expectedUpdatedAt: string | null,
+  ) {
     const current = await getRow<StoredCampaign>(read(this.repo), CAMPAIGN_PK, id, 'campaign');
     const template = await this.checkTemplate(current.templateId);
     await this.checkContent(template);
@@ -684,11 +792,21 @@ export class AdminCampaigns {
       'Campaigns can be scheduled up to 90 days ahead.',
     );
     const count = await countAudience(this.repo, current.audience, template.category);
-    assert(count.eligible > 0, 'EMPTY_AUDIENCE', 'No one in this audience can get this email.', 409);
+    assert(
+      count.eligible > 0,
+      'EMPTY_AUDIENCE',
+      'No one in this audience can get this email.',
+      409,
+    );
     const campaign = await transact(this.repo, async (tx) => {
       const c = await getRow<StoredCampaign>(tx, CAMPAIGN_PK, id, 'campaign');
       changedSince('campaign', c, expectedUpdatedAt);
-      assert(c.state === 'DRAFT', 'INVALID_STATE', 'This campaign is already scheduled or sent.', 409);
+      assert(
+        c.state === 'DRAFT',
+        'INVALID_STATE',
+        'This campaign is already scheduled or sent.',
+        409,
+      );
       const content: CampaignContent = {
         subject: template.subject,
         preheader: template.preheader,
@@ -740,7 +858,9 @@ export class AdminCampaigns {
       assert(
         c.state === 'SCHEDULED',
         'INVALID_STATE',
-        c.state === 'SENDING' ? 'It has started sending. Stop it instead.' : 'Only a scheduled campaign can be cancelled.',
+        c.state === 'SENDING'
+          ? 'It has started sending. Stop it instead.'
+          : 'Only a scheduled campaign can be cancelled.',
         409,
       );
       const next: StoredCampaign = {
@@ -762,7 +882,12 @@ export class AdminCampaigns {
   async stop(staff: Staff, id: string, reason: string) {
     const campaign = await transact(this.repo, async (tx) => {
       const c = await getRow<StoredCampaign>(tx, CAMPAIGN_PK, id, 'campaign');
-      assert(c.state === 'SENDING', 'INVALID_STATE', 'Only a campaign that is sending can be stopped.', 409);
+      assert(
+        c.state === 'SENDING',
+        'INVALID_STATE',
+        'Only a campaign that is sending can be stopped.',
+        409,
+      );
       const next: StoredCampaign = { ...c, state: 'STOPPED', ...stamp(staff, c) };
       await tx.put(CAMPAIGN_PK, id, next);
       await this.audit(

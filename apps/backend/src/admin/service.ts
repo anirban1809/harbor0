@@ -19,6 +19,7 @@ import { assert } from '../errors';
 import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
 import { accountsOnDevice, type DeviceAccount } from '../signup-guard';
+import { indexAccounts, matchUsers, PLATFORMS, type IndexedUser, type Platform } from '../user-filters';
 
 const AUDIT = 'ADMIN_AUDIT';
 const userAudit = (userId: string) => `ADMIN_AUDIT#${userId}`;
@@ -30,13 +31,9 @@ const STORAGE_TOTALS_MIN_REFRESH_MS = 60_000;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const USER_PAGE = 50;
 
-type Platform = AdminUserListItem['platforms'][number];
 // The filtered list reads the whole pool and table; Load more reuses one read for a while.
 const USER_INDEX_MAX_AGE_MS = 2 * 60_000;
 const DAY_MS = 86400_000;
-const MOBILE = new Set<Platform>(['IOS', 'ANDROID']);
-const DESKTOP = new Set<Platform>(['MACOS', 'WINDOWS', 'LINUX']);
-const PLATFORMS = new Set<string>(['WEB', 'MACOS', 'WINDOWS', 'LINUX', 'IOS', 'ANDROID']);
 
 type Sortable = Pick<AdminUserListItem, 'id' | 'createdAt' | 'usedBytes' | 'lastSeenAt'>;
 /** Orders accounts by `sort`; accounts without the value (no profile yet) always come last. */
@@ -52,66 +49,7 @@ function compareUsers({ sort, order }: AdminUserSort) {
     };
 }
 
-/** An indexed account: its list row plus what the filters need that the row does not show. */
-type IndexedUser = AdminUserListItem & { hasProfile: boolean; raisedQuota: boolean };
 const hasFilters = (filters: AdminUserFilters) => Object.values(filters).some((v) => v !== undefined);
-
-/**
- * Whether `at` falls in a filter's window: within the last N days (`14d`), more than N days
- * ago (`inactive-45d`, `older-180d`), or never. No window passes everything.
- */
-function inWindow(at: string | null, window: string | undefined, now: number) {
-    if (!window) return true;
-    if (window === 'never') return !at;
-    if (!at) return false;
-    const age = now - Date.parse(at);
-    const limit = Number(/(\d+)d$/.exec(window)?.[1] ?? 0) * DAY_MS;
-    return /^(inactive|older)-/.test(window) ? age > limit : age <= limit;
-}
-
-/** Whether `user` passes every filter set in `filters`, as of `now`. */
-export function matchesFilters(user: IndexedUser, filters: AdminUserFilters, now = Date.now()) {
-    switch (filters.state) {
-        case 'active':
-            if (user.suspended || !user.enabled || user.status === 'UNCONFIRMED') return false;
-            break;
-        case 'unverified':
-            if (user.status !== 'UNCONFIRMED') return false;
-            break;
-        case 'disabled':
-            if (user.enabled) return false;
-            break;
-        case 'suspended':
-            if (!user.suspended) return false;
-            break;
-        case 'deleted':
-            if (!user.deleted) return false;
-            break;
-        case 'never-signed-in':
-            if (user.hasProfile) return false;
-            break;
-    }
-    // Deleted accounts are only listed when asked for; they have left the sign-in directory.
-    if (user.deleted && filters.state !== 'deleted') return false;
-    const { platform } = filters;
-    if (platform === 'NONE' && user.platforms.length) return false;
-    if (platform === 'MOBILE' && !user.platforms.some((p) => MOBILE.has(p))) return false;
-    if (platform === 'DESKTOP' && !user.platforms.some((p) => DESKTOP.has(p))) return false;
-    if (platform && PLATFORMS.has(platform) && !user.platforms.includes(platform as Platform))
-        return false;
-    const used = user.usedBytes ?? 0;
-    const share = user.quotaBytes ? used / user.quotaBytes : 0;
-    const [storage, amount] = filters.storage?.split('-') ?? [];
-    if (storage === 'empty' && used > 0) return false;
-    if (storage === 'uploaded' && used === 0) return false;
-    if (storage === 'over' && share * 100 < Number(amount)) return false;
-    if (storage === 'gb' && used < Number(amount) * 1e9) return false;
-    if (filters.quota === 'raised' && !user.raisedQuota) return false;
-    if (filters.quota === 'standard' && (user.raisedQuota || !user.hasProfile)) return false;
-    if (!inWindow(user.lastSeenAt, filters.seen, now)) return false;
-    if (!inWindow(user.createdAt, filters.joined, now)) return false;
-    return true;
-}
 
 type Audit = {
     action: string;
@@ -288,69 +226,12 @@ export class AdminService {
             this.repo.scanProfiles(),
             this.repo.scanDevices(),
         ]);
-        const seen = new Map<string, { platforms: Set<Platform>; lastSeenAt: string | null; }>();
-        for (const d of devices) {
-            if (!d.userId) continue;
-            const entry = seen.get(d.userId) ?? { platforms: new Set(), lastSeenAt: null };
-            if (d.platform && PLATFORMS.has(d.platform)) entry.platforms.add(d.platform as Platform);
-            if (d.lastSeenAt && (!entry.lastSeenAt || d.lastSeenAt > entry.lastSeenAt))
-                entry.lastSeenAt = d.lastSeenAt;
-            seen.set(d.userId, entry);
-        }
-        const byId = new Map(profiles.filter((p) => p.id).map((p) => [p.id!, p]));
-        const row = (user: DirectoryUser, hasSignIn: boolean): IndexedUser => {
-            const p = byId.get(user.id);
-            const devices = seen.get(user.id);
-            return {
-                ...user,
-                username: p?.username ?? user.username,
-                displayName: p?.displayName ?? user.displayName,
-                quotaBytes: p?.storageQuotaBytes ?? null,
-                usedBytes: p?.storageUsedBytes ?? null,
-                suspended: !!p?.suspendedAt,
-                deleted: !!p?.deletedAt || (!hasSignIn && !!p),
-                platforms: [...(devices?.platforms ?? [])].sort(),
-                lastSeenAt: devices?.lastSeenAt ?? null,
-                hasProfile: !!p,
-                raisedQuota:
-                    !!p?.freeQuotaBytes && (p.storageQuotaBytes ?? 0) > p.freeQuotaBytes,
-            };
-        };
-        const users = directory.map((u) => row(u, true));
-        const signIns = new Set(directory.map((u) => u.id));
-        // Deleted accounts keep a tombstone profile after leaving the directory.
-        for (const p of profiles)
-            if (p.id && p.deletedAt && !signIns.has(p.id))
-                users.push(
-                    row(
-                        {
-                            id: p.id,
-                            email: p.email ?? '',
-                            username: p.username ?? null,
-                            displayName: p.displayName ?? null,
-                            status: 'UNKNOWN',
-                            enabled: false,
-                            createdAt: p.createdAt ?? null,
-                        },
-                        false,
-                    ),
-                );
-        return { computedAt, users };
+        return { computedAt, users: indexAccounts(profiles, devices, directory) };
     }
     /** Every account the list shows for `query` and `filters`, in no particular order. */
     async matching(query: string, filters: AdminUserFilters) {
         const { computedAt, users } = await this.indexUsers();
-        const q = query.trim().toLowerCase();
-        const now = Date.now();
-        const matches = users.filter(
-            (u) =>
-                (!q ||
-                    u.id === q ||
-                    u.email.toLowerCase().startsWith(q) ||
-                    !!u.username?.toLowerCase().startsWith(q)) &&
-                matchesFilters(u, filters, now),
-        );
-        return { computedAt, matches };
+        return { computedAt, matches: matchUsers(users, query, filters) };
     }
     /**
      * The accounts that match `query` and `filters`, in `sort` order (newest first by default),

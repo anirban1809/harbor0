@@ -172,6 +172,18 @@ body {
 .admin-filter-custom .input {
   width: 96px;
 }
+.admin-choices-stack {
+  display: grid;
+  gap: 10px;
+}
+.admin-choices-stack .admin-checkbox {
+  align-items: flex-start;
+  color: var(--text);
+}
+.admin-choices-stack .radio {
+  margin-top: 2px;
+  flex: none;
+}
 .admin-selection {
   display: flex;
   flex-wrap: wrap;

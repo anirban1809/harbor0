@@ -18,6 +18,7 @@ import type { Email } from './emails';
 import { addressOptedOut, EmailSuppressions, type EmailLinks } from './email-preferences';
 import { assert } from './errors';
 import { Transaction, transact, type DeviceSighting, type Repository } from './repository';
+import { profileMatches } from './user-filters';
 
 /*
  * Rows (pk / sk):
@@ -84,9 +85,10 @@ export async function allRows<T>(repo: Repository, pk: string, prefix = '') {
 
 /** The account that uses an address now, if any. */
 export async function accountIdFor(repo: Repository, email: string) {
-  return ((await repo.get({ pk: 'EMAIL', sk: normalizeEmail(email) }))?.data as
-    | { userId: string }
-    | undefined)?.userId;
+  return (
+    (await repo.get({ pk: 'EMAIL', sk: normalizeEmail(email) }))?.data as
+      { userId: string } | undefined
+  )?.userId;
 }
 
 /**
@@ -94,7 +96,8 @@ export async function accountIdFor(repo: Repository, email: string) {
  * "<browser> on macOS" (browserName in apps/web/lib/device-key.ts).
  */
 export const isMacDevice = (device: DeviceSighting) =>
-  device.platform === 'MACOS' || (device.platform === 'WEB' && / on macOS$/.test(device.name ?? ''));
+  device.platform === 'MACOS' ||
+  (device.platform === 'WEB' && / on macOS$/.test(device.name ?? ''));
 
 /** Accounts that have used a Mac, signed out or not; the Mac users group. */
 export async function macUserIds(repo: Repository) {
@@ -122,8 +125,14 @@ export async function audienceRecipients(repo: Repository, audience: CampaignAud
       for (const id of await macUserIds(repo)) ids.add(id);
       continue;
     }
-    if (!(await repo.get({ pk: GROUP_PK, sk: groupId }))) {
+    const group = (await repo.get({ pk: GROUP_PK, sk: groupId }))?.data as StoredGroup | undefined;
+    if (!group) {
       missingGroups.push(groupId);
+      continue;
+    }
+    if (group.rule) {
+      // A dynamic group is whoever its filters match as the campaign starts sending.
+      for (const user of await profileMatches(repo, group.rule)) ids.add(user.id);
       continue;
     }
     for (const member of await allRows<StoredMember>(repo, memberPK(groupId), 'MEMBER#'))
@@ -146,8 +155,7 @@ export async function eligibility(
   category: CampaignCategory,
 ): Promise<{ account?: Account; reason?: RecipientSkipReason }> {
   const account = (await repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
-    | Account
-    | undefined;
+    Account | undefined;
   if (!account) return { reason: 'NO_ACCOUNT' };
   if (account.deletedAt) return { account, reason: 'DELETED' };
   if (account.suspendedAt) return { account, reason: 'SUSPENDED' };
@@ -297,7 +305,12 @@ export async function campaignStep(
         else {
           const started = Date.now();
           try {
-            assert(options.sendEmail, 'EMAIL_NOT_CONFIGURED', 'Email delivery is not configured.', 503);
+            assert(
+              options.sendEmail,
+              'EMAIL_NOT_CONFIGURED',
+              'Email delivery is not configured.',
+              503,
+            );
             const product = campaign.content!.category === 'PRODUCT';
             assert(
               !product || options.emailLinks,
@@ -329,7 +342,10 @@ export async function campaignStep(
             update = { status: 'SENT', email: target.to };
           } catch (error) {
             const name = (error as { name?: string; code?: string }).name ?? 'Error';
-            if (THROTTLED.has(name) || (error as { code?: string }).code === 'EMAIL_NOT_CONFIGURED') {
+            if (
+              THROTTLED.has(name) ||
+              (error as { code?: string }).code === 'EMAIL_NOT_CONFIGURED'
+            ) {
               paused = true;
               break;
             }
@@ -346,7 +362,8 @@ export async function campaignStep(
         } satisfies StoredRecipient),
       );
       delta.pending--;
-      const key = update.status === 'SENT' ? 'sent' : update.status === 'FAILED' ? 'failed' : 'skipped';
+      const key =
+        update.status === 'SENT' ? 'sent' : update.status === 'FAILED' ? 'failed' : 'skipped';
       delta[key]++;
     }
     const finished = !paused && !page.cursor;
@@ -376,7 +393,12 @@ export async function campaignStep(
 
 type SendTarget =
   | { reason: RecipientSkipReason; to?: undefined; userId?: undefined; vars?: undefined }
-  | { reason?: undefined; to: string; userId: string | null; vars: ReturnType<typeof campaignVars> };
+  | {
+      reason?: undefined;
+      to: string;
+      userId: string | null;
+      vars: ReturnType<typeof campaignVars>;
+    };
 /** Where one recipient's email goes and what fills its variables, or why it is skipped. */
 async function sendTarget(
   repo: Repository,

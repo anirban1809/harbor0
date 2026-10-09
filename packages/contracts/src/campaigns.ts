@@ -76,10 +76,36 @@ export const emailPreviewSchema = z.object({
 /** Sends the content to the signed-in staff member's own address. */
 export const emailTestResultSchema = z.object({ sentTo: z.string() });
 
+/**
+ * Account states a dynamic group can't follow: they need the sign-in directory, which sends
+ * don't read, and none of those accounts can get a campaign anyway.
+ */
+export const DYNAMIC_GROUP_EXCLUDED_STATES: readonly string[] = [
+  'unverified',
+  'disabled',
+  'never-signed-in',
+];
+/**
+ * What a dynamic group follows: the console user list's search and filters. Its members are
+ * worked out again whenever it is read and when a campaign sends to it.
+ */
+export const emailGroupRuleSchema = z
+  .object({
+    q: z.string().trim().max(254).default(''),
+    filters: adminUserFiltersSchema.default({}),
+  })
+  .strict()
+  .refine((r) => !DYNAMIC_GROUP_EXCLUDED_STATES.includes(r.filters.state ?? ''), {
+    message:
+      "A group can't follow accounts that are unverified, disabled or never signed in; they can't get campaigns.",
+    path: ['filters', 'state'],
+  });
 export const emailGroupInput = z
   .object({
     name: z.string().trim().min(1).max(100),
     description: z.string().trim().max(500).default(''),
+    /** Set for a dynamic group. A group is dynamic or not from when it is made. */
+    rule: emailGroupRuleSchema.optional(),
   })
   .strict();
 /**
@@ -100,6 +126,8 @@ export const emailGroupSchema = z.object({
   memberCount: z.number(),
   /** A built-in group (Everyone, Mac users), which can't be renamed, edited or deleted. */
   builtIn: z.boolean().optional(),
+  /** A dynamic group's search and filters; it has no stored members. */
+  rule: emailGroupRuleSchema.optional(),
   ...staffStamp,
 });
 export const emailGroupBody = emailGroupInput.extend({ expectedUpdatedAt }).strict();
@@ -256,6 +284,7 @@ export type EmailPreviewBody = z.input<typeof emailPreviewBody>;
 export type EmailPreview = z.infer<typeof emailPreviewSchema>;
 export type EmailGroup = z.infer<typeof emailGroupSchema>;
 export type EmailGroupBody = z.infer<typeof emailGroupBody>;
+export type EmailGroupRule = z.infer<typeof emailGroupRuleSchema>;
 export type EmailGroupDetail = z.infer<typeof emailGroupDetailSchema>;
 export type EmailGroupMember = z.infer<typeof emailGroupMemberSchema>;
 export type EmailGroupMemberPage = z.infer<typeof emailGroupMemberPageSchema>;

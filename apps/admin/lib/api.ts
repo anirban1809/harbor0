@@ -28,6 +28,7 @@ import type {
   EmailGroupAddResult,
   EmailGroupDetail,
   EmailGroupMemberPage,
+  EmailGroupRule,
   EmailPreview,
   EmailPreviewBody,
   EmailTemplate,
@@ -163,10 +164,16 @@ export const api = {
   sendTest: (body: EmailPreviewBody) => request<{ sentTo: string }>('POST', '/email/test', body),
   groups: () => request<{ items: EmailGroup[] }>('GET', '/email/groups'),
   group: (id: string) => request<EmailGroupDetail>('GET', email('groups', id)),
-  createGroup: (name: string, description: string) =>
-    request<EmailGroup>('POST', '/email/groups', { name, description }),
-  saveGroup: (id: string, name: string, description: string, expectedUpdatedAt: string) =>
-    request<EmailGroup>('PUT', email('groups', id), { name, description, expectedUpdatedAt }),
+  createGroup: (name: string, description: string, rule?: EmailGroupRule) =>
+    request<EmailGroup>('POST', '/email/groups', { name, description, rule }),
+  saveGroup: (
+    id: string,
+    name: string,
+    description: string,
+    expectedUpdatedAt: string,
+    rule?: EmailGroupRule,
+  ) =>
+    request<EmailGroup>('PUT', email('groups', id), { name, description, expectedUpdatedAt, rule }),
   deleteGroup: (id: string) => request<{ deleted: boolean }>('DELETE', email('groups', id)),
   groupMembers: (id: string, cursor?: string) =>
     request<EmailGroupMemberPage>(

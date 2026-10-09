@@ -20,6 +20,7 @@ import { EmailNav } from '../../components/email-nav';
 import { PageHeader, Shell, useCan } from '../../components/shell';
 import { api } from '../../lib/api';
 import { plural, relative } from '../../lib/format';
+import { describeRule, usersHref } from '../../lib/user-filters';
 
 function GroupForm({
   group,
@@ -126,6 +127,7 @@ function GroupList() {
                   <span className="admin-title-row">
                     <strong>{g.name}</strong>
                     {g.builtIn && <Badge>Built in</Badge>}
+                    {g.rule && <Badge>Follows filters</Badge>}
                   </span>
                   {g.description && <div className="admin-muted">{g.description}</div>}
                 </td>
@@ -154,8 +156,14 @@ function GroupList() {
 }
 
 /** Splits pasted text (lines, commas, spaces, semicolons) into emails or usernames. */
-const identifiers = (text: string) =>
-  [...new Set(text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean))];
+const identifiers = (text: string) => [
+  ...new Set(
+    text
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ),
+];
 
 function AddMembers({ groupId, onAdded }: { groupId: string; onAdded: (message: string) => void }) {
   const [text, setText] = useState('');
@@ -207,8 +215,8 @@ function AddMembers({ groupId, onAdded }: { groupId: string; onAdded: (message: 
       </Field>
       {unmatched.length > 0 && (
         <Alert tone="warning" role="none">
-          {unmatched.length === 1 ? '1 entry is' : `${unmatched.length} entries are`} not an
-          email and {unmatched.length === 1 ? 'matches' : 'match'} no username, so{' '}
+          {unmatched.length === 1 ? '1 entry is' : `${unmatched.length} entries are`} not an email
+          and {unmatched.length === 1 ? 'matches' : 'match'} no username, so{' '}
           {unmatched.length === 1 ? 'it is' : 'they are'} left above:{' '}
           {unmatched.slice(0, 10).join(', ')}
           {unmatched.length > 10 && '…'}
@@ -240,7 +248,10 @@ function GroupDetail({ id }: { id: string }) {
   const detail = useQuery({ queryKey: ['email-group', id], queryFn: () => api.group(id) });
   // Built-in groups (other than Everyone, which has its own page) list members but can't change.
   const builtIn = !!detail.data?.group.builtIn;
+  const rule = detail.data?.group.rule;
   const canEdit = canChange && !builtIn;
+  // A dynamic group's members come from its filters, never by hand.
+  const canEditMembers = canEdit && !rule;
   const members = useInfiniteQuery({
     queryKey: ['email-group-members', id],
     queryFn: ({ pageParam }) => api.groupMembers(id, pageParam),
@@ -282,10 +293,10 @@ function GroupDetail({ id }: { id: string }) {
         <>
           <PageHeader
             title={
-              builtIn ? (
+              builtIn || rule ? (
                 <span className="admin-title-row">
                   {detail.data.group.name}
-                  <Badge>Built in</Badge>
+                  <Badge>{builtIn ? 'Built in' : 'Follows filters'}</Badge>
                 </span>
               ) : (
                 detail.data.group.name
@@ -320,11 +331,11 @@ function GroupDetail({ id }: { id: string }) {
           {builtIn && (
             <Card title="Who is in it">
               <p>
-                Every account that has signed in to the Mac app, or to harbor0 in a browser on
-                macOS (Safari, Chrome, Firefox or Edge), even if it has since signed out. It is
-                worked out again when a campaign starts sending, so new Mac users are included. As
-                with any group, deleted, suspended and unverified accounts are skipped, and product
-                updates skip people who unsubscribed.
+                Every account that has signed in to the Mac app, or to harbor0 in a browser on macOS
+                (Safari, Chrome, Firefox or Edge), even if it has since signed out. It is worked out
+                again when a campaign starts sending, so new Mac users are included. As with any
+                group, deleted, suspended and unverified accounts are skipped, and product updates
+                skip people who unsubscribed.
               </p>
               <p className="admin-muted">
                 The list below is refreshed every 15 minutes. It can&apos;t be renamed, edited or
@@ -332,7 +343,26 @@ function GroupDetail({ id }: { id: string }) {
               </p>
             </Card>
           )}
-          {canEdit && (
+          {rule && (
+            <Card
+              title="Who is in it"
+              action={
+                <Link className="btn" data-variant="outline" data-size="sm" href={usersHref(rule)}>
+                  Open in Users
+                </Link>
+              }
+            >
+              <p>{describeRule(rule)}.</p>
+              <p className="admin-muted">
+                Accounts join and leave as they start or stop matching, and the list is worked out
+                again when a campaign starts sending. Deleted, suspended and unverified accounts are
+                skipped, and product updates skip people who unsubscribed. To change the filters,
+                open them in Users, adjust them, then choose Make an email group and replace this
+                group&apos;s filters. The list below is at most 2 minutes old.
+              </p>
+            </Card>
+          )}
+          {canEditMembers && (
             <Card
               title="Add members"
               description="Paste emails or usernames. An email with no account is added as an address on its own."
@@ -350,7 +380,9 @@ function GroupDetail({ id }: { id: string }) {
             {members.isPending ? (
               <Skeleton className="admin-skeleton-block" />
             ) : !all.length ? (
-              <p className="admin-empty">No one in this group yet.</p>
+              <p className="admin-empty">
+                {rule ? 'No accounts match these filters right now.' : 'No one in this group yet.'}
+              </p>
             ) : (
               <>
                 <DataTable label="Members of the group">
@@ -382,8 +414,12 @@ function GroupDetail({ id }: { id: string }) {
                           <div className="admin-muted">{m.addedBy}</div>
                         </td>
                         <td className="admin-cell-action">
-                          {canEdit && (
-                            <Button size="sm" variant="ghost" onClick={() => void remove(m.userId, m.email)}>
+                          {canEditMembers && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void remove(m.userId, m.email)}
+                            >
                               Remove
                             </Button>
                           )}
@@ -473,7 +509,9 @@ function EveryoneGroup() {
           </span>
         }
         description={
-          detail.data ? `About ${plural(detail.data.group.memberCount, 'account')} today` : undefined
+          detail.data
+            ? `About ${plural(detail.data.group.memberCount, 'account')} today`
+            : undefined
         }
       />
       <Card title="Who is in it">
