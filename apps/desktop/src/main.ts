@@ -277,7 +277,17 @@ async function connected() {
   return { user };
 }
 // Windows shows notifications only for the app ID the installer gave the Start menu shortcut.
-if (process.platform === 'win32') app.setAppUserModelId('com.harbor.storage');
+// Electron registers that ID's toast activator to launch whichever executable last showed a
+// notification, so an unpackaged electron.exe must use its own ID or clicks open Electron's
+// default app. A fixed activator keeps toasts left in Action Center working after a restart.
+if (process.platform === 'win32') {
+  app.setAppUserModelId(app.isPackaged ? 'com.harbor.storage' : 'com.harbor.storage.dev');
+  app.setToastActivatorCLSID(
+    app.isPackaged
+      ? '{97B05483-3DCF-41FC-997E-621F60D1B04E}'
+      : '{AAA5958C-E20E-42C9-B684-193BD660A260}',
+  );
+}
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => {
@@ -463,6 +473,16 @@ app
       ]),
     );
     tray.on('click', () => window.show());
+    // Clicks on toasts from an earlier run, or after the Notification was collected, arrive here.
+    // Windows starts the app hidden for a click while it is closed and waits for its activator,
+    // which Electron registers only once its notification presenter exists; isSupported()
+    // creates it.
+    if (process.platform === 'win32' && Notification.isSupported())
+      Notification.handleActivation(() => {
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+      });
     ipc('status', z.undefined(), async () => {
       if (!authTransition && session.refreshToken) {
         try {
