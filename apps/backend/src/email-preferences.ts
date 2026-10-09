@@ -55,6 +55,24 @@ export class EmailLinks {
       oneClick: `${this.webOrigin}/api/v1/email/unsubscribe?t=${t}`,
     };
   }
+  private signSurvey(campaignId: string, key: string) {
+    return createHmac('sha256', this.secret).update(`survey:${campaignId}:${key}`).digest('base64url');
+  }
+  /** One recipient's link to a campaign's survey; `key` is their recipient key. */
+  survey(campaignId: string, key: string) {
+    const token = `${campaignId}.${Buffer.from(key).toString('base64url')}.${this.signSurvey(campaignId, key)}`;
+    return `${this.webOrigin}/survey?t=${encodeURIComponent(token)}`;
+  }
+  /** The campaign and recipient a survey token was issued for, or undefined if not ours. */
+  verifySurvey(token: string): { campaignId: string; key: string } | undefined {
+    const [campaignId, encodedKey, signature, ...rest] = token.split('.');
+    if (!campaignId || !encodedKey || !signature || rest.length) return undefined;
+    const key = Buffer.from(encodedKey, 'base64url').toString();
+    const expected = Buffer.from(this.signSurvey(campaignId, key));
+    const given = Buffer.from(signature);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined;
+    return { campaignId, key };
+  }
   unsubscribe(userId: string): Unsubscribe {
     return this.links(this.token(userId));
   }

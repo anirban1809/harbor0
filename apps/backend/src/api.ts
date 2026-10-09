@@ -13,6 +13,12 @@ import {
   backupRunSchema,
   backupRestoreSchema,
 } from '../../../packages/contracts/src/backups';
+import {
+  surveyFormSchema,
+  surveySubmitBody,
+  surveySubmitResultSchema,
+} from '../../../packages/contracts/src/campaigns';
+import { surveyForm, submitSurvey } from './surveys';
 import { SyncRelay } from './sync-relay';
 import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
@@ -651,6 +657,30 @@ export function createApp(
     async (ctx) => ({
       subscription: await setLinkProductUpdates(service, await linkSubject(ctx), true),
     }),
+    true,
+  );
+  // A campaign's survey, from the signed link in one recipient's email: no sign-in needed.
+  const surveyToken = async (ctx: Context<Env>) => {
+    const token = ctx.req.query('t');
+    await rateLimit(`email-link:${token ?? ''}`, 30);
+    return token;
+  };
+  add(
+    'get',
+    '/v1/email/survey',
+    'The survey behind a survey link, with any answers already sent',
+    undefined,
+    z.object({ form: surveyFormSchema }),
+    async (ctx) => ({ form: await surveyForm(service.repo, emailLinks, await surveyToken(ctx)) }),
+    true,
+  );
+  add(
+    'post',
+    '/v1/email/survey',
+    'Send, or change, the answers to the survey behind a survey link',
+    surveySubmitBody,
+    surveySubmitResultSchema,
+    async (ctx, i) => submitSurvey(service.repo, emailLinks, await surveyToken(ctx), i.answers),
     true,
   );
   add(

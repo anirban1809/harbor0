@@ -37,12 +37,59 @@ const staffStamp = {
 /** The `updatedAt` an editor loaded; a save is refused if someone changed it since. */
 const expectedUpdatedAt = z.string().nullable();
 
+/**
+ * A short survey at the end of a campaign email (or where the body says `{{survey}}`). The first
+ * question shows in the email as one-click answers where it can (a rating or a single choice);
+ * every answer is made, and can be changed, on a page of the web app the email links to.
+ */
+export const surveyQuestionKind = z.enum(['RATING', 'CHOICE', 'MULTI', 'TEXT']);
+export type SurveyQuestionKind = z.infer<typeof surveyQuestionKind>;
+export const MAX_SURVEY_QUESTIONS = 8;
+export const MAX_SURVEY_OPTIONS = 8;
+export const MAX_SURVEY_TEXT = 2000;
+export const surveyQuestionSchema = z
+  .object({
+    /** Stable within the survey; answers are keyed by it. */
+    id: z.string().regex(/^[a-z0-9]{1,16}$/),
+    kind: surveyQuestionKind,
+    prompt: z.string().trim().min(1).max(300),
+    /** The choices of a CHOICE or MULTI question. */
+    options: z.array(z.string().trim().min(1).max(100)).max(MAX_SURVEY_OPTIONS).default([]),
+    /** A RATING's scale: 1 to 5, or 0 to 10. */
+    scale: z.union([z.literal(5), z.literal(10)]).default(5),
+    required: z.boolean().default(false),
+  })
+  .strict();
+export const surveySchema = z
+  .object({ questions: z.array(surveyQuestionSchema).min(1).max(MAX_SURVEY_QUESTIONS) })
+  .strict();
+export type SurveyQuestion = z.infer<typeof surveyQuestionSchema>;
+export type Survey = z.infer<typeof surveySchema>;
+/** A rating, a choice's option index, chosen option indexes, or text. */
+export const surveyAnswer = z.union([
+  z.number().int().min(0).max(10),
+  z
+    .array(
+      z
+        .number()
+        .int()
+        .min(0)
+        .max(MAX_SURVEY_OPTIONS - 1),
+    )
+    .max(MAX_SURVEY_OPTIONS),
+  z.string().max(MAX_SURVEY_TEXT),
+]);
+export type SurveyAnswer = z.infer<typeof surveyAnswer>;
+export const surveyAnswers = z.record(z.string(), surveyAnswer);
+export type SurveyAnswers = z.infer<typeof surveyAnswers>;
+
 export const campaignContentSchema = z.object({
   subject: z.string().trim().min(1).max(200),
   /** The preview line mail apps show after the subject. */
   preheader: z.string().trim().max(200).default(''),
   markdown: z.string().trim().min(1).max(50_000),
   category: campaignCategory,
+  survey: surveySchema.nullable().default(null),
 });
 export type CampaignContent = z.infer<typeof campaignContentSchema>;
 
@@ -249,6 +296,38 @@ export const recipientPageSchema = z.object({
   items: z.array(recipientSchema),
   nextCursor: z.string().nullable(),
 });
+/** How long after a campaign starts sending its survey takes answers. */
+export const SURVEY_OPEN_DAYS = 60;
+/** The survey page's view of one recipient's survey, from the signed link in their email. */
+export const surveyFormSchema = z.object({
+  /** The campaign email's subject, for the page heading. */
+  title: z.string(),
+  survey: surveySchema,
+  answers: surveyAnswers.nullable(),
+  submittedAt: z.string().nullable(),
+  /** Answers are taken, and can be changed, until then. */
+  closesAt: z.string(),
+  open: z.boolean(),
+});
+export const surveySubmitBody = z.object({ answers: surveyAnswers }).strict();
+export const surveySubmitResultSchema = z.object({ submittedAt: z.string() });
+export const surveyResponseSchema = z.object({
+  /** Null for an address without an account. */
+  userId: z.string().nullable(),
+  email: z.string().nullable(),
+  name: z.string().nullable(),
+  answers: surveyAnswers,
+  submittedAt: z.string(),
+});
+export const surveyResultsSchema = z.object({
+  survey: surveySchema.nullable(),
+  /** People the email reached, so the share who answered can be shown. */
+  sent: z.number(),
+  items: z.array(surveyResponseSchema),
+});
+export type SurveyForm = z.infer<typeof surveyFormSchema>;
+export type SurveyResponse = z.infer<typeof surveyResponseSchema>;
+export type SurveyResults = z.infer<typeof surveyResultsSchema>;
 export type EmailTemplate = z.infer<typeof emailTemplateSchema>;
 export type EmailTemplateBody = z.infer<typeof emailTemplateBody>;
 export type EmailTemplateDetail = z.infer<typeof emailTemplateDetailSchema>;

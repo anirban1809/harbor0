@@ -79,6 +79,7 @@ const template = (category: 'PRODUCT' | 'SERVICE' = 'PRODUCT') => ({
   preheader: 'What changed in harbor0',
   markdown:
     '# Hello {{name}}\n\nYou use **{{storageUsed}}**.\n\n[[Open harbor0]](https://app.harbor0.com)',
+  survey: null,
 });
 
 beforeEach(async () => {
@@ -718,5 +719,132 @@ describe('addresses without an account', () => {
     });
     const recipients = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients`);
     expect(recipients.items[0]).toMatchObject({ userId: 'alice' });
+  });
+});
+
+describe('surveys', () => {
+  const survey = {
+    questions: [
+      {
+        id: 'nps',
+        kind: 'RATING',
+        prompt: 'How likely are you to recommend harbor0?',
+        scale: 10,
+        required: true,
+      },
+      {
+        id: 'use',
+        kind: 'MULTI',
+        prompt: 'What do you use?',
+        options: ['Sync', 'Backups', 'Sharing'],
+      },
+      { id: 'more', kind: 'TEXT', prompt: 'Anything else?' },
+    ],
+  };
+  const parsed = {
+    questions: survey.questions.map((q) => ({ options: [], scale: 5, required: false, ...q })),
+  } as Parameters<typeof renderCampaign>[0]['survey'];
+
+  it('place the survey where the message says, with one-click answers for the first question', () => {
+    const content = {
+      ...template(),
+      markdown: 'Hi\n\n{{survey}}\n\nThanks!',
+      survey: parsed,
+    };
+    expect(contentProblems(content)).toEqual([]);
+    const rendered = renderCampaign(content, sampleVars, 'https://app.test/survey?t=abc');
+    expect(rendered.html.indexOf('a=0')).toBeLessThan(rendered.html.indexOf('Thanks!'));
+    expect(rendered.html).toContain('href="https://app.test/survey?t=abc&amp;a=10"');
+    expect(rendered.html).toContain('2 more short questions');
+    expect(rendered.text).toContain('10: https://app.test/survey?t=abc&a=10');
+    // Without a placeholder it goes at the end; without a link (no survey) nothing is added.
+    const end = renderCampaign({ ...content, markdown: 'Hi' }, sampleVars, 'https://app.test/s');
+    expect(end.html.indexOf('Hi')).toBeLessThan(end.html.indexOf('app.test/s?a=0'));
+    expect(renderCampaign({ ...content, survey: null }, sampleVars).html).not.toContain('\u0001');
+  });
+
+  it('refuse a misplaced placeholder or a survey that cannot be answered', () => {
+    expect(contentProblems({ ...template(), markdown: 'Hi\n\n{{survey}}' })).toEqual([
+      'The message places a survey with {{survey}}, but it has no questions.',
+    ]);
+    expect(
+      contentProblems({ ...template(), markdown: 'Answer {{survey}} now', survey: parsed }),
+    ).toEqual(['Put {{survey}} on a line of its own to place the survey there.']);
+    const lonely = { questions: [{ ...parsed!.questions[1]!, options: ['Only'] }] };
+    expect(contentProblems({ ...template(), survey: lonely })).toEqual([
+      'Survey question 1 needs at least two choices.',
+    ]);
+  });
+
+  it('take answers from each recipient’s own link and show them in the console', async () => {
+    const t = await ok(admin, 'POST', '/email/templates', { ...template(), survey });
+    expect(t.survey.questions[0]).toMatchObject({ id: 'nps', scale: 10, required: true });
+    const campaign = await ok(admin, 'POST', '/email/campaigns', {
+      name: 'NPS',
+      templateId: t.id,
+      audience: { groupIds: [], userIds: ['alice', 'bob'] },
+    });
+    await call(admin, 'POST', `/email/campaigns/${campaign.id}/schedule`, {
+      at: null,
+      reason: 'Quarterly survey',
+      expectedUpdatedAt: campaign.updatedAt,
+    });
+    const sent = await runJobs();
+    const linkFor = (to: string) => {
+      const email = sent.find((e) => e.to === to) as Extract<Email, { template: 'CAMPAIGN' }>;
+      expect(composeEmail(email, 'https://app.test').html).toContain('a=7');
+      return new URL(email.survey!).searchParams.get('t')!;
+    };
+    const alice = linkFor('alice@example.test');
+    const bob = linkFor('bob@example.test');
+    const form = async (token: string) =>
+      (await userApp.request(`/v1/email/survey?t=${encodeURIComponent(token)}`)).json();
+    const answer = (token: string, answers: unknown) =>
+      userApp.request(`/v1/email/survey?t=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answers }),
+      });
+
+    expect((await form(alice)).form).toMatchObject({
+      title: 'News for',
+      answers: null,
+      open: true,
+      survey: { questions: [{ id: 'nps' }, { id: 'use' }, { id: 'more' }] },
+    });
+    // Required questions, ranges, choices and unknown questions are checked.
+    expect((await answer(alice, { more: 'hi' })).status).toBe(400);
+    expect((await answer(alice, { nps: 11 })).status).toBe(400);
+    expect((await answer(alice, { nps: 9, use: [3] })).status).toBe(400);
+    expect((await answer(alice, { nps: 9, other: 1 })).status).toBe(400);
+    expect((await answer(alice, { nps: 9, use: [2, 0], more: '  Love it ' })).status).toBe(200);
+    // Answering again replaces the earlier answers.
+    expect((await answer(bob, { nps: 3 })).status).toBe(200);
+    expect((await answer(bob, { nps: 4, more: '' })).status).toBe(200);
+    expect((await form(bob)).form.answers).toEqual({ nps: 4 });
+    // A link only works for its own campaign and recipient.
+    const forged = `${alice.split('.')[0]}.${Buffer.from('bob').toString('base64url')}.${alice.split('.')[2]}`;
+    expect((await answer(forged, { nps: 0 })).status).toBe(400);
+    expect((await userApp.request('/v1/email/survey?t=test')).status).toBe(400);
+
+    const results = await ok(support, 'GET', `/email/campaigns/${campaign.id}/survey`);
+    expect(results.sent).toBe(2);
+    expect(results.survey.questions).toHaveLength(3);
+    expect(
+      results.items.map((r: { userId: string; answers: unknown }) => [r.userId, r.answers]).sort(),
+    ).toEqual([
+      ['alice', { nps: 9, use: [0, 2], more: 'Love it' }],
+      ['bob', { nps: 4 }],
+    ]);
+  });
+
+  it('point previews and test sends at a notice instead of a real survey', async () => {
+    const preview = await ok(admin, 'POST', '/email/preview', {
+      ...template(),
+      name: undefined,
+      survey,
+    });
+    expect(preview.problems).toEqual([]);
+    expect(preview.html).toContain('https://app.test/survey?t=test&amp;a=0');
   });
 });

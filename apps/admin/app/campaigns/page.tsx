@@ -24,6 +24,7 @@ import { DataTable } from '../../../web/components/ui/table';
 import { AuditList } from '../../components/audit-list';
 import { CampaignStateBadge, CategoryBadge, EmailNav } from '../../components/email-nav';
 import { EmailPreview } from '../../components/email-preview';
+import { SurveyResults } from '../../components/survey-results';
 import { ReasonDialog } from '../../components/reason-dialog';
 import { PageHeader, Shell, useCan } from '../../components/shell';
 import { api } from '../../lib/api';
@@ -445,6 +446,7 @@ function DraftEditor({ detail }: { detail: CampaignDetail | null }) {
                       preheader: template.preheader,
                       markdown: template.markdown,
                       category: template.category,
+                      survey: template.survey,
                     });
                     setNotice(`Test sent to ${sentTo}. It arrives within a minute.`);
                   })
@@ -667,6 +669,7 @@ function SentView({ detail }: { detail: CampaignDetail }) {
           {c.content && <EmailPreview content={c.content} />}
         </Card>
       </div>
+      {c.content?.survey && <SurveyResults id={c.id} name={c.name} live={live(c)} />}
       <ReasonDialog
         open={confirm === 'cancel'}
         onOpenChange={(o) => !o && setConfirm(null)}

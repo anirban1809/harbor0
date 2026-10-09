@@ -159,7 +159,14 @@ export type Email = (
     }
     | { template: 'SIGNED_OUT'; to: string; name: string; device?: string; }
     /** Sent from the campaigns sender, not the account-notices one. */
-    | { template: 'CAMPAIGN'; to: string; content: CampaignContent; vars: CampaignVars; }
+    | {
+        template: 'CAMPAIGN';
+        to: string;
+        content: CampaignContent;
+        vars: CampaignVars;
+        /** This recipient's link to answer the campaign's survey, if it has one. */
+        survey?: string;
+    }
 ) & { unsubscribe?: Unsubscribe; };
 export type StorageAlertLevel = 80 | 95 | 100;
 
@@ -278,7 +285,7 @@ function accountMessage(email: Email, webOrigin: string): Message {
     const reset = { label: 'Reset your password', url: escape(`${webOrigin}/forgot-password`) };
     switch (email.template) {
         case 'CAMPAIGN': {
-            const rendered = renderCampaign(email.content, email.vars);
+            const rendered = renderCampaign(email.content, email.vars, email.survey);
             return {
                 subject: rendered.subject,
                 preheader: escape(rendered.preheader),

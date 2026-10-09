@@ -35,6 +35,7 @@ import type {
   EmailTemplateDetail,
   RecipientPage,
   RecipientStatus,
+  SurveyResults,
 } from '../../../packages/contracts/src/campaigns';
 
 export class ApiError extends Error {
@@ -202,6 +203,7 @@ export const api = {
     request<Campaign>('POST', `${email('campaigns', id)}/cancel`, { reason }),
   stopCampaign: (id: string, reason: string) =>
     request<Campaign>('POST', `${email('campaigns', id)}/stop`, { reason }),
+  surveyResults: (id: string) => request<SurveyResults>('GET', `${email('campaigns', id)}/survey`),
   recipients: (id: string, status?: RecipientStatus, cursor?: string) =>
     request<RecipientPage>(
       'GET',

@@ -688,6 +688,105 @@ body {
 .admin-campaign-progress {
   width: 100%;
 }
+/* Survey builder (template editor) and its answers (campaign page). */
+.admin-survey,
+.admin-survey-empty {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.admin-survey {
+  justify-items: stretch;
+}
+.admin-survey code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.admin-survey-question {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.admin-survey-question-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+.admin-survey-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+.admin-survey-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 12px;
+}
+.admin-survey-options {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.admin-survey-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.admin-survey-option .input {
+  flex: 1;
+}
+.admin-survey-results {
+  display: grid;
+  gap: 24px;
+}
+.admin-survey-result {
+  display: grid;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+.admin-survey-bars {
+  display: grid;
+  gap: 6px;
+}
+.admin-survey-bar {
+  display: grid;
+  grid-template-columns: minmax(40px, 180px) minmax(0, 1fr) 80px;
+  align-items: center;
+  gap: 10px;
+}
+.admin-survey-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-survey-bar-count {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.admin-survey-texts {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-survey-texts p {
+  margin: 0 0 2px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .admin-survey-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 @media (max-width: 1100px) {
   .admin-composer {
     grid-template-columns: minmax(0, 1fr);

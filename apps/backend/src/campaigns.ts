@@ -26,6 +26,7 @@ import { Transaction, transact, type DeviceSighting, type Repository } from './r
  *   EMAIL_GROUP#<id> / MEMBER#<key>    one member
  *   CAMPAIGN / <id>                    a campaign, with its counts and send progress
  *   CAMPAIGN#<id> / RCPT#<key>         one recipient and what happened to their email
+ *   CAMPAIGN#<id> / SURVEY#<key>       one recipient's survey answers (see surveys.ts)
  * A member's or recipient's key is the account ID, or "@" and the address for an address
  * without an account.
  */
@@ -300,9 +301,9 @@ export async function campaignStep(
             assert(options.sendEmail, 'EMAIL_NOT_CONFIGURED', 'Email delivery is not configured.', 503);
             const product = campaign.content!.category === 'PRODUCT';
             assert(
-              !product || options.emailLinks,
+              (!product && !campaign.content!.survey) || options.emailLinks,
               'EMAIL_NOT_CONFIGURED',
-              'Unsubscribe links are not configured.',
+              'Unsubscribe and survey links are not configured.',
               503,
             );
             await options.sendEmail({
@@ -310,6 +311,9 @@ export async function campaignStep(
               to: target.to,
               content: campaign.content!,
               vars: target.vars,
+              ...(campaign.content!.survey
+                ? { survey: options.emailLinks!.survey(campaignId, recipientKey(r)) }
+                : {}),
               ...(product
                 ? {
                     unsubscribe: target.userId

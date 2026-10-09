@@ -674,3 +674,115 @@
   margin-top: 6px;
   font-size: var(--text-sm);
 }
+
+/* A campaign survey, answered from its email link. */
+.survey-card {
+  max-width: 560px;
+}
+.survey-form {
+  display: grid;
+  gap: 22px;
+}
+.survey-form > .muted {
+  margin-top: -14px;
+}
+.survey-question {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.survey-question legend {
+  margin-bottom: 10px;
+  padding: 0;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.survey-required {
+  margin-left: 3px;
+  color: var(--danger-text);
+}
+.survey-scale {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+.survey-scale[data-count='11'] {
+  grid-template-columns: repeat(11, 1fr);
+  gap: 4px;
+}
+.survey-scale-option {
+  position: relative;
+}
+.survey-scale-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.survey-scale-option span {
+  display: grid;
+  place-items: center;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    background-color var(--ease),
+    border-color var(--ease),
+    color var(--ease);
+}
+.survey-scale-option span:hover {
+  border-color: var(--primary);
+}
+.survey-scale-option input:checked + span {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.survey-scale-option input:focus-visible + span {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.survey-scale-option input:disabled + span {
+  cursor: default;
+  opacity: 0.6;
+}
+.survey-scale-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.survey-options {
+  display: grid;
+  gap: 8px;
+}
+.survey-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.survey-option:has(:checked) {
+  border-color: var(--primary);
+}
+@media (max-width: 480px) {
+  .standalone-card.survey-card {
+    padding: 24px 18px;
+  }
+  .survey-scale[data-count='11'] {
+    gap: 2px;
+  }
+  .survey-scale[data-count='11'] .survey-scale-option span {
+    height: 36px;
+    font-size: var(--text-sm);
+  }
+}

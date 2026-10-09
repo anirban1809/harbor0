@@ -48,6 +48,7 @@ import {
     campaignReasonBody,
     campaignSchema,
     campaignScheduleBody,
+    surveyResultsSchema,
     emailGroupAddBody,
     emailGroupAddMatchingBody,
     MAX_GROUP_ADD_MATCHING,
@@ -565,6 +566,9 @@ export function createAdminApp(
         const { reason } = await body(ctx, campaignReasonBody);
         return ctx.json(campaignSchema.parse(await campaigns.stop(ctx.get('staff'), itemId(ctx), reason)));
     });
+    v1.get('/email/campaigns/:id/survey', guard('read'), async (ctx) =>
+        ctx.json(surveyResultsSchema.parse(await campaigns.surveyResults(itemId(ctx)))),
+    );
     v1.get('/email/campaigns/:id/recipients', guard('read'), async (ctx) => {
         const q = searchQuery
             .extend({ status: recipientStatus.optional() })

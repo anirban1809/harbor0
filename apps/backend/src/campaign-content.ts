@@ -4,6 +4,7 @@ import {
   type CampaignContent,
   type CampaignVariable,
   type CampaignVars,
+  type Survey,
 } from '../../../packages/contracts/src/campaigns';
 
 /**
@@ -24,6 +25,9 @@ const unescape = (text: string) =>
     (_, entity: string) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[entity]!,
   );
 const VARIABLE = /\{\{\s*([a-zA-Z]+)\s*\}\}/g;
+// `{{survey}}` on a line of its own places the survey; it isn't a variable.
+const SURVEY_LINE = /^\s*\{\{\s*survey\s*\}\}\s*$/;
+const SURVEY_SLOT = '\u0001survey\u0001';
 const isVariable = (name: string): name is CampaignVariable => name in campaignVariables;
 // A link variable alone (`{{signupLink}}`) is a URL too: it is always filled with an https link.
 const urlVariable = (url: string) => {
@@ -114,7 +118,11 @@ export function renderMarkdown(markdown: string): Rendered {
     const item = line.match(/^\s*(?:([-*])|(\d+)\.)\s+(.+)$/);
     const cta = line.trim().match(/^\[\[(.+?)\]\]\((\S+)\)$/);
     if (!line.trim()) flush();
-    else if (heading) {
+    else if (SURVEY_LINE.test(line)) {
+      flush();
+      html.push(SURVEY_SLOT);
+      text.push(SURVEY_SLOT);
+    } else if (heading) {
       flush();
       const level = heading[1]!.length as 1 | 2 | 3;
       const content = inline(heading[2]!);
@@ -148,12 +156,26 @@ const fill = (value: string, vars: CampaignVars, html: boolean) =>
     isVariable(name) ? (html ? escape(vars[name]) : vars[name]) : match,
   );
 
-/** What would stop the content from being sent: unknown variables and unsafe links. */
-export function contentProblems(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>) {
+/** What would stop the content from being sent: unknown variables, unsafe links, a bad survey. */
+export function contentProblems(
+  content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'> & {
+    survey?: Survey | null;
+  },
+) {
   const problems: string[] = [];
   const unknown = new Set<string>();
-  for (const part of [content.subject, content.preheader, content.markdown])
-    for (const [, name] of part.matchAll(VARIABLE)) if (!isVariable(name!)) unknown.add(name!);
+  const markdown = content.markdown
+    .split(/\r?\n/)
+    .filter((line) => !SURVEY_LINE.test(line))
+    .join('\n');
+  for (const part of [content.subject, content.preheader, markdown])
+    for (const [, name] of part.matchAll(VARIABLE))
+      if (name === 'survey')
+        problems.push('Put {{survey}} on a line of its own to place the survey there.');
+      else if (!isVariable(name!)) unknown.add(name!);
+  if (!content.survey && markdown !== content.markdown)
+    problems.push('The message places a survey with {{survey}}, but it has no questions.');
+  problems.push(...surveyProblems(content.survey));
   for (const name of unknown)
     problems.push(
       `{{${name}}} is not a variable. Use one of: ${Object.keys(campaignVariables)
@@ -165,14 +187,117 @@ export function contentProblems(content: Pick<CampaignContent, 'subject' | 'preh
   return problems;
 }
 
-/** The content for one recipient: subject, preview line, and the body as HTML and text. */
-export function renderCampaign(content: CampaignContent, vars: CampaignVars) {
+function surveyProblems(survey: Survey | null | undefined) {
+  if (!survey) return [];
+  const problems: string[] = [];
+  const ids = new Set<string>();
+  survey.questions.forEach((q, i) => {
+    const which = `Survey question ${i + 1}`;
+    if (ids.has(q.id)) problems.push(`${which} has the same ID as another question.`);
+    ids.add(q.id);
+    if ((q.kind === 'CHOICE' || q.kind === 'MULTI') && q.options.length < 2)
+      problems.push(`${which} needs at least two choices.`);
+    if (new Set(q.options.map((o) => o.toLowerCase())).size !== q.options.length)
+      problems.push(`${which} has the same choice twice.`);
+  });
+  return problems;
+}
+
+/** The answers a question takes in its email link: a rating's values or a choice's options. */
+export function oneClickAnswers(question: Survey['questions'][number]) {
+  if (question.kind === 'RATING')
+    return Array.from({ length: question.scale === 10 ? 11 : 5 }, (_, i) => {
+      const value = question.scale === 10 ? i : i + 1;
+      return { value, label: String(value) };
+    });
+  if (question.kind === 'CHOICE') return question.options.map((label, value) => ({ value, label }));
+  return [];
+}
+
+const surveyStyle = {
+  box: 'margin:8px 0 20px;padding:16px 12px;border:1px solid #e3e5ea;border-radius:10px;background:#f7f8fa;',
+  prompt: 'margin:0 0 14px;font-size:15px;line-height:1.5;font-weight:600;color:#16181d;',
+  scale:
+    'display:block;padding:10px 0;border:1px solid #c9cdd6;border-radius:6px;background:#ffffff;font-size:15px;font-weight:600;color:#4353d9;text-align:center;text-decoration:none;',
+  choice:
+    'display:block;margin:0 0 8px;padding:11px 14px;border:1px solid #c9cdd6;border-radius:8px;background:#ffffff;font-size:15px;color:#16181d;text-decoration:none;',
+  ends: 'padding:6px 2px 0;font-size:12px;color:#8a8f9c;',
+  more: 'margin:14px 0 0;font-size:13px;line-height:1.5;color:#5d6270;',
+};
+
+/**
+ * The survey as it shows in the email. A rating or single choice first question is answered
+ * by its link; anything else, and the rest of the survey, is on the page the link opens.
+ */
+export function renderSurvey(survey: Survey, link: string): Rendered {
+  const first = survey.questions[0]!;
+  const answers = oneClickAnswers(first);
+  const href = (value: number) => escape(`${link}${link.includes('?') ? '&' : '?'}a=${value}`);
+  const html: string[] = [`<div style="${surveyStyle.box}">`];
+  const text: string[] = [];
+  const more = survey.questions.length - 1;
+  if (answers.length) {
+    html.push(`<p style="${surveyStyle.prompt}">${escape(first.prompt)}</p>`);
+    text.push(first.prompt);
+    if (first.kind === 'RATING') {
+      const width = Math.floor(100 / answers.length);
+      html.push(
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>${answers
+          .map(
+            (a) =>
+              `<td width="${width}%" style="padding:0 1px;"><a href="${href(a.value)}" style="${surveyStyle.scale}">${a.label}</a></td>`,
+          )
+          .join('')}</tr></table>`,
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="${surveyStyle.ends}">${first.scale === 10 ? 'Not likely' : 'Poor'}</td><td align="right" style="${surveyStyle.ends}">${first.scale === 10 ? 'Very likely' : 'Great'}</td></tr></table>`,
+      );
+    } else
+      html.push(
+        ...answers.map((a) => `<a href="${href(a.value)}" style="${surveyStyle.choice}">${escape(a.label)}</a>`),
+      );
+    text.push(...answers.map((a) => `${a.label}: ${link}${link.includes('?') ? '&' : '?'}a=${a.value}`));
+    html.push(
+      `<p style="${surveyStyle.more}">${
+        more
+          ? `Pick one to answer, then ${more === 1 ? 'one more short question' : `${more} more short questions`} on the next page.`
+          : 'Pick one to answer.'
+      }</p>`,
+    );
+  } else {
+    const count = survey.questions.length;
+    html.push(
+      `<p style="${surveyStyle.prompt}">${count === 1 ? escape(first.prompt) : `We'd love your answers to ${count} short questions.`}</p>`,
+    );
+    const cta = button('Answer the survey', link);
+    html.push(cta.html.replace('margin:4px 0 20px;', 'margin:0;'));
+    text.push(count === 1 ? first.prompt : `We'd love your answers to ${count} short questions.`, cta.text);
+  }
+  html.push('</div>');
+  return { html: html.join(''), text: text.join('\n') };
+}
+
+/**
+ * The content for one recipient: subject, preview line, and the body as HTML and text. A
+ * survey goes where the body says `{{survey}}`, or at the end; `surveyLink` is this recipient's
+ * own link to answer it.
+ */
+export function renderCampaign(content: CampaignContent, vars: CampaignVars, surveyLink?: string) {
   const body = renderMarkdown(content.markdown);
+  let html = fill(body.html, vars, true);
+  let text = fill(body.text, vars, false);
+  const survey = content.survey && surveyLink ? renderSurvey(content.survey, surveyLink) : undefined;
+  const place = (value: string, part: string, joiner: string) =>
+    value.includes(SURVEY_SLOT)
+      ? value.split(SURVEY_SLOT).join(part)
+      : part
+        ? `${value}${joiner}${part}`
+        : value;
+  html = place(html, survey?.html ?? '', '\n');
+  text = place(text, survey?.text ?? '', '\n\n');
   return {
     subject: fill(content.subject, vars, false),
     preheader: fill(content.preheader, vars, false),
-    html: fill(body.html, vars, true),
-    text: fill(body.text, vars, false),
+    html,
+    text,
   };
 }
 

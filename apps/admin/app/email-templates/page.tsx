@@ -22,6 +22,7 @@ import { AuditList } from '../../components/audit-list';
 import { CategoryBadge, EmailNav } from '../../components/email-nav';
 import { EmailPreview } from '../../components/email-preview';
 import { PageHeader, Shell, useCan } from '../../components/shell';
+import { cleanSurvey, SurveyEditor, surveyIssue } from '../../components/survey-editor';
 import { api } from '../../lib/api';
 import { relative } from '../../lib/format';
 
@@ -98,8 +99,15 @@ function TemplateList() {
   );
 }
 
-type Draft = Pick<EmailTemplate, 'name' | 'category' | 'subject' | 'preheader' | 'markdown'>;
-const blank: Draft = { name: '', category: 'PRODUCT', subject: '', preheader: '', markdown: starter };
+type Draft = Pick<EmailTemplate, 'name' | 'category' | 'subject' | 'preheader' | 'markdown' | 'survey'>;
+const blank: Draft = {
+  name: '',
+  category: 'PRODUCT',
+  subject: '',
+  preheader: '',
+  markdown: starter,
+  survey: null,
+};
 
 function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: EmailTemplate) => void }) {
   const router = useRouter();
@@ -113,6 +121,7 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
         subject: saved.subject,
         preheader: saved.preheader,
         markdown: saved.markdown,
+        survey: saved.survey ?? null,
       }
     : blank;
   const [draft, setDraft] = useState<Draft>(initial);
@@ -124,8 +133,13 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
   const [deleting, setDeleting] = useState(false);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
-  const changed = (Object.keys(initial) as (keyof Draft)[]).some((k) => initial[k] !== draft[k]);
-  const complete = !!draft.name.trim() && !!draft.subject.trim() && !!draft.markdown.trim();
+  const changed = (Object.keys(initial) as (keyof Draft)[]).some(
+    (k) => JSON.stringify(initial[k]) !== JSON.stringify(draft[k]),
+  );
+  const issue = surveyIssue(draft.survey);
+  const complete = !!draft.name.trim() && !!draft.subject.trim() && !!draft.markdown.trim() && !issue;
+  // Blank choices are dropped and unused fields cleared before the survey is sent anywhere.
+  const body = { ...draft, survey: cleanSurvey(draft.survey) };
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -142,8 +156,8 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
   const save = () =>
     run(async () => {
       const result = saved
-        ? await api.saveTemplate(saved.id, { ...draft, expectedUpdatedAt: saved.updatedAt })
-        : await api.createTemplate(draft);
+        ? await api.saveTemplate(saved.id, { ...body, expectedUpdatedAt: saved.updatedAt })
+        : await api.createTemplate(body);
       void queries.invalidateQueries({ queryKey: ['email-templates'] });
       void queries.invalidateQueries({ queryKey: ['audit'] });
       await queries.invalidateQueries({ queryKey: ['email-template', result.id] });
@@ -152,7 +166,7 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
     });
   const test = () =>
     run(async () => {
-      const { name: _, ...content } = draft;
+      const { name: _, ...content } = body;
       const { sentTo } = await api.sendTest({ ...content, sampleUserId: sample.id });
       setNotice(`Test sent to ${sentTo}. It arrives within a minute.`);
     });
@@ -248,6 +262,15 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
               />
             </Field>
           </div>
+          <div className="field admin-form">
+            <span className="field-label">Survey</span>
+            <SurveyEditor
+              value={draft.survey}
+              disabled={!canEdit}
+              onChange={(survey) => set('survey', survey)}
+            />
+          </div>
+          {issue && <p className="admin-muted">{issue}</p>}
           {canEdit && (
             <div className="admin-flag-save">
               <span className="admin-muted">
@@ -303,6 +326,7 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
               preheader: draft.preheader,
               markdown: draft.markdown,
               category: draft.category,
+              survey: draft.survey,
             }}
             sampleUserId={sample.id}
           />

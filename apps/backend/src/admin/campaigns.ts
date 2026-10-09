@@ -40,6 +40,7 @@ import { composeEmail, type Email } from '../emails';
 import { EmailSuppressions } from '../email-preferences';
 import { assert } from '../errors';
 import { transact, type Transaction } from '../repository';
+import { surveyResults } from '../surveys';
 import type { AdminService } from './service';
 
 const history = (kind: 'TEMPLATE' | 'GROUP' | 'CAMPAIGN', id: string) =>
@@ -115,7 +116,7 @@ export class AdminCampaigns {
     ]);
     return { template, history: log };
   }
-  private checkContent(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>) {
+  private checkContent(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown' | 'survey'>) {
     const problems = contentProblems(content);
     assert(!problems.length, 'INVALID_TEMPLATE', problems.join(' '), 400);
   }
@@ -130,6 +131,7 @@ export class AdminCampaigns {
       subject: input.subject,
       preheader: input.preheader,
       markdown: input.markdown,
+      survey: input.survey,
       createdAt: at,
       createdBy: staff.email,
       updatedAt: at,
@@ -151,8 +153,8 @@ export class AdminCampaigns {
       await tx.put(TEMPLATE_PK, id, next);
       await this.audit(tx, staff, 'TEMPLATE', id, 'EMAIL_TEMPLATE_CHANGED', {
         name: next.name,
-        changed: (['name', 'category', 'subject', 'preheader', 'markdown'] as const).filter(
-          (k) => template[k] !== next[k],
+        changed: (['name', 'category', 'subject', 'preheader', 'markdown', 'survey'] as const).filter(
+          (k) => JSON.stringify(template[k] ?? null) !== JSON.stringify(next[k] ?? null),
         ),
       });
       return next;
@@ -190,6 +192,8 @@ export class AdminCampaigns {
       to,
       content,
       vars,
+      // Previews and tests aren't sent to a recipient, so their survey link opens a notice instead.
+      ...(content.survey ? { survey: `${this.webOrigin}/survey?t=test` } : {}),
       ...(content.category === 'PRODUCT'
         ? { unsubscribe: { page: `${this.webOrigin}/settings`, oneClick: '' } }
         : {}),
@@ -683,6 +687,7 @@ export class AdminCampaigns {
         preheader: template.preheader,
         markdown: template.markdown,
         category: template.category,
+        survey: template.survey ?? null,
       };
       const scheduledAt = when.toISOString();
       const next: StoredCampaign = {
@@ -766,6 +771,9 @@ export class AdminCampaigns {
       return next;
     });
     return this.view(campaign);
+  }
+  async surveyResults(id: string) {
+    return surveyResults(this.repo, id);
   }
   async recipients(id: string, status?: Recipient['status'], cursor?: string) {
     await getRow<StoredCampaign>(read(this.repo), CAMPAIGN_PK, id, 'campaign');
