@@ -49,6 +49,8 @@ import {
     campaignSchema,
     campaignScheduleBody,
     emailGroupAddBody,
+    emailGroupAddMatchingBody,
+    MAX_GROUP_ADD_MATCHING,
     emailGroupAddResultSchema,
     emailGroupBody,
     emailGroupDetailSchema,
@@ -496,6 +498,25 @@ export function createAdminApp(
                 await campaigns.addMembers(ctx.get('staff'), itemId(ctx), i.userIds, i.identifiers),
             ),
         );
+    });
+    v1.post('/email/groups/:id/members/matching', guard('campaigns'), async (ctx) => {
+        const { q, filters } = await body(ctx, emailGroupAddMatchingBody);
+        const { matches } = await admin.matching(q, filters);
+        assert(
+            matches.length <= MAX_GROUP_ADD_MATCHING,
+            'TOO_MANY_MEMBERS',
+            `${matches.length} accounts match; narrow the filters to ${MAX_GROUP_ADD_MATCHING} or fewer.`,
+        );
+        // Accounts that never signed in have no profile yet, so they join by their address.
+        const userIds = matches.filter((u) => u.hasProfile).map((u) => u.id);
+        const emails = matches.filter((u) => !u.hasProfile && u.email).map((u) => u.email);
+        const result = await campaigns.addMembers(ctx.get('staff'), itemId(ctx), userIds, emails, {
+            from: 'users',
+            ...(q ? { q } : {}),
+            filters,
+            matched: matches.length,
+        });
+        return ctx.json(emailGroupAddResultSchema.parse(result));
     });
     v1.post('/email/groups/:id/members/remove', guard('campaigns'), async (ctx) => {
         const i = await body(ctx, emailGroupRemoveBody);

@@ -2,24 +2,27 @@
 import { Suspense, useEffect, useState, type FormEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ArrowUpDown, Search, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Search, UsersRound, X } from 'lucide-react';
 import type {
   AdminUserFilters,
   AdminUserPage,
   AdminUserSort,
 } from '../../../../packages/contracts/src/admin';
+import { adminUserFiltersSchema } from '../../../../packages/contracts/src/admin';
 import { Button } from '../../../web/components/ui/button';
 import { Card } from '../../../web/components/ui/card';
+import { Checkbox } from '../../../web/components/ui/checkbox';
 import { Input, InputGroup } from '../../../web/components/ui/input';
 import { Select } from '../../../web/components/ui/select';
 import { DataTable } from '../../../web/components/ui/table';
 import { Skeleton } from '../../../web/components/ui/skeleton';
-import { PageHeader, Shell } from '../../components/shell';
+import { AddToGroupDialog, type GroupAddition } from '../../components/add-to-group-dialog';
+import { PageHeader, Shell, useCan } from '../../components/shell';
 import { StatusBadges } from '../../components/status-badges';
 import { StorageMeter } from '../../components/storage-meter';
 import { Stat } from '../../components/storage-totals';
 import { api } from '../../lib/api';
-import { bytes, date, relative } from '../../lib/format';
+import { bytes, date, plural, relative } from '../../lib/format';
 
 type SortKey = AdminUserSort['sort'];
 
@@ -34,8 +37,46 @@ const PLATFORM_NAMES: Record<string, string> = {
   ANDROID: 'Android',
 };
 
-/** Each filter's choices, in the order the console shows them; the empty value is "any". */
-const FILTERS: { key: FilterKey; label: string; options: [string, string][] }[] = [
+/** A choice that takes a number, e.g. "Inactive for N+ days" is `inactive-<N>d`. */
+type CustomChoice = {
+  id: string;
+  label: string;
+  unit: string;
+  prefix: string;
+  suffix: string;
+  min: number;
+  max: number;
+  step?: number;
+};
+const custom = (
+  id: string,
+  label: string,
+  unit: string,
+  prefix: string,
+  suffix: string,
+  max: number,
+  step?: number,
+): CustomChoice => ({
+  id: `custom:${id}`,
+  label,
+  unit,
+  prefix,
+  suffix,
+  min: step ? step : 1,
+  max,
+  step,
+});
+
+/**
+ * Each filter's choices, in the order the console shows them; the empty value is "any".
+ * Custom choices take any number and show an input beside the menu.
+ */
+const FILTERS: {
+  key: FilterKey;
+  label: string;
+  options: [string, string][];
+  custom?: CustomChoice[];
+}[] = [
   {
     key: 'state',
     label: 'Account',
@@ -70,6 +111,10 @@ const FILTERS: { key: FilterKey; label: string; options: [string, string][] }[] 
       ['over-50', 'Over 50% of quota'],
       ['over-90', 'Over 90% of quota'],
     ],
+    custom: [
+      custom('over', 'Over N% of quota…', '% of quota', 'over-', '', 100),
+      custom('gb', 'At least N GB…', 'GB', 'gb-', '', 999999, 0.001),
+    ],
   },
   {
     key: 'quota',
@@ -91,6 +136,10 @@ const FILTERS: { key: FilterKey; label: string; options: [string, string][] }[] 
       ['inactive-30d', 'Inactive 30+ days'],
       ['never', 'Never active'],
     ],
+    custom: [
+      custom('seen', 'Active within N days…', 'days', '', 'd', 9999),
+      custom('inactive', 'Inactive for N+ days…', 'days', 'inactive-', 'd', 9999),
+    ],
   },
   {
     key: 'joined',
@@ -103,8 +152,102 @@ const FILTERS: { key: FilterKey; label: string; options: [string, string][] }[] 
       ['90d', 'Joined in 90 days'],
       ['older-90d', 'Joined 90+ days ago'],
     ],
+    custom: [
+      custom('joined', 'Joined within N days…', 'days', '', 'd', 9999),
+      custom('older', 'Joined over N days ago…', 'days', 'older-', 'd', 9999),
+    ],
   },
 ];
+
+/** The custom choice a stored value belongs to, and its number: `inactive-45d` → 45. */
+function customValue(filter: (typeof FILTERS)[number], value: string | undefined) {
+  if (!value || filter.options.some(([v]) => v === value)) return null;
+  for (const choice of filter.custom ?? []) {
+    if (!value.startsWith(choice.prefix) || !value.endsWith(choice.suffix)) continue;
+    const n = value.slice(choice.prefix.length, value.length - choice.suffix.length || undefined);
+    if (/^\d+(\.\d+)?$/.test(n)) return { choice, n };
+  }
+  return null;
+}
+
+/** A filter's menu, plus a number input when a custom choice is picked. */
+function FilterControl({
+  filter,
+  value,
+  onChange,
+}: {
+  filter: (typeof FILTERS)[number];
+  value: string | undefined;
+  onChange: (value: string) => void;
+}) {
+  const current = customValue(filter, value);
+  // A custom choice picked but not yet given a number; the filter is unchanged until then.
+  const [pending, setPending] = useState<CustomChoice | null>(null);
+  const choice = pending ?? current?.choice ?? null;
+  const [draft, setDraft] = useState(current?.n ?? '');
+  useEffect(() => {
+    setDraft(current?.n ?? '');
+    setPending(null);
+  }, [value]);
+  const apply = () => {
+    const n = Number(draft);
+    if (!choice || !draft || !Number.isFinite(n) || n < choice.min || n > choice.max) return;
+    const amount = choice.step ? String(Math.round(n * 1000) / 1000) : String(Math.round(n));
+    const next = `${choice.prefix}${amount}${choice.suffix}`;
+    if (next === value) setPending(null);
+    else onChange(next);
+  };
+  return (
+    <span className="admin-filter">
+      <Select
+        aria-label={filter.label}
+        value={choice ? choice.id : (value ?? '')}
+        active={!!value}
+        onChange={(e) => {
+          const picked = filter.custom?.find((c) => c.id === e.target.value);
+          if (picked) {
+            setPending(picked);
+            setDraft(current?.choice.id === picked.id ? current.n : '');
+          } else onChange(e.target.value);
+        }}
+      >
+        {filter.options.map(([v, name]) => (
+          <option key={v} value={v}>
+            {name}
+          </option>
+        ))}
+        {filter.custom?.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.label}
+          </option>
+        ))}
+      </Select>
+      {choice && (
+        <form
+          className="admin-filter-custom"
+          onSubmit={(e) => {
+            e.preventDefault();
+            apply();
+          }}
+        >
+          <Input
+            type="number"
+            inputMode="decimal"
+            aria-label={`${choice.label.replace('…', '')} (${choice.unit})`}
+            min={choice.min}
+            max={choice.max}
+            step={choice.step ?? 1}
+            value={draft}
+            autoFocus={!!pending}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={apply}
+          />
+          <span className="admin-muted">{choice.unit}</span>
+        </form>
+      )}
+    </span>
+  );
+}
 
 /** Combinations staff ask about often, one click each. */
 const PRESETS: { label: string; filters: AdminUserFilters }[] = [
@@ -125,9 +268,9 @@ function readSort(params: URLSearchParams): AdminUserSort | null {
 
 function readFilters(params: URLSearchParams): AdminUserFilters {
   const filters: Record<string, string> = {};
-  for (const { key, options } of FILTERS) {
+  for (const { key } of FILTERS) {
     const value = params.get(key);
-    if (value && options.some(([v]) => v === value)) filters[key] = value;
+    if (value && adminUserFiltersSchema.shape[key].safeParse(value).success) filters[key] = value;
   }
   return filters as AdminUserFilters;
 }
@@ -234,6 +377,40 @@ function Users() {
   const onSort = (s: AdminUserSort) => go(q, s, filters);
   const items = users.data?.pages.flatMap((p) => p.items) ?? [];
   const summary = users.data?.pages[0]?.summary ?? null;
+  const canGroup = useCan('campaigns');
+  const [selected, setSelected] = useState<Map<string, (typeof items)[number]>>(new Map());
+  const [addition, setAddition] = useState<GroupAddition | null>(null);
+  const listKey = params.toString();
+  // A new search, filter or order is a new list; a selection from the last one would mislead.
+  useEffect(() => setSelected(new Map()), [listKey]);
+  const toggle = (user: (typeof items)[number], on: boolean) =>
+    setSelected((current) => {
+      const next = new Map(current);
+      if (on) next.set(user.id, user);
+      else next.delete(user.id);
+      return next;
+    });
+  const allLoaded = items.length > 0 && items.every((u) => selected.has(u.id));
+  const someLoaded = items.some((u) => selected.has(u.id));
+  const toggleLoaded = () =>
+    setSelected(allLoaded ? new Map() : new Map(items.map((u) => [u.id, u])));
+  const addSelected = () =>
+    setAddition({
+      kind: 'selected',
+      // An account without a quota has no profile yet: it never signed in.
+      users: [...selected.values()].map((u) => ({
+        id: u.id,
+        email: u.email,
+        hasProfile: u.quotaBytes !== null,
+      })),
+    });
+  const addMatching = () =>
+    summary &&
+    setAddition({
+      kind: 'matching',
+      count: summary.accounts,
+      add: (groupId) => api.addMatchingToGroup(groupId, q, filters),
+    });
   const open = (id: string) => router.push(`/user?id=${encodeURIComponent(id)}`);
   return (
     <>
@@ -254,20 +431,13 @@ function Users() {
         <Button type="submit">Search</Button>
       </form>
       <div className="admin-filters" role="group" aria-label="Filter accounts">
-        {FILTERS.map(({ key, label, options }) => (
-          <Select
-            key={key}
-            aria-label={label}
-            value={filters[key] ?? ''}
-            active={!!filters[key]}
-            onChange={(e) => setFilter(key, e.target.value)}
-          >
-            {options.map(([value, name]) => (
-              <option key={value} value={value}>
-                {name}
-              </option>
-            ))}
-          </Select>
+        {FILTERS.map((filter) => (
+          <FilterControl
+            key={filter.key}
+            filter={filter}
+            value={filters[filter.key]}
+            onChange={(value) => setFilter(filter.key, value)}
+          />
         ))}
         {filtering && (
           <Button variant="ghost" size="sm" onClick={() => go(q, sort, {})}>
@@ -294,6 +464,42 @@ function Users() {
         })}
       </div>
       {summary && <Summary summary={summary} />}
+      {canGroup && (selected.size > 0 || (summary && summary.accounts > 0)) && (
+        <div className="admin-selection" role="region" aria-label="Selected accounts">
+          {selected.size > 0 ? (
+            <>
+              <strong>{plural(selected.size, 'account')} selected</strong>
+              <Button size="sm" onClick={addSelected}>
+                <UsersRound aria-hidden="true" />
+                Add to email group
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Map())}>
+                Clear selection
+              </Button>
+            </>
+          ) : (
+            <span className="admin-muted">Select accounts to add them to an email group.</span>
+          )}
+          {summary && summary.accounts > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="admin-selection-all"
+              onClick={addMatching}
+            >
+              <UsersRound aria-hidden="true" />
+              Add all {summary.accounts.toLocaleString()}{' '}
+              {summary.accounts === 1 ? 'match' : 'matches'} to a group
+            </Button>
+          )}
+        </div>
+      )}
+      <AddToGroupDialog
+        open={!!addition}
+        onOpenChange={(open) => !open && setAddition(null)}
+        addition={addition}
+        onAdded={() => setSelected(new Map())}
+      />
       {users.isPending ? (
         <Skeleton className="admin-skeleton-block" />
       ) : users.error ? (
@@ -307,6 +513,18 @@ function Users() {
         <DataTable label="Accounts">
           <thead>
             <tr>
+              {canGroup && (
+                <th className="admin-select-cell">
+                  <Checkbox
+                    aria-label="Select every loaded account"
+                    checked={allLoaded}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someLoaded && !allLoaded;
+                    }}
+                    onChange={toggleLoaded}
+                  />
+                </th>
+              )}
               <th>Account</th>
               <th>Status</th>
               <th>Platforms</th>
@@ -323,7 +541,18 @@ function Users() {
                 className="admin-row-link"
                 onClick={() => open(u.id)}
                 onKeyDown={(e) => e.key === 'Enter' && open(u.id)}
+                data-selected={selected.has(u.id) ? '' : undefined}
               >
+                {canGroup && (
+                  <td className="admin-select-cell" onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      aria-label={`Select ${u.email}`}
+                      checked={selected.has(u.id)}
+                      onChange={(e) => toggle(u, e.target.checked)}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                )}
                 <td>
                   <strong>{u.displayName ?? u.email}</strong>
                   <div className="admin-muted">

@@ -158,9 +158,47 @@ body {
   align-items: center;
   gap: 8px;
 }
-.admin-filters .btn svg {
+.admin-filters .btn svg,
+.admin-selection .btn svg {
   width: 14px;
   height: 14px;
+}
+.admin-filter,
+.admin-filter-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.admin-filter-custom .input {
+  width: 96px;
+}
+.admin-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  font-size: var(--text-sm);
+}
+.admin-selection-all {
+  margin-left: auto;
+}
+.table .admin-select-cell {
+  width: 40px;
+  padding-right: 0;
+  cursor: default;
+}
+.admin-main .table td.admin-select-cell:first-child {
+  min-width: 0;
+}
+.admin-main .table td.admin-select-cell + td {
+  min-width: 200px;
+}
+.admin-row-link[data-selected] {
+  background: var(--accent-soft);
 }
 .admin-stats {
   display: grid;

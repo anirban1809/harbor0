@@ -7,7 +7,12 @@ import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
 import { DevelopmentStaffAuth } from '../src/admin/staff-auth';
-import { contentProblems, renderCampaign, renderMarkdown, sampleVars } from '../src/campaign-content';
+import {
+  contentProblems,
+  renderCampaign,
+  renderMarkdown,
+  sampleVars,
+} from '../src/campaign-content';
 import { campaignStep, CAMPAIGN_PK, type StoredCampaign } from '../src/campaigns';
 import { composeEmail, type Email } from '../src/emails';
 import { EmailLinks, EmailSuppressions } from '../src/email-preferences';
@@ -28,7 +33,9 @@ async function signIn(email: string) {
       headers: { 'Content-Type': 'application/json', Origin: ORIGIN },
       body: JSON.stringify(body),
     });
-  const first = await (await post('/auth/login', { email, password: 'Development-only-123!' })).json();
+  const first = await (
+    await post('/auth/login', { email, password: 'Development-only-123!' })
+  ).json();
   const second = await post('/auth/challenge', {
     email,
     session: first.session,
@@ -70,18 +77,24 @@ const template = (category: 'PRODUCT' | 'SERVICE' = 'PRODUCT') => ({
   category,
   subject: 'News for {{firstName}}',
   preheader: 'What changed in harbor0',
-  markdown: '# Hello {{name}}\n\nYou use **{{storageUsed}}**.\n\n[[Open harbor0]](https://app.harbor0.com)',
+  markdown:
+    '# Hello {{name}}\n\nYou use **{{storageUsed}}**.\n\n[[Open harbor0]](https://app.harbor0.com)',
 });
 
 beforeEach(async () => {
   service = new StorageService(new MemoryRepository(), new MemoryStorage());
   userAuth = new DevelopmentAuth();
   userApp = createApp(service, userAuth, [], undefined, undefined, undefined, links).app;
-  adminApp = createAdminApp(service, new DevelopmentDirectory(userAuth), new DevelopmentStaffAuth(), {
-    origins: [ORIGIN],
-    secureCookies: false,
-    webOrigin: 'https://app.test',
-  }).app;
+  adminApp = createAdminApp(
+    service,
+    new DevelopmentDirectory(userAuth),
+    new DevelopmentStaffAuth(),
+    {
+      origins: [ORIGIN],
+      secureCookies: false,
+      webOrigin: 'https://app.test',
+    },
+  ).app;
   for (const identity of userAuth.users.values()) await service.ensureUser(identity);
   admin = await signIn('admin@example.test');
   support = await signIn('support@example.test');
@@ -183,7 +196,10 @@ describe('templates', () => {
       'EMAIL_TEMPLATE_CREATED',
     ]);
     const { name: _, ...content } = template();
-    const preview = await ok(support, 'POST', '/email/preview', { ...content, sampleUserId: 'alice' });
+    const preview = await ok(support, 'POST', '/email/preview', {
+      ...content,
+      sampleUserId: 'alice',
+    });
     expect(preview.subject).toBe('News for Alice');
     expect(preview.html).toContain('Hello Alice Morgan');
     expect(preview.problems).toEqual([]);
@@ -239,7 +255,9 @@ describe('groups', () => {
       'bob@example.test',
       'nobody@example.test',
     ]);
-    expect(members.items.find((m: { email: string }) => m.email === 'nobody@example.test').userId).toBeNull();
+    expect(
+      members.items.find((m: { email: string }) => m.email === 'nobody@example.test').userId,
+    ).toBeNull();
     const gone = await ok(admin, 'POST', `/email/groups/${group.id}/members/remove`, {
       emails: ['nobody@example.test'],
     });
@@ -254,6 +272,27 @@ describe('groups', () => {
     });
     expect(removed).toMatchObject({ removed: 1, group: { memberCount: 1 } });
     expect((await ok(admin, 'GET', '/users/alice')).email.groups).toEqual([]);
+  });
+
+  it("add every account the user list's search and filters match, audited with them", async () => {
+    const group = await ok(admin, 'POST', '/email/groups', { name: 'Quiet ones' });
+    const path = `/email/groups/${group.id}/members/matching`;
+    const one = await ok(admin, 'POST', path, { q: 'al', filters: { storage: 'empty' } });
+    expect(one).toMatchObject({ added: 1, alreadyMembers: 0, group: { memberCount: 1 } });
+    const all = await ok(admin, 'POST', path, { filters: { joined: '7d', storage: 'gb-0' } });
+    expect(all).toMatchObject({ added: 1, alreadyMembers: 1, group: { memberCount: 2 } });
+    expect((await ok(admin, 'POST', path, { filters: { state: 'deleted' } })).added).toBe(0);
+    const detail = await ok(admin, 'GET', `/email/groups/${group.id}`);
+    expect(detail.history[0].details.source).toMatchObject({
+      from: 'users',
+      filters: { joined: '7d' },
+      matched: 2,
+    });
+    expect((await call(support, 'POST', path, {})).status).toBe(403);
+    expect((await call(admin, 'POST', path, { filters: { seen: '0d' } })).status).toBe(400);
+    expect(
+      (await call(admin, 'POST', '/email/groups/everyone/members/matching', {})).status,
+    ).not.toBe(200);
   });
 
   it('cannot be deleted while a campaign not yet sent uses them', async () => {
@@ -326,9 +365,18 @@ describe('campaigns', () => {
     });
     expect(detail.campaign.startedAt).toBeTruthy();
     expect(detail.campaign.finishedAt).toBeTruthy();
-    expect(detail.groups).toEqual([{ id: campaign.audience.groupIds[0], name: 'Everyone', memberCount: 2 }]);
-    expect(detail.history[0]).toMatchObject({ action: 'CAMPAIGN_SENT_NOW', reason: 'Launch announcement' });
-    const skipped = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=SKIPPED`);
+    expect(detail.groups).toEqual([
+      { id: campaign.audience.groupIds[0], name: 'Everyone', memberCount: 2 },
+    ]);
+    expect(detail.history[0]).toMatchObject({
+      action: 'CAMPAIGN_SENT_NOW',
+      reason: 'Launch announcement',
+    });
+    const skipped = await ok(
+      admin,
+      'GET',
+      `/email/campaigns/${campaign.id}/recipients?status=SKIPPED`,
+    );
     expect(skipped.items).toEqual([
       expect.objectContaining({ userId: 'bob', status: 'SKIPPED', reason: 'UNSUBSCRIBED' }),
     ]);
@@ -348,7 +396,10 @@ describe('campaigns', () => {
     const campaign = await draft('SERVICE');
     await new EmailSuppressions(service.repo).add('Bob@Example.test', 'COMPLAINT');
     expect(
-      await ok(admin, 'POST', '/email/audience/count', { audience: campaign.audience, category: 'SERVICE' }),
+      await ok(admin, 'POST', '/email/audience/count', {
+        audience: campaign.audience,
+        category: 'SERVICE',
+      }),
     ).toMatchObject({ eligible: 1, skipped: { SUPPRESSED: 1 } });
     await schedule(campaign);
     expect((await runJobs()).map((e) => e.to)).toEqual(['alice@example.test']);
@@ -367,7 +418,9 @@ describe('campaigns', () => {
     });
     expect(cancelled).toMatchObject({ state: 'DRAFT', scheduledAt: null, content: null });
     expect(await service.repo.get({ pk: 'JOB', sk: `CAMPAIGN#${campaign.id}` })).toBeUndefined();
-    expect((await schedule(cancelled, new Date(Date.now() - 3600_000).toISOString())).status).toBe(400);
+    expect((await schedule(cancelled, new Date(Date.now() - 3600_000).toISOString())).status).toBe(
+      400,
+    );
   });
 
   it('refuse an audience no one in can receive', async () => {
@@ -395,7 +448,9 @@ describe('campaigns', () => {
     expect(paused.campaign).toMatchObject({ state: 'SENDING', counts: { pending: 2, sent: 0 } });
     await ok(admin, 'POST', `/email/campaigns/${campaign.id}/stop`, { reason: 'Typo in subject' });
     // The paused job comes back a second later; run its next step directly.
-    expect(await campaignStep(service, campaign.id, Date.now() + 10_000, { ratePerSecond: 1000 })).toBe(true);
+    expect(
+      await campaignStep(service, campaign.id, Date.now() + 10_000, { ratePerSecond: 1000 }),
+    ).toBe(true);
     const stopped = await ok(admin, 'GET', `/email/campaigns/${campaign.id}`);
     expect(stopped.campaign).toMatchObject({
       state: 'STOPPED',
@@ -408,10 +463,15 @@ describe('campaigns', () => {
     const campaign = await draft('SERVICE');
     await schedule(campaign);
     const sent = await runJobs(async (email) => {
-      if (email.to === 'bob@example.test') throw Object.assign(new Error('bad'), { name: 'MessageRejected' });
+      if (email.to === 'bob@example.test')
+        throw Object.assign(new Error('bad'), { name: 'MessageRejected' });
     });
     expect(sent.map((e) => e.to)).toEqual(['alice@example.test']);
-    const failed = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=FAILED`);
+    const failed = await ok(
+      admin,
+      'GET',
+      `/email/campaigns/${campaign.id}/recipients?status=FAILED`,
+    );
     expect(failed.items).toEqual([
       expect.objectContaining({ userId: 'bob', status: 'FAILED', error: 'MessageRejected' }),
     ]);
@@ -436,7 +496,8 @@ describe('campaigns', () => {
     ]);
     expect(results.sort()).toEqual([false, true]);
     expect(sent.sort()).toEqual(['alice@example.test', 'bob@example.test']);
-    const stored = (await service.repo.get({ pk: CAMPAIGN_PK, sk: campaign.id }))!.data as StoredCampaign;
+    const stored = (await service.repo.get({ pk: CAMPAIGN_PK, sk: campaign.id }))!
+      .data as StoredCampaign;
     expect(stored.leaseUntil).toBeNull();
   });
 
@@ -486,7 +547,10 @@ describe('the Everyone group', () => {
       audience: { groupIds: ['everyone'], userIds: ['alice'] },
     });
     expect(
-      await ok(admin, 'POST', '/email/audience/count', { audience: campaign.audience, category: 'SERVICE' }),
+      await ok(admin, 'POST', '/email/audience/count', {
+        audience: campaign.audience,
+        category: 'SERVICE',
+      }),
     ).toMatchObject({ total: 2, eligible: 2 });
     expect((await ok(admin, 'GET', `/email/campaigns/${campaign.id}`)).groups).toEqual([
       { id: 'everyone', name: 'Everyone', memberCount: 2 },
@@ -560,7 +624,12 @@ describe('the Mac users group', () => {
 describe('addresses without an account', () => {
   async function invite(email: string, code: string) {
     await transact(service.repo, async (tx) => {
-      await tx.put('BETA_EMAIL', email, { email, state: 'INVITED', code, requestedAt: '2026-10-01T00:00:00.000Z' });
+      await tx.put('BETA_EMAIL', email, {
+        email,
+        state: 'INVITED',
+        code,
+        requestedAt: '2026-10-01T00:00:00.000Z',
+      });
       await tx.put('BETA_INVITE', code, { email });
     });
   }
@@ -582,7 +651,7 @@ describe('addresses without an account', () => {
       expectedUpdatedAt: c.updatedAt,
     });
 
-  it("get their own sign-up link and an unsubscribe link for the address", async () => {
+  it('get their own sign-up link and an unsubscribe link for the address', async () => {
     await invite('invitee@example.test', 'code-1');
     const group = await ok(admin, 'POST', '/email/groups', { name: 'Invitees' });
     await ok(admin, 'POST', `/email/groups/${group.id}/members`, {
@@ -614,7 +683,9 @@ describe('addresses without an account', () => {
 
   it('can unsubscribe from product updates and back with the address link', async () => {
     const token = encodeURIComponent(links.addressToken('stranger@example.test'));
-    const unsubscribed = await userApp.request(`/v1/email/unsubscribe?t=${token}`, { method: 'POST' });
+    const unsubscribed = await userApp.request(`/v1/email/unsubscribe?t=${token}`, {
+      method: 'POST',
+    });
     expect(await unsubscribed.json()).toEqual({
       subscription: { email: 's•••@example.test', productUpdates: false },
     });
@@ -634,11 +705,17 @@ describe('addresses without an account', () => {
   it('are sent to as the account once one uses the address', async () => {
     const campaign = await draft({ emails: ['alice@example.test'] });
     expect(
-      await ok(support, 'POST', '/email/audience/count', { audience: campaign.audience, category: 'PRODUCT' }),
+      await ok(support, 'POST', '/email/audience/count', {
+        audience: campaign.audience,
+        category: 'PRODUCT',
+      }),
     ).toEqual({ total: 1, eligible: 1, skipped: {} });
     await send(campaign);
     const sent = await runJobs();
-    expect(sent[0]).toMatchObject({ to: 'alice@example.test', unsubscribe: links.unsubscribe('alice') });
+    expect(sent[0]).toMatchObject({
+      to: 'alice@example.test',
+      unsubscribe: links.unsubscribe('alice'),
+    });
     const recipients = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients`);
     expect(recipients.items[0]).toMatchObject({ userId: 'alice' });
   });

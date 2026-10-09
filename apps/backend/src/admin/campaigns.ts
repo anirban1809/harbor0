@@ -417,7 +417,14 @@ export class AdminCampaigns {
    * Adds accounts, by ID or by email or username, to a group. An email that no account uses is
    * added as an address on its own; usernames and IDs must name an account.
    */
-  async addMembers(staff: Staff, id: string, userIds: string[], identifiers: string[]) {
+  /** `source` says where the members came from, e.g. the user list's filters, for the audit log. */
+  async addMembers(
+    staff: Staff,
+    id: string,
+    userIds: string[],
+    identifiers: string[],
+    source?: Record<string, unknown>,
+  ) {
     this.notBuiltIn(id);
     await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     const unmatched: string[] = [];
@@ -479,6 +486,7 @@ export class AdminCampaigns {
           name: group!.name,
           added,
           ...(added <= 20 ? { emails: list.map((a) => a.email).slice(0, 20) } : {}),
+          ...(source ? { source } : {}),
         }),
       );
     return { group: group!, added, addedEmails, alreadyMembers, unmatched };

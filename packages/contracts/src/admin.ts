@@ -121,9 +121,12 @@ export const adminUserSortSchema = z.object({
   sort: z.enum(['created', 'storage', 'seen']),
   order: z.enum(['asc', 'desc']).default('desc'),
 });
+/** A day count in a filter window, from 1 day to 10 years. */
+const days = '([1-9]\\d{0,3})d';
 /**
  * Narrows the account list. Each filter is optional and they all apply together, so
- * `platform=ANDROID&seen=inactive-30d` is the Android users who have gone quiet.
+ * `platform=ANDROID&seen=inactive-30d` is the Android users who have gone quiet. The numeric
+ * filters take any value: `over-75` (% of quota), `gb-10`, `14d`, `inactive-45d`, `older-180d`.
  */
 export const adminUserFiltersSchema = z.object({
   /** Account state; `never-signed-in` has a sign-in account but no profile yet. */
@@ -132,14 +135,23 @@ export const adminUserFiltersSchema = z.object({
     .optional(),
   /** A platform the account has signed in from, a group of them, or `NONE` for no sign-ins. */
   platform: z.enum([...platform.options, 'MOBILE', 'DESKTOP', 'NONE']).optional(),
-  /** Bytes stored, or the share of the quota they take. */
-  storage: z.enum(['empty', 'uploaded', 'over-50', 'over-90']).optional(),
+  /** Nothing or something stored, at least N% of the quota (`over-N`), or at least N GB (`gb-N`). */
+  storage: z
+    .string()
+    .regex(/^(empty|uploaded|over-(100|[1-9]\d?)|gb-(\d{1,6}(\.\d{1,3})?))$/)
+    .optional(),
   /** Whether staff raised the quota above what the account got at sign-up. */
   quota: z.enum(['standard', 'raised']).optional(),
-  /** When any of the account's devices was last seen. */
-  seen: z.enum(['1d', '7d', '30d', 'inactive-30d', 'never']).optional(),
-  /** When the account was created. */
-  joined: z.enum(['1d', '7d', '30d', '90d', 'older-90d']).optional(),
+  /** Any device seen within N days (`Nd`), none seen for more than N (`inactive-Nd`), or never. */
+  seen: z
+    .string()
+    .regex(new RegExp(`^(never|${days}|inactive-${days})$`))
+    .optional(),
+  /** Created within N days (`Nd`) or more than N days ago (`older-Nd`). */
+  joined: z
+    .string()
+    .regex(new RegExp(`^(${days}|older-${days})$`))
+    .optional(),
 });
 export const adminUserListItemSchema = directoryUserSchema.extend({
   quotaBytes: z.number().nullable(),

@@ -168,6 +168,8 @@ export const api = {
     ),
   addGroupMembers: (id: string, body: { userIds?: string[]; identifiers?: string[] }) =>
     request<EmailGroupAddResult>('POST', `${email('groups', id)}/members`, body),
+  addMatchingToGroup: (id: string, q: string, filters: AdminUserFilters) =>
+    request<EmailGroupAddResult>('POST', `${email('groups', id)}/members/matching`, { q, filters }),
   removeGroupMembers: (id: string, members: { userIds?: string[]; emails?: string[] }) =>
     request<{ group: EmailGroup; removed: number }>(
       'POST',

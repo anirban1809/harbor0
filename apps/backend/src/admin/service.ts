@@ -57,17 +57,16 @@ type IndexedUser = AdminUserListItem & { hasProfile: boolean; raisedQuota: boole
 const hasFilters = (filters: AdminUserFilters) => Object.values(filters).some((v) => v !== undefined);
 
 /**
- * Whether `at` falls in a filter's window: within the last N days (`7d`), more than 30 days
- * ago (`inactive-30d`) or 90 (`older-90d`), or never. No window passes everything.
+ * Whether `at` falls in a filter's window: within the last N days (`14d`), more than N days
+ * ago (`inactive-45d`, `older-180d`), or never. No window passes everything.
  */
 function inWindow(at: string | null, window: string | undefined, now: number) {
     if (!window) return true;
     if (window === 'never') return !at;
     if (!at) return false;
     const age = now - Date.parse(at);
-    if (window === 'inactive-30d') return age > 30 * DAY_MS;
-    if (window === 'older-90d') return age > 90 * DAY_MS;
-    return age <= Number.parseInt(window, 10) * DAY_MS;
+    const limit = Number(/(\d+)d$/.exec(window)?.[1] ?? 0) * DAY_MS;
+    return /^(inactive|older)-/.test(window) ? age > limit : age <= limit;
 }
 
 /** Whether `user` passes every filter set in `filters`, as of `now`. */
@@ -102,10 +101,11 @@ export function matchesFilters(user: IndexedUser, filters: AdminUserFilters, now
         return false;
     const used = user.usedBytes ?? 0;
     const share = user.quotaBytes ? used / user.quotaBytes : 0;
-    if (filters.storage === 'empty' && used > 0) return false;
-    if (filters.storage === 'uploaded' && used === 0) return false;
-    if (filters.storage === 'over-50' && share < 0.5) return false;
-    if (filters.storage === 'over-90' && share < 0.9) return false;
+    const [storage, amount] = filters.storage?.split('-') ?? [];
+    if (storage === 'empty' && used > 0) return false;
+    if (storage === 'uploaded' && used === 0) return false;
+    if (storage === 'over' && share * 100 < Number(amount)) return false;
+    if (storage === 'gb' && used < Number(amount) * 1e9) return false;
     if (filters.quota === 'raised' && !user.raisedQuota) return false;
     if (filters.quota === 'standard' && (user.raisedQuota || !user.hasProfile)) return false;
     if (!inWindow(user.lastSeenAt, filters.seen, now)) return false;
@@ -337,6 +337,21 @@ export class AdminService {
                 );
         return { computedAt, users };
     }
+    /** Every account the list shows for `query` and `filters`, in no particular order. */
+    async matching(query: string, filters: AdminUserFilters) {
+        const { computedAt, users } = await this.indexUsers();
+        const q = query.trim().toLowerCase();
+        const now = Date.now();
+        const matches = users.filter(
+            (u) =>
+                (!q ||
+                    u.id === q ||
+                    u.email.toLowerCase().startsWith(q) ||
+                    !!u.username?.toLowerCase().startsWith(q)) &&
+                matchesFilters(u, filters, now),
+        );
+        return { computedAt, matches };
+    }
     /**
      * The accounts that match `query` and `filters`, in `sort` order (newest first by default),
      * with totals across every match. The cursor is an offset into that order.
@@ -348,19 +363,9 @@ export class AdminService {
         cursor?: string,
     ): Promise<AdminUserPage> {
         const start = cursor && /^\d+$/.test(cursor) ? Number(cursor) : 0;
-        const { computedAt, users } = await this.indexUsers();
-        const q = query.toLowerCase();
+        const { computedAt, matches } = await this.matching(query, filters);
+        matches.sort(compareUsers(sort ?? { sort: 'created', order: 'desc' }));
         const now = Date.now();
-        const matches = users
-            .filter(
-                (u) =>
-                    (!q ||
-                        u.id === q ||
-                        u.email.toLowerCase().startsWith(q) ||
-                        !!u.username?.toLowerCase().startsWith(q)) &&
-                    matchesFilters(u, filters, now),
-            )
-            .sort(compareUsers(sort ?? { sort: 'created', order: 'desc' }));
         const summary = {
             computedAt,
             accounts: matches.length,

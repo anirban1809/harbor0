@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { auditEntrySchema } from './admin';
+import { adminUserFiltersSchema, auditEntrySchema } from './admin';
 import { id } from './index';
 
 /**
@@ -131,6 +131,11 @@ export const emailGroupAddBody = z
     identifiers: z.array(z.string().trim().min(1).max(254)).max(MAX_GROUP_ADD).default([]),
   })
   .strict();
+/** Adds every account the console's user list shows for this search and these filters. */
+export const MAX_GROUP_ADD_MATCHING = 10_000;
+export const emailGroupAddMatchingBody = z
+  .object({ q: z.string().max(254).default(''), filters: adminUserFiltersSchema.default({}) })
+  .strict();
 export const emailGroupAddResultSchema = z.object({
   group: emailGroupSchema,
   added: z.number(),
@@ -204,7 +209,9 @@ export const campaignBody = campaignInput.extend({ expectedUpdatedAt }).strict()
 export const campaignListSchema = z.object({ items: z.array(campaignSchema) });
 export const campaignDetailSchema = z.object({
   campaign: campaignSchema,
-  groups: z.array(z.object({ id: z.string(), name: z.string().nullable(), memberCount: z.number() })),
+  groups: z.array(
+    z.object({ id: z.string(), name: z.string().nullable(), memberCount: z.number() }),
+  ),
   users: z.array(z.object({ id: z.string(), email: z.string().nullable() })),
   emails: z.array(z.string()),
   history: z.array(auditEntrySchema),

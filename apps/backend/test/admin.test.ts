@@ -159,6 +159,14 @@ describe('management console API', () => {
     expect((await list('seen=7d&joined=1d')).ids).toEqual(['alice', 'bob']);
     expect((await list('seen=inactive-30d')).ids).toEqual([]);
     expect((await list('q=al&platform=WEB')).ids).toEqual(['alice']);
+    // Numeric filters take any value.
+    expect((await list('storage=gb-0.001')).ids).toEqual([]);
+    expect((await list('storage=over-1')).ids).toEqual([]);
+    expect((await list('storage=gb-0')).ids).toEqual(['alice', 'bob']);
+    expect((await list('seen=3d&joined=older-2d')).ids).toEqual([]);
+    expect((await list('seen=inactive-1d')).ids).toEqual([]);
+    for (const bad of ['storage=over-101', 'seen=0d', 'joined=older-x', 'storage=gb-1e9'])
+      expect((await call(cookie, 'GET', `/users?${bad}`)).status).toBe(400);
     const { page } = await list('platform=WEB');
     expect(page.summary).toMatchObject({
       accounts: 2,
