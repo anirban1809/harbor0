@@ -1407,6 +1407,7 @@ export class SyncEngine {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       }
       if (root.mode === 'backup') return;
+      if (known && (await this.recapitalizedAway(root, job.relativePath))) return;
       if (known?.type === 'FILE' && (await this.renamedTo(root, known))) return;
       if (known) {
         try {
@@ -1771,6 +1772,40 @@ export class SyncEngine {
     const old = listed.includes(path.posix.basename(previous.relativePath));
     if (current && !old) return (await this.moveRemote(root, previous, relative)) && 'renamed';
     if (old && !current) return 'alias';
+    return false;
+  }
+  /**
+   * On a case-sensitive disk the old spelling of a recapitalized item, or of anything inside a
+   * recapitalized folder, is reported deleted, possibly before the new spelling is reported. When
+   * the path still exists with different capitalization, the synced item (or folder) whose name
+   * changed is renamed in the cloud instead of deleted.
+   */
+  private async recapitalizedAway(root: Root, relative: string) {
+    if (root.mode !== 'sync') return false;
+    const fold = (value: string) => value.normalize('NFC').toLowerCase();
+    const segments = relative.split('/');
+    const actual: string[] = [];
+    for (const segment of segments) {
+      const parent = actual.length ? contained(root.localPath, actual.join('/')) : root.localPath;
+      let listed: string[];
+      try {
+        listed = await readdir(parent);
+      } catch {
+        return false;
+      }
+      if (listed.includes(segment)) {
+        actual.push(segment);
+        continue;
+      }
+      const matches = listed.filter((name) => fold(name) === fold(segment));
+      if (matches.length !== 1) return false;
+      // The first segment whose spelling changed is the item that was renamed.
+      const from = [...actual, segment].join('/');
+      const to = [...actual, matches[0]].join('/');
+      const known = this.journal.file(root.id, from);
+      if (!known || this.journal.file(root.id, to)) return false;
+      return this.moveRemote(root, known, to);
+    }
     return false;
   }
   /** Records a folder's synced contents under its new local path. */
