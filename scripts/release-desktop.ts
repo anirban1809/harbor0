@@ -1,11 +1,12 @@
-// Releases the Mac desktop app on GitHub and points the landing site's download at it.
+// Releases the Mac and Windows desktop apps on GitHub and points the landing site's downloads at them.
 //
 //   npm run release:desktop                 next patch version
 //   npm run release:desktop -- minor        or major, or an exact version such as 0.2.0
 //   npm run release:desktop -- --dry-run    build and update the files, but commit and publish nothing
 //
-// The installer is built from a clean worktree of HEAD, so uncommitted work in this checkout never
-// ships. The version bump and the landing page's new link are committed together, the tag is pushed
+// The installers are built from a clean worktree of HEAD, so uncommitted work in this checkout never
+// ships. Both come from this Mac: an Apple silicon DMG and an x64 NSIS installer (which also runs on
+// Windows on Arm). Installed apps find the new version through the GitHub release and update themselves. The version bump and the landing page's new link are committed together, the tag is pushed
 // and the GitHub release created with the installer, and then main is pushed, which deploys the
 // landing site once Validate passes.
 import { execFileSync, spawn } from 'node:child_process';
@@ -83,8 +84,22 @@ async function setVersion(directory: string) {
 }
 
 // --- Build from a clean worktree of HEAD ------------------------------------------------------
-const name = `harbor0-${version}-mac-arm64.dmg`;
-const installer = path.join(root, 'apps/desktop/release', name);
+const targets = [
+  {
+    key: 'mac',
+    platform: 'macOS',
+    architecture: 'arm64',
+    name: `harbor0-${version}-mac-arm64.dmg`,
+    build: ['--mac', 'dmg', '--arm64'],
+  },
+  {
+    key: 'windows',
+    platform: 'Windows',
+    architecture: 'x64',
+    name: `harbor0-${version}-win-x64.exe`,
+    build: ['--win', 'nsis', '--x64'],
+  },
+];
 const worktree = await mkdtemp(path.join(os.tmpdir(), 'harbor0-release-'));
 try {
   git('worktree', 'add', '--detach', worktree, 'HEAD');
@@ -98,54 +113,71 @@ try {
   for (const file of ['outputs.json', 'web-outputs.json'])
     await copyFile(path.join(root, '.cloud', file), path.join(worktree, '.cloud', file));
   await setVersion(worktree);
-  await run(
-    'npx',
-    ['tsx', 'scripts/package-desktop-release.ts', '--mac', 'dmg', '--arm64'],
-    worktree,
-  );
-  // A bundle whose signature doesn't seal its resources is reported as "damaged" once downloaded.
-  execFileSync(
-    'codesign',
-    ['--verify', '--deep', '--strict', 'apps/desktop/release/mac-arm64/harbor0.app'],
-    { cwd: worktree, stdio: 'inherit' },
-  );
-  await mkdir(path.dirname(installer), { recursive: true });
-  await copyFile(path.join(worktree, 'apps/desktop/release', name), installer);
+  await mkdir(path.join(root, 'apps/desktop/release'), { recursive: true });
+  for (const target of targets) {
+    await run('npx', ['tsx', 'scripts/package-desktop-release.ts', ...target.build], worktree);
+    // A bundle whose signature doesn't seal its resources is reported as "damaged" once downloaded.
+    if (target.key === 'mac')
+      execFileSync(
+        'codesign',
+        ['--verify', '--deep', '--strict', 'apps/desktop/release/mac-arm64/harbor0.app'],
+        { cwd: worktree, stdio: 'inherit' },
+      );
+    await copyFile(
+      path.join(worktree, 'apps/desktop/release', target.name),
+      path.join(root, 'apps/desktop/release', target.name),
+    );
+  }
 } finally {
   git('worktree', 'remove', '--force', worktree);
   await rm(worktree, { recursive: true, force: true });
 }
 
-const bytes = (await stat(installer)).size;
-const hasher = createHash('sha256');
-for await (const chunk of createReadStream(installer)) hasher.update(chunk);
-const sha256 = hasher.digest('hex');
-const url = `https://github.com/${repo}/releases/download/${tag}/${name}`;
-const size = `${Math.round(bytes / 1e6)} MB`;
+const installers = [];
+for (const target of targets) {
+  const file = path.join(root, 'apps/desktop/release', target.name);
+  const bytes = (await stat(file)).size;
+  const hasher = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hasher.update(chunk);
+  installers.push({
+    ...target,
+    file,
+    bytes,
+    sha256: hasher.digest('hex'),
+    url: `https://github.com/${repo}/releases/download/${tag}/${target.name}`,
+  });
+}
 
-// --- Point the landing site at the new installer ----------------------------------------------
+// --- Point the landing site at the new installers ---------------------------------------------
 await setVersion(root);
-const page = await readFile(landingPage, 'utf8');
-const updated = page.replace(
-  /const mac = \{[\s\S]*?\n\};/,
-  `const mac = {\n  version: '${version}',\n  size: '${size}',\n  url: '${url}',\n  sha256: '${sha256}',\n};`,
-);
-if (updated === page) throw new Error(`Could not find the \`mac\` download in ${landingPage}.`);
-await writeFile(landingPage, updated);
+let page = await readFile(landingPage, 'utf8');
+for (const { key, bytes, url, sha256 } of installers) {
+  const updated = page.replace(
+    new RegExp(`const ${key}: Download \\| null = (?:null|\\{[\\s\\S]*?\\n\\});`),
+    `const ${key}: Download | null = {\n  version: '${version}',\n  size: '${Math.round(bytes / 1e6)} MB',\n  url: '${url}',\n  sha256: '${sha256}',\n};`,
+  );
+  if (updated === page)
+    throw new Error(`Could not find the \`${key}\` download in ${landingPage}.`);
+  page = updated;
+}
+await writeFile(landingPage, page);
 const manifest = {
   version,
-  platform: 'macOS',
-  architecture: 'arm64',
-  signed: false,
-  notarized: false,
-  sha256,
-  bytes,
-  url,
   publishedAt: new Date().toISOString(),
+  installers: installers.map(({ platform, architecture, bytes, sha256, url }) => ({
+    platform,
+    architecture,
+    signed: false,
+    sha256,
+    bytes,
+    url,
+  })),
 };
 
 if (dryRun) {
-  console.log(`\nDry run: built ${installer} and updated ${released.join(', ')}.`);
+  console.log(
+    `\nDry run: built ${installers.map((i) => i.file).join(' and ')} and updated ${released.join(', ')}.`,
+  );
   console.log(
     `Nothing was committed or published. Revert with: git checkout -- ${released.join(' ')}`,
   );
@@ -158,17 +190,21 @@ git('tag', '-a', tag, '-m', `harbor0 desktop ${version}`);
 // The tag goes first so the download exists before the landing site links to it.
 git('push', 'origin', tag);
 const notes = [
-  `harbor0 desktop ${version} for Macs with Apple silicon.`,
+  `harbor0 desktop ${version} for Macs with Apple silicon and for 64-bit Windows 10 and 11.`,
   '',
-  'The beta build is not signed with Apple, so macOS blocks it on first open: choose **Open Anyway** in System Settings → Privacy & Security.',
+  'The beta builds are not code-signed:',
+  '- macOS blocks the app on first open: choose **Open Anyway** in System Settings → Privacy & Security.',
+  '- Windows SmartScreen says “Windows protected your PC”: choose **More info**, then **Run anyway**.',
   '',
-  `SHA-256 of \`${name}\`: \`${sha256}\``,
+  'Installed apps update themselves from Settings.',
+  '',
+  ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
 ].join('\n');
 gh(
   'release',
   'create',
   tag,
-  installer,
+  ...installers.map((i) => i.file),
   '--repo',
   repo,
   '--verify-tag',
@@ -178,11 +214,13 @@ gh(
   notes,
   '--generate-notes',
 );
-const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
-if (!response.ok) throw new Error(`The release download ${url} returned ${response.status}.`);
+for (const { url } of installers) {
+  const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+  if (!response.ok) throw new Error(`The release download ${url} returned ${response.status}.`);
+}
 git('push', 'origin', 'main');
 await writeFile('.cloud/desktop-release.json', JSON.stringify(manifest, null, 2) + '\n');
 
 console.log(`\nReleased ${tag}: https://github.com/${repo}/releases/tag/${tag}`);
-console.log(`Download: ${url}`);
+for (const { platform, url } of installers) console.log(`${platform}: ${url}`);
 console.log('The landing site deploys from main once Validate passes.');

@@ -9,6 +9,7 @@ import {
   RELEASES_URL,
   SWAP_SCRIPT,
   Updater,
+  WINDOWS_INSTALL_SCRIPT,
   compareVersions,
   runningBundle,
   type UpdateStatus,
@@ -24,17 +25,22 @@ afterEach(async () => {
 
 const installer = Buffer.from('a new harbor0 installer');
 const sha256 = createHash('sha256').update(installer).digest('hex');
-function release(version: string, extra: Partial<{ digest: string | null; arch: string }> = {}) {
+function release(
+  version: string,
+  extra: Partial<{ digest: string | null; arch: string; windows: boolean }> = {},
+) {
+  const asset = (name: string) => ({
+    name,
+    size: installer.length,
+    digest: extra.digest === undefined ? `sha256:${sha256}` : extra.digest,
+    browser_download_url: `https://github.com/download/${name}`,
+  });
   return {
     tag_name: `v${version}`,
     html_url: `https://github.com/anirban1809/harbor0/releases/tag/v${version}`,
     assets: [
-      {
-        name: `harbor0-${version}-mac-${extra.arch ?? 'arm64'}.dmg`,
-        size: installer.length,
-        digest: extra.digest === undefined ? `sha256:${sha256}` : extra.digest,
-        browser_download_url: `https://github.com/download/${version}.dmg`,
-      },
+      asset(`harbor0-${version}-mac-${extra.arch ?? 'arm64'}.dmg`),
+      ...(extra.windows ? [asset(`harbor0-${version}-win-${extra.arch ?? 'x64'}.exe`)] : []),
     ],
   };
 }
@@ -52,10 +58,20 @@ it('compares versions numerically', () => {
 
 it('finds the Mac bundle only for packaged Mac builds', () => {
   expect(runningBundle(true, 'darwin', '/Applications/harbor0.app/Contents/MacOS/harbor0')).toEqual(
-    { path: '/Applications/harbor0.app' },
+    { path: path.resolve('/Applications/harbor0.app') },
   );
   expect(runningBundle(false, 'darwin', '/x')).toHaveProperty('unsupported');
-  expect(runningBundle(true, 'win32', 'C:\\harbor0.exe')).toHaveProperty('unsupported');
+  expect(runningBundle(true, 'linux', '/opt/harbor0/harbor0')).toHaveProperty('unsupported');
+});
+
+it('updates a Windows app only when it was installed with the installer', async () => {
+  const exe = path.join(directory, 'harbor0.exe');
+  expect(runningBundle(true, 'win32', exe)).toEqual({
+    unsupported: expect.stringContaining('installer'),
+  });
+  await writeFile(path.join(directory, 'Uninstall harbor0.exe'), '');
+  expect(runningBundle(true, 'win32', exe)).toEqual({ path: exe, platform: 'win32' });
+  expect(runningBundle(false, 'win32', exe)).toHaveProperty('unsupported');
 });
 
 it('reports a newer release that has an installer for this Mac', async () => {
@@ -91,6 +107,23 @@ it.each([
     fetch: github(latest),
   });
   expect((await updater.check()).state).toBe('current');
+});
+
+it('offers the Windows installer to a Windows app', async () => {
+  const windows = (latest: object) =>
+    new Updater({
+      current: '0.1.6',
+      bundle: { path: 'C:\\harbor0\\harbor0.exe', platform: 'win32' },
+      arch: 'x64',
+      onChange: () => {},
+      quit: async () => {},
+      fetch: github(latest),
+    });
+  expect((await windows(release('0.1.7')).check()).state).toBe('current');
+  expect(await windows(release('0.1.7', { windows: true })).check()).toMatchObject({
+    state: 'available',
+    latest: { version: '0.1.7', bytes: installer.length },
+  });
 });
 
 it('keeps an available update when a later check fails', async () => {
@@ -210,6 +243,96 @@ it('asks to move the app when it cannot replace itself', async () => {
   await updater.check();
   await expect(updater.install()).rejects.toThrow('Move it to your Applications folder');
 });
+
+async function windowsSetup(body?: Buffer) {
+  const launched: string[][] = [];
+  const quit = vi.fn(async () => {});
+  const app = path.join(directory, 'Programs', 'harbor0', 'harbor0.exe');
+  const updater = new Updater({
+    current: '0.1.6',
+    bundle: { path: app, platform: 'win32' },
+    arch: 'x64',
+    onChange: () => {},
+    quit,
+    fetch: github(release('0.1.7', { windows: true }), body),
+    launch: (script, args) => launched.push([script, ...args]),
+    temp: directory,
+  });
+  await updater.check();
+  return { updater, app, launched, quit };
+}
+
+it('downloads the Windows installer, then hands it to the install script and quits', async () => {
+  const { updater, app, launched, quit } = await windowsSetup();
+  await updater.install();
+  expect(launched).toHaveLength(1);
+  const [script, pid, setup, target] = launched[0];
+  expect(script.endsWith('.ps1')).toBe(true);
+  expect(await readFile(script, 'utf8')).toBe(WINDOWS_INSTALL_SCRIPT);
+  expect([pid, target]).toEqual([String(process.pid), app]);
+  expect(await readFile(setup)).toEqual(installer);
+  expect(quit).toHaveBeenCalledOnce();
+  expect(updater.status.state).toBe('installing');
+});
+
+it('refuses a damaged Windows installer and removes it', async () => {
+  const { updater, launched, quit } = await windowsSetup(Buffer.from('tampered installer bytes'));
+  await expect(updater.install()).rejects.toThrow('damaged');
+  expect(await readdir(directory)).toEqual([]);
+  expect(launched).toEqual([]);
+  expect(quit).not.toHaveBeenCalled();
+});
+
+it.runIf(process.platform === 'win32')(
+  'Windows install script runs the installer once the app exits, and reopens the app if it fails',
+  async () => {
+    const log = path.join(directory, 'log.txt');
+    // Stand-ins for the installer and the installed app; each records how it was started.
+    const setup = path.join(directory, 'setup.cmd');
+    await writeFile(setup, `@echo setup %* >> "${log}"\r\n@exit /b %HARBOR_SETUP_EXIT%\r\n`);
+    const app = path.join(directory, 'app.cmd');
+    await writeFile(app, `@echo app >> "${log}"\r\n`);
+    const run = async (exit: number) => {
+      await rm(log, { force: true });
+      const copy = path.join(directory, `setup-${exit}.cmd`);
+      await writeFile(copy, await readFile(setup));
+      const script = path.join(directory, `install-${exit}.ps1`);
+      await writeFile(script, WINDOWS_INSTALL_SCRIPT);
+      const running = spawn('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        'Start-Sleep -Milliseconds 500',
+      ]);
+      const install = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          script,
+          String(running.pid),
+          copy,
+          app,
+        ],
+        { env: { ...process.env, HARBOR_SETUP_EXIT: String(exit) } },
+      );
+      expect(await new Promise((resolve) => install.on('exit', resolve))).toBe(0);
+      expect(running.exitCode).toBe(0);
+      expect(existsSync(copy)).toBe(false);
+      expect(existsSync(script)).toBe(false);
+      // The app is started without waiting; give it a moment to write.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return (await readFile(log, 'utf8'))
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.trim());
+    };
+    expect(await run(0)).toEqual(['setup /S --updated --force-run']);
+    expect(await run(2)).toEqual(['setup /S --updated --force-run', 'app']);
+  },
+);
 
 it.skipIf(process.platform === 'win32')(
   'swap script replaces the bundle once the app exits, then opens it',

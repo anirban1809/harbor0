@@ -1,12 +1,16 @@
-// Updates the installed Mac app from the latest GitHub release.
+// Updates the installed Mac or Windows app from the latest GitHub release.
 //
 // The app is ad-hoc signed, so Squirrel.Mac (and electron-updater on top of it) won't accept it.
 // Instead the release DMG is downloaded and checked against GitHub's SHA-256, its harbor0.app is
 // copied next to the running bundle and checked, and a detached script swaps the bundles once
 // the app has quit and opens the new one.
+//
+// On Windows the release's NSIS installer is downloaded and checked the same way, and a detached
+// PowerShell script runs it silently over the installed app once the app has quit. The installer
+// keeps the existing install location and opens the app when it is done.
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { access, constants, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,10 +60,13 @@ export function compareVersions(a: string, b: string) {
   return 0;
 }
 
-/** The release's installer for this Mac, if it has one with a checksum. */
-export function releaseAsset(release: Release, arch: string): Asset | null {
+/** The release's installer for this computer, if it has one with a checksum. */
+export function releaseAsset(release: Release, arch: string, platform = 'darwin'): Asset | null {
   const version = release.tag_name.replace(/^v/, '');
-  const name = `harbor0-${version}-mac-${arch}.dmg`;
+  const name =
+    platform === 'win32'
+      ? `harbor0-${version}-win-${arch}.exe`
+      : `harbor0-${version}-mac-${arch}.dmg`;
   const asset = release.assets.find((a) => a.name === name);
   const sha256 = asset?.digest?.match(/^sha256:([0-9a-f]{64})$/)?.[1];
   if (!asset || !sha256) return null;
@@ -89,10 +96,37 @@ fi
 rm -f "$0"
 `;
 
+/**
+ * Waits for the app to quit, runs the installer silently over it (the installer opens the app
+ * again), and opens the old app if the installer fails or is refused elevation.
+ */
+export const WINDOWS_INSTALL_SCRIPT = `param([int]$AppPid, [string]$Installer, [string]$App)
+$deadline = (Get-Date).AddMinutes(5)
+try {
+  while (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) {
+    if ((Get-Date) -gt $deadline) { exit 1 }
+    Start-Sleep -Milliseconds 100
+  }
+  try {
+    $setup = Start-Process -FilePath $Installer -ArgumentList '/S', '--updated', '--force-run' -Wait -PassThru
+    $installed = $setup.ExitCode -eq 0
+  } catch {
+    $installed = $false
+  }
+  if (-not $installed) { Start-Process -FilePath $App }
+} finally {
+  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+`;
+
 export type UpdaterOptions = {
   current: string;
-  /** Path of the running harbor0.app, or why this build can't update itself. */
-  bundle: { path: string } | { unsupported: string };
+  /**
+   * Path of the running harbor0.app, or of harbor0.exe in its install folder on Windows, or why
+   * this build can't update itself.
+   */
+  bundle: { path: string; platform?: 'darwin' | 'win32' } | { unsupported: string };
   arch: string;
   onChange: (status: UpdateStatus) => void;
   /** Called once the new app is in place; it must stop work and quit. */
@@ -111,7 +145,24 @@ const runFile = (command: string, args: string[]) =>
     ),
   );
 const launchDetached = (script: string, args: string[]) =>
-  spawn('/bin/sh', [script, ...args], { detached: true, stdio: 'ignore' }).unref();
+  (script.endsWith('.ps1')
+    ? spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-WindowStyle',
+          'Hidden',
+          '-File',
+          script,
+          ...args,
+        ],
+        { detached: true, stdio: 'ignore', windowsHide: true },
+      )
+    : spawn('/bin/sh', [script, ...args], { detached: true, stdio: 'ignore' })
+  ).unref();
 
 export class Updater {
   status: UpdateStatus;
@@ -150,6 +201,11 @@ export class Updater {
     return this.checking;
   }
 
+  private get platform() {
+    const bundle = this.options.bundle;
+    return ('platform' in bundle && bundle.platform) || 'darwin';
+  }
+
   private get busy() {
     return this.status.state === 'downloading' || this.status.state === 'installing';
   }
@@ -174,7 +230,7 @@ export class Updater {
       const version = release.tag_name.replace(/^v/, '');
       const asset =
         !release.draft && !release.prerelease && compareVersions(version, this.options.current) > 0
-          ? releaseAsset(release, this.options.arch)
+          ? releaseAsset(release, this.options.arch, this.platform)
           : null;
       this.asset = asset;
       this.set(
@@ -206,6 +262,7 @@ export class Updater {
     if ('unsupported' in bundleOption) throw new Error(bundleOption.unsupported);
     if (this.busy) throw new Error('The update is already being installed.');
     if (!asset || !latest) throw new Error('No update is available.');
+    if (this.platform === 'win32') return this.installWindows(bundleOption.path, asset);
     const bundle = bundleOption.path;
     const parent = path.dirname(bundle);
     let work: string | undefined;
@@ -273,6 +330,28 @@ export class Updater {
     }
   }
 
+  /** Downloads the installer, then hands it to the install script and quits. */
+  private async installWindows(app: string, asset: Asset) {
+    const temp = this.options.temp ?? os.tmpdir();
+    const id = randomUUID();
+    const installer = path.join(temp, `harbor0-update-${id}.exe`);
+    let handedOver = false;
+    try {
+      this.set({ state: 'downloading', received: 0, error: undefined });
+      await this.download(asset, installer);
+      this.set({ state: 'installing' });
+      const script = path.join(temp, `harbor0-update-${id}.ps1`);
+      await writeFile(script, WINDOWS_INSTALL_SCRIPT);
+      this.launch(script, [String(process.pid), installer, app]);
+      handedOver = true;
+      await this.options.quit();
+    } catch (error) {
+      if (!handedOver) await rm(installer, { force: true });
+      this.set({ state: 'failed', error: (error as Error).message });
+      throw error;
+    }
+  }
+
   private async download(asset: Asset, file: string) {
     const controller = new AbortController();
     let stall = setTimeout(() => controller.abort(), STALL_MS);
@@ -308,13 +387,20 @@ export class Updater {
   }
 }
 
-/** The running app's bundle, when it is a packaged Mac app that can replace itself. */
+/** The running app, when it is a packaged Mac app or an installed Windows app that can update itself. */
 export function runningBundle(
   packaged: boolean,
   platform: string,
   execPath: string,
 ): UpdaterOptions['bundle'] {
   if (!packaged) return { unsupported: "Development builds don't update themselves." };
+  if (platform === 'win32') {
+    // Only the installer's copy can be updated by running the next installer over it.
+    const folder = path.dirname(execPath);
+    if (!existsSync(path.join(folder, 'Uninstall harbor0.exe')))
+      return { unsupported: 'Install harbor0 with its installer to get updates in the app.' };
+    return { path: execPath, platform: 'win32' };
+  }
   if (platform !== 'darwin')
     return { unsupported: 'Download new versions of harbor0 from the harbor0 website.' };
   const bundle = path.resolve(execPath, '..', '..', '..');
