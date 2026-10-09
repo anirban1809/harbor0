@@ -35,8 +35,14 @@ import type {
   EmailTemplateDetail,
   RecipientPage,
   RecipientStatus,
-  SurveyResults,
 } from '../../../packages/contracts/src/campaigns';
+
+import type {
+  Form,
+  FormDetail,
+  FormInput,
+  FormResponses,
+} from '../../../packages/contracts/src/forms';
 
 export class ApiError extends Error {
   constructor(
@@ -203,7 +209,17 @@ export const api = {
     request<Campaign>('POST', `${email('campaigns', id)}/cancel`, { reason }),
   stopCampaign: (id: string, reason: string) =>
     request<Campaign>('POST', `${email('campaigns', id)}/stop`, { reason }),
-  surveyResults: (id: string) => request<SurveyResults>('GET', `${email('campaigns', id)}/survey`),
+  // Forms
+  forms: () => request<{ items: Form[] }>('GET', '/forms'),
+  form: (id: string) => request<FormDetail>('GET', `/forms/${encodeURIComponent(id)}`),
+  createForm: (body: FormInput) => request<Form>('POST', '/forms', body),
+  saveForm: (id: string, body: FormInput & { expectedUpdatedAt: string }) =>
+    request<Form>('PUT', `/forms/${encodeURIComponent(id)}`, body),
+  setFormAccepting: (id: string, accepting: boolean) =>
+    request<Form>('POST', `/forms/${encodeURIComponent(id)}/accepting`, { accepting }),
+  deleteForm: (id: string) => request<{ deleted: boolean }>('DELETE', `/forms/${encodeURIComponent(id)}`),
+  formResponses: (id: string) =>
+    request<FormResponses>('GET', `/forms/${encodeURIComponent(id)}/responses`),
   recipients: (id: string, status?: RecipientStatus, cursor?: string) =>
     request<RecipientPage>(
       'GET',

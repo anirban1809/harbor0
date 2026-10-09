@@ -9280,14 +9280,31 @@
         }
       }
     },
-    "/v1/email/survey": {
+    "/v1/forms/{id}": {
       "get": {
-        "summary": "The survey behind a survey link, with any answers already sent",
-        "operationId": "get__v1_email_survey",
+        "summary": "A form to answer, and who the answers would be recorded as",
+        "operationId": "get__v1_forms__id",
         "security": [],
         "parameters": [
           {
-            "name": "t",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "r",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string"
+            }
+          },
+          {
+            "name": "b",
             "in": "query",
             "required": false,
             "schema": {
@@ -9305,18 +9322,22 @@
                   "$schema": "https://json-schema.org/draft/2020-12/schema",
                   "type": "object",
                   "properties": {
-                    "form": {
+                    "view": {
                       "type": "object",
                       "properties": {
-                        "title": {
-                          "type": "string"
-                        },
-                        "survey": {
+                        "form": {
                           "type": "object",
                           "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "title": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
                             "questions": {
-                              "minItems": 1,
-                              "maxItems": 8,
                               "type": "array",
                               "items": {
                                 "type": "object",
@@ -9341,7 +9362,7 @@
                                   },
                                   "options": {
                                     "default": [],
-                                    "maxItems": 8,
+                                    "maxItems": 12,
                                     "type": "array",
                                     "items": {
                                       "type": "string",
@@ -9374,73 +9395,139 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "audience": {
+                              "type": "string",
+                              "enum": [
+                                "ANYONE",
+                                "IDENTIFIED"
+                              ]
+                            },
+                            "limit": {
+                              "type": "string",
+                              "enum": [
+                                "ONE_PER_PERSON",
+                                "UNLIMITED"
+                              ]
+                            },
+                            "accepting": {
+                              "type": "boolean"
                             }
                           },
                           "required": [
-                            "questions"
-                          ],
-                          "additionalProperties": false
+                            "id",
+                            "title",
+                            "description",
+                            "questions",
+                            "audience",
+                            "limit",
+                            "accepting"
+                          ]
                         },
-                        "answers": {
+                        "respondent": {
                           "anyOf": [
                             {
                               "type": "object",
-                              "propertyNames": {
-                                "type": "string"
+                              "properties": {
+                                "via": {
+                                  "type": "string",
+                                  "enum": [
+                                    "EMAIL",
+                                    "ACCOUNT",
+                                    "BROWSER",
+                                    "ANONYMOUS"
+                                  ]
+                                },
+                                "label": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
                               },
-                              "additionalProperties": {
-                                "anyOf": [
-                                  {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 10
-                                  },
-                                  {
-                                    "maxItems": 8,
-                                    "type": "array",
-                                    "items": {
-                                      "type": "integer",
-                                      "minimum": 0,
-                                      "maximum": 7
-                                    }
-                                  },
-                                  {
-                                    "type": "string",
-                                    "maxLength": 2000
-                                  }
-                                ]
-                              }
+                              "required": [
+                                "via",
+                                "label"
+                              ]
                             },
                             {
                               "type": "null"
                             }
                           ]
                         },
-                        "submittedAt": {
-                          "type": [
-                            "string",
-                            "null"
+                        "response": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "answers": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 10
+                                      },
+                                      {
+                                        "maxItems": 12,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 11
+                                        }
+                                      },
+                                      {
+                                        "type": "string",
+                                        "maxLength": 2000
+                                      }
+                                    ]
+                                  }
+                                },
+                                "submittedAt": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "answers",
+                                "submittedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
-                        "closesAt": {
-                          "type": "string"
-                        },
-                        "open": {
-                          "type": "boolean"
+                        "blocked": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "CLOSED",
+                                "SIGN_IN",
+                                "TEST"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
-                        "title",
-                        "survey",
-                        "answers",
-                        "submittedAt",
-                        "closesAt",
-                        "open"
+                        "form",
+                        "respondent",
+                        "response",
+                        "blocked"
                       ]
                     }
                   },
                   "required": [
-                    "form"
+                    "view"
                   ]
                 }
               }
@@ -9771,18 +9858,19 @@
             }
           }
         }
-      },
+      }
+    },
+    "/v1/forms/{id}/responses": {
       "post": {
-        "summary": "Send, or change, the answers to the survey behind a survey link",
-        "operationId": "post__v1_email_survey",
+        "summary": "Answer a form; with one response per person, answering again replaces the earlier answers",
+        "operationId": "post__v1_forms__id_responses",
         "security": [],
         "parameters": [
           {
-            "name": "t",
-            "in": "query",
-            "required": false,
+            "name": "id",
+            "in": "path",
+            "required": true,
             "schema": {
-              "$schema": "https://json-schema.org/draft/2020-12/schema",
               "type": "string"
             }
           }
@@ -9808,12 +9896,12 @@
                           "maximum": 10
                         },
                         {
-                          "maxItems": 8,
+                          "maxItems": 12,
                           "type": "array",
                           "items": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 7
+                            "maximum": 11
                           }
                         },
                         {
@@ -9822,6 +9910,14 @@
                         }
                       ]
                     }
+                  },
+                  "r": {
+                    "type": "string",
+                    "maxLength": 400
+                  },
+                  "browser": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{16,64}$"
                   }
                 },
                 "required": [
@@ -9843,10 +9939,14 @@
                   "properties": {
                     "submittedAt": {
                       "type": "string"
+                    },
+                    "replaced": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
-                    "submittedAt"
+                    "submittedAt",
+                    "replaced"
                   ]
                 }
               }

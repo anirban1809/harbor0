@@ -675,7 +675,7 @@
   font-size: var(--text-sm);
 }
 
-/* A campaign survey, answered from its email link. */
+/* A console form, answered from a shared link or a campaign email. */
 .survey-card {
   max-width: 560px;
 }
@@ -685,6 +685,9 @@
 }
 .survey-form > .muted {
   margin-top: -14px;
+}
+.survey-description {
+  white-space: pre-line;
 }
 .survey-question {
   display: grid;

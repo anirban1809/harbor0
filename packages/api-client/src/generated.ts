@@ -341,18 +341,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/email/survey": {
+    "/v1/forms/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** The survey behind a survey link, with any answers already sent */
-        get: operations["get__v1_email_survey"];
+        /** A form to answer, and who the answers would be recorded as */
+        get: operations["get__v1_forms__id"];
         put?: never;
-        /** Send, or change, the answers to the survey behind a survey link */
-        post: operations["post__v1_email_survey"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/forms/{id}/responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a form; with one response per person, answering again replaces the earlier answers */
+        post: operations["post__v1_forms__id_responses"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5677,13 +5693,16 @@ export interface operations {
             };
         };
     };
-    get__v1_email_survey: {
+    get__v1_forms__id: {
         parameters: {
             query?: {
-                t?: string;
+                r?: string;
+                b?: string;
             };
             header?: never;
-            path?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -5695,9 +5714,11 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        form: {
-                            title: string;
-                            survey: {
+                        view: {
+                            form: {
+                                id: string;
+                                title: string;
+                                description: string;
                                 questions: {
                                     id: string;
                                     /** @enum {string} */
@@ -5710,13 +5731,24 @@ export interface operations {
                                     /** @default false */
                                     required: boolean;
                                 }[];
+                                /** @enum {string} */
+                                audience: "ANYONE" | "IDENTIFIED";
+                                /** @enum {string} */
+                                limit: "ONE_PER_PERSON" | "UNLIMITED";
+                                accepting: boolean;
                             };
-                            answers: {
-                                [key: string]: number | number[] | string;
+                            respondent: {
+                                /** @enum {string} */
+                                via: "EMAIL" | "ACCOUNT" | "BROWSER" | "ANONYMOUS";
+                                label: string | null;
                             } | null;
-                            submittedAt: string | null;
-                            closesAt: string;
-                            open: boolean;
+                            response: {
+                                answers: {
+                                    [key: string]: number | number[] | string;
+                                };
+                                submittedAt: string;
+                            } | null;
+                            blocked: ("CLOSED" | "SIGN_IN" | "TEST") | null;
                         };
                     };
                 };
@@ -5867,13 +5899,13 @@ export interface operations {
             };
         };
     };
-    post__v1_email_survey: {
+    post__v1_forms__id_responses: {
         parameters: {
-            query?: {
-                t?: string;
-            };
+            query?: never;
             header?: never;
-            path?: never;
+            path: {
+                id: string;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -5882,6 +5914,8 @@ export interface operations {
                     answers: {
                         [key: string]: number | number[] | string;
                     };
+                    r?: string;
+                    browser?: string;
                 };
             };
         };
@@ -5894,6 +5928,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         submittedAt: string;
+                        replaced: boolean;
                     };
                 };
             };

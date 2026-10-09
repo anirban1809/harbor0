@@ -16,13 +16,13 @@ import { Dialog, DialogActions } from '../../../web/components/ui/dialog';
 import { Field } from '../../../web/components/ui/field';
 import { Input, Textarea } from '../../../web/components/ui/input';
 import { Segmented } from '../../../web/components/ui/segmented';
+import { Select } from '../../../web/components/ui/select';
 import { Skeleton } from '../../../web/components/ui/skeleton';
 import { DataTable } from '../../../web/components/ui/table';
 import { AuditList } from '../../components/audit-list';
 import { CategoryBadge, EmailNav } from '../../components/email-nav';
 import { EmailPreview } from '../../components/email-preview';
 import { PageHeader, Shell, useCan } from '../../components/shell';
-import { cleanSurvey, SurveyEditor, surveyIssue } from '../../components/survey-editor';
 import { api } from '../../lib/api';
 import { relative } from '../../lib/format';
 
@@ -99,15 +99,8 @@ function TemplateList() {
   );
 }
 
-type Draft = Pick<EmailTemplate, 'name' | 'category' | 'subject' | 'preheader' | 'markdown' | 'survey'>;
-const blank: Draft = {
-  name: '',
-  category: 'PRODUCT',
-  subject: '',
-  preheader: '',
-  markdown: starter,
-  survey: null,
-};
+type Draft = Pick<EmailTemplate, 'name' | 'category' | 'subject' | 'preheader' | 'markdown'>;
+const blank: Draft = { name: '', category: 'PRODUCT', subject: '', preheader: '', markdown: starter };
 
 function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: EmailTemplate) => void }) {
   const router = useRouter();
@@ -121,7 +114,6 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
         subject: saved.subject,
         preheader: saved.preheader,
         markdown: saved.markdown,
-        survey: saved.survey ?? null,
       }
     : blank;
   const [draft, setDraft] = useState<Draft>(initial);
@@ -133,13 +125,9 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
   const [deleting, setDeleting] = useState(false);
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
-  const changed = (Object.keys(initial) as (keyof Draft)[]).some(
-    (k) => JSON.stringify(initial[k]) !== JSON.stringify(draft[k]),
-  );
-  const issue = surveyIssue(draft.survey);
-  const complete = !!draft.name.trim() && !!draft.subject.trim() && !!draft.markdown.trim() && !issue;
-  // Blank choices are dropped and unused fields cleared before the survey is sent anywhere.
-  const body = { ...draft, survey: cleanSurvey(draft.survey) };
+  const changed = (Object.keys(initial) as (keyof Draft)[]).some((k) => initial[k] !== draft[k]);
+  const complete = !!draft.name.trim() && !!draft.subject.trim() && !!draft.markdown.trim();
+  const forms = useQuery({ queryKey: ['forms'], queryFn: api.forms });
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -156,8 +144,8 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
   const save = () =>
     run(async () => {
       const result = saved
-        ? await api.saveTemplate(saved.id, { ...body, expectedUpdatedAt: saved.updatedAt })
-        : await api.createTemplate(body);
+        ? await api.saveTemplate(saved.id, { ...draft, expectedUpdatedAt: saved.updatedAt })
+        : await api.createTemplate(draft);
       void queries.invalidateQueries({ queryKey: ['email-templates'] });
       void queries.invalidateQueries({ queryKey: ['audit'] });
       await queries.invalidateQueries({ queryKey: ['email-template', result.id] });
@@ -166,7 +154,7 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
     });
   const test = () =>
     run(async () => {
-      const { name: _, ...content } = body;
+      const { name: _, ...content } = draft;
       const { sentTo } = await api.sendTest({ ...content, sampleUserId: sample.id });
       setNotice(`Test sent to ${sentTo}. It arrives within a minute.`);
     });
@@ -241,7 +229,7 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
               hint={
                 <>
                   Markdown: # headings, **bold**, *italic*, [links](https://…), - lists, --- for a
-                  line, and [[Button]](https://…) for a button. Variables:{' '}
+                  line, [[Button]](https://…) for a button, and {'{{form:<id>}}'} as a link to a form. Variables:{' '}
                   {Object.entries(campaignVariables).map(([key, description], i) => (
                     <span key={key} title={description}>
                       {i > 0 && ', '}
@@ -262,15 +250,32 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
               />
             </Field>
           </div>
-          <div className="field admin-form">
-            <span className="field-label">Survey</span>
-            <SurveyEditor
-              value={draft.survey}
-              disabled={!canEdit}
-              onChange={(survey) => set('survey', survey)}
-            />
-          </div>
-          {issue && <p className="admin-muted">{issue}</p>}
+          {canEdit && !!forms.data?.items.length && (
+            <Field
+              label="Link a form"
+              hint="Adds a button to the end of the message. Each recipient gets a personal link, so their answers are recorded with their email."
+            >
+              <Select
+                value=""
+                onChange={(e) => {
+                  const form = forms.data.items.find((f) => f.id === e.target.value);
+                  if (form)
+                    set(
+                      'markdown',
+                      `${draft.markdown.trimEnd()}\n\n[[Answer the survey]]({{form:${form.id}}})`,
+                    );
+                }}
+              >
+                <option value="">Choose a form…</option>
+                {forms.data.items.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.title}
+                    {f.accepting ? '' : ' (closed)'}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
           {canEdit && (
             <div className="admin-flag-save">
               <span className="admin-muted">
@@ -326,7 +331,6 @@ function Editor({ saved, onSaved }: { saved: EmailTemplate | null; onSaved: (t: 
               preheader: draft.preheader,
               markdown: draft.markdown,
               category: draft.category,
-              survey: draft.survey,
             }}
             sampleUserId={sample.id}
           />

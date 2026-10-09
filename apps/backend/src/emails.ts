@@ -13,6 +13,10 @@ const contact = 'contact@harbor0.com';
 /** Staff told about every new account. */
 export const SIGNUP_ALERT_RECIPIENTS = ['anirban12321@gmail.com', contact];
 
+/** A form's page; `respondent` is the signed token naming whoever the link was sent to. */
+export const formUrl = (webOrigin: string, formId: string, respondent?: string) =>
+    `${webOrigin}/form?id=${encodeURIComponent(formId)}${respondent ? `&r=${encodeURIComponent(respondent)}` : ''}`;
+
 type Message = {
     subject: string;
     preheader: string;
@@ -164,8 +168,11 @@ export type Email = (
         to: string;
         content: CampaignContent;
         vars: CampaignVars;
-        /** This recipient's link to answer the campaign's survey, if it has one. */
-        survey?: string;
+        /**
+         * Signs who this recipient is, so a form the email links to records their answers as
+         * theirs; "test" for a test send, whose form links save nothing.
+         */
+        respondent?: string;
     }
 ) & { unsubscribe?: Unsubscribe; };
 export type StorageAlertLevel = 80 | 95 | 100;
@@ -285,7 +292,9 @@ function accountMessage(email: Email, webOrigin: string): Message {
     const reset = { label: 'Reset your password', url: escape(`${webOrigin}/forgot-password`) };
     switch (email.template) {
         case 'CAMPAIGN': {
-            const rendered = renderCampaign(email.content, email.vars, email.survey);
+            const rendered = renderCampaign(email.content, email.vars, (formId) =>
+                formUrl(webOrigin, formId, email.respondent),
+            );
             return {
                 subject: rendered.subject,
                 preheader: escape(rendered.preheader),

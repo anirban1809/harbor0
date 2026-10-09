@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Flag, LayoutDashboard, LogOut, Mail, ScrollText, Users } from 'lucide-react';
+import { ClipboardList, Flag, LayoutDashboard, LogOut, Mail, ScrollText, Users } from 'lucide-react';
 import { BrandLogo } from '../../web/components/brand-logo';
 import { Badge } from '../../web/components/ui/badge';
 import { Button } from '../../web/components/ui/button';
@@ -27,6 +27,7 @@ const nav = [
   { href: '/users', label: 'Users', icon: Users },
   { href: '/flags', label: 'Feature flags', icon: Flag },
   { href: '/campaigns', label: 'Email campaigns', icon: Mail },
+  { href: '/forms', label: 'Forms', icon: ClipboardList },
   { href: '/audit', label: 'Audit log', icon: ScrollText },
 ];
 

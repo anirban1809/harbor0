@@ -77,5 +77,9 @@ export function loginDestination(path: string | null): string {
   }
   if (route === '/sync') return syncHref(params.get('device'), params.get('folder'));
   if (route === '/shared') return sharedHref(params.get('tab') === 'sent' ? 'Sent' : 'Received');
+  // A form that asks people to sign in sends them back to it.
+  const form = params.get('id');
+  if (pathname === '/form' && form && /^[\w-]{1,128}$/.test(form))
+    return `/form?id=${encodeURIComponent(form)}`;
   return route ?? '/drive';
 }

@@ -1,12 +1,11 @@
 'use client';
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from 'lucide-react';
 import {
-  MAX_SURVEY_OPTIONS,
-  MAX_SURVEY_QUESTIONS,
-  type Survey,
-  type SurveyQuestion,
-  type SurveyQuestionKind,
-} from '../../../packages/contracts/src/campaigns';
+  MAX_FORM_OPTIONS,
+  MAX_FORM_QUESTIONS,
+  type FormQuestion,
+  type FormQuestionKind,
+} from '../../../packages/contracts/src/forms';
 import { Button } from '../../web/components/ui/button';
 import { Checkbox } from '../../web/components/ui/checkbox';
 import { Field } from '../../web/components/ui/field';
@@ -14,14 +13,14 @@ import { Input } from '../../web/components/ui/input';
 import { Segmented } from '../../web/components/ui/segmented';
 import { Select } from '../../web/components/ui/select';
 
-export const surveyKinds: Record<SurveyQuestionKind, string> = {
+export const questionKinds: Record<FormQuestionKind, string> = {
   RATING: 'Rating',
   CHOICE: 'One choice',
   MULTI: 'Several choices',
   TEXT: 'Written answer',
 };
 const newId = () => Math.random().toString(36).slice(2, 10) || 'q';
-const blankQuestion = (kind: SurveyQuestionKind = 'RATING'): SurveyQuestion => ({
+const blankQuestion = (kind: FormQuestionKind = 'RATING'): FormQuestion => ({
   id: newId(),
   kind,
   prompt: '',
@@ -30,84 +29,56 @@ const blankQuestion = (kind: SurveyQuestionKind = 'RATING'): SurveyQuestion => (
   required: false,
 });
 
+export const blankQuestions = () => [blankQuestion()];
+
 /**
- * The survey as the backend takes it: choices trimmed, blank ones dropped, and fields a
- * question's kind doesn't use cleared. Questions without a prompt are left out of a preview;
- * saving refuses them (see surveyIssue).
+ * The questions as the backend takes them: choices trimmed, blank ones dropped, and fields a
+ * question's kind doesn't use cleared.
  */
-export function cleanSurvey(survey: Survey | null, forPreview = false): Survey | null {
-  if (!survey) return null;
-  const questions = survey.questions
-    .map((q) => ({
-      ...q,
-      prompt: q.prompt.trim(),
-      options:
-        q.kind === 'CHOICE' || q.kind === 'MULTI'
-          ? q.options.map((o) => o.trim()).filter(Boolean)
-          : [],
-    }))
-    .filter((q) => !forPreview || q.prompt);
-  return questions.length ? { questions } : null;
+export function cleanQuestions(questions: FormQuestion[]): FormQuestion[] {
+  return questions.map((q) => ({
+    ...q,
+    prompt: q.prompt.trim(),
+    options:
+      q.kind === 'CHOICE' || q.kind === 'MULTI' ? q.options.map((o) => o.trim()).filter(Boolean) : [],
+  }));
 }
 
-/** What stops the survey from being saved, if anything. */
-export function surveyIssue(survey: Survey | null) {
-  if (!survey) return '';
-  if (!survey.questions.length) return 'Add a question to the survey, or remove it.';
-  const blank = survey.questions.findIndex((q) => !q.prompt.trim());
-  if (blank >= 0) return `Survey question ${blank + 1} needs its question.`;
-  const few = survey.questions.findIndex(
+/** What stops the questions from being saved, if anything. */
+export function questionsIssue(questions: FormQuestion[]) {
+  if (!questions.length) return 'Add a question.';
+  const blank = questions.findIndex((q) => !q.prompt.trim());
+  if (blank >= 0) return `Question ${blank + 1} needs its question.`;
+  const few = questions.findIndex(
     (q) => (q.kind === 'CHOICE' || q.kind === 'MULTI') && q.options.filter((o) => o.trim()).length < 2,
   );
-  if (few >= 0) return `Survey question ${few + 1} needs at least two choices.`;
+  if (few >= 0) return `Question ${few + 1} needs at least two choices.`;
   return '';
 }
 
-export function SurveyEditor({
-  value,
+/** Builds a form's questions: kind, wording, choices or scale, and whether each is required. */
+export function QuestionsEditor({
+  value: questions,
   disabled,
   onChange,
 }: {
-  value: Survey | null;
+  value: FormQuestion[];
   disabled: boolean;
-  onChange: (survey: Survey | null) => void;
+  onChange: (questions: FormQuestion[]) => void;
 }) {
-  if (!value)
-    return (
-      <div className="admin-survey-empty">
-        <p className="admin-muted">
-          Ask a few questions in the email. A rating or one-choice first question is answered with
-          one click in the email; the rest are on a short page it opens.
-        </p>
-        {!disabled && (
-          <Button variant="outline" onClick={() => onChange({ questions: [blankQuestion()] })}>
-            <Plus aria-hidden="true" />
-            Add a survey
-          </Button>
-        )}
-      </div>
-    );
-  const questions = value.questions;
-  const update = (index: number, change: Partial<SurveyQuestion>) =>
-    onChange({ questions: questions.map((q, i) => (i === index ? { ...q, ...change } : q)) });
+  const update = (index: number, change: Partial<FormQuestion>) =>
+    onChange(questions.map((q, i) => (i === index ? { ...q, ...change } : q)));
   const move = (index: number, by: number) => {
     const next = [...questions];
     [next[index], next[index + by]] = [next[index + by]!, next[index]!];
-    onChange({ questions: next });
+    onChange(next);
   };
   return (
     <div className="admin-survey">
-      <p className="admin-muted">
-        Goes at the end of the message, or where a line says <code>{'{{survey}}'}</code>. Answers
-        are kept with each recipient’s email and shown on the campaign.
-      </p>
       {questions.map((q, i) => (
         <fieldset key={q.id} className="admin-survey-question" disabled={disabled}>
           <div className="admin-survey-question-bar">
             <strong>Question {i + 1}</strong>
-            {i === 0 && (q.kind === 'RATING' || q.kind === 'CHOICE') && (
-              <span className="admin-muted">One click in the email</span>
-            )}
             <span className="admin-survey-tools">
               <Button
                 variant="ghost"
@@ -131,12 +102,8 @@ export function SurveyEditor({
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Remove question"
-                disabled={disabled}
-                onClick={() =>
-                  onChange(
-                    questions.length > 1 ? { questions: questions.filter((_, j) => j !== i) } : null,
-                  )
-                }
+                disabled={disabled || questions.length === 1}
+                onClick={() => onChange(questions.filter((_, j) => j !== i))}
               >
                 <Trash2 aria-hidden="true" />
               </Button>
@@ -147,7 +114,7 @@ export function SurveyEditor({
               <Select
                 value={q.kind}
                 onChange={(e) => {
-                  const kind = e.target.value as SurveyQuestionKind;
+                  const kind = e.target.value as FormQuestionKind;
                   const choices = kind === 'CHOICE' || kind === 'MULTI';
                   update(i, {
                     kind,
@@ -155,7 +122,7 @@ export function SurveyEditor({
                   });
                 }}
               >
-                {Object.entries(surveyKinds).map(([kind, label]) => (
+                {Object.entries(questionKinds).map(([kind, label]) => (
                   <option key={kind} value={kind}>
                     {label}
                   </option>
@@ -216,7 +183,7 @@ export function SurveyEditor({
                   </Button>
                 </div>
               ))}
-              {q.options.length < MAX_SURVEY_OPTIONS && (
+              {q.options.length < MAX_FORM_OPTIONS && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -236,19 +203,16 @@ export function SurveyEditor({
       ))}
       {!disabled && (
         <div className="admin-actions">
-          {questions.length < MAX_SURVEY_QUESTIONS && (
+          {questions.length < MAX_FORM_QUESTIONS && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onChange({ questions: [...questions, blankQuestion('TEXT')] })}
+              onClick={() => onChange([...questions, blankQuestion('TEXT')])}
             >
               <Plus aria-hidden="true" />
               Add a question
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={() => onChange(null)}>
-            Remove the survey
-          </Button>
         </div>
       )}
     </div>

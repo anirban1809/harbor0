@@ -6,7 +6,6 @@ import { Alert } from '../../web/components/ui/alert';
 import { Segmented } from '../../web/components/ui/segmented';
 import { Skeleton } from '../../web/components/ui/skeleton';
 import { api } from '../lib/api';
-import { cleanSurvey } from './survey-editor';
 
 /** Waits for typing to pause before previewing, so each keystroke isn't a request. */
 function useSettled<T>(value: T, ms = 400) {
@@ -26,7 +25,7 @@ export function EmailPreview({
   content,
   sampleUserId,
 }: {
-  content: Omit<CampaignContent, 'survey'> & { survey?: CampaignContent['survey'] };
+  content: CampaignContent;
   sampleUserId?: string;
 }) {
   const [width, setWidth] = useState<'desktop' | 'mobile'>('desktop');
@@ -37,7 +36,6 @@ export function EmailPreview({
     preheader: content.preheader,
     markdown: content.markdown,
     category: content.category,
-    survey: cleanSurvey(content.survey ?? null, true),
     sampleUserId,
   });
   const ready = !!settled.subject.trim() && !!settled.markdown.trim();

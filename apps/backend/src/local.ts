@@ -155,7 +155,7 @@ const timer = setInterval(
             ...(email.template === 'BETA_INVITE'
               ? { link: `http://localhost:3000/signup?invite=${email.code}` }
               : {}),
-            ...(email.template === 'CAMPAIGN' && email.survey ? { survey: email.survey } : {}),
+            ...(email.template === 'CAMPAIGN' && email.respondent ? { respondent: email.respondent } : {}),
             message: 'Local email is not delivered.',
           }),
         ),

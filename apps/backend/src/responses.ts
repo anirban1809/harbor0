@@ -158,6 +158,11 @@ export function queryParameters(path: string) {
     query.limit = z.number().int().min(1).max(500);
   }
   if (path === '/v1/transfers/received') query.state = c.transferState;
+  // A campaign email's personal token, and the browser's own ID, on a form.
+  if (path === '/v1/forms/:id') {
+    query.r = z.string();
+    query.b = z.string();
+  }
   // The signed token from an unsubscribe link.
   if (path.startsWith('/v1/email/')) query.t = z.string();
   return Object.entries(query).map(([name, schema]) => ({

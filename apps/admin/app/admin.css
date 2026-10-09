@@ -688,7 +688,7 @@ body {
 .admin-campaign-progress {
   width: 100%;
 }
-/* Survey builder (template editor) and its answers (campaign page). */
+/* Form question builder and responses (forms page). */
 .admin-survey,
 .admin-survey-empty {
   display: grid;
@@ -769,6 +769,22 @@ body {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+.admin-survey-cell {
+  min-width: 120px;
+  max-width: 280px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.admin-form-link {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.admin-form-link .input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .admin-survey-texts {
   display: grid;

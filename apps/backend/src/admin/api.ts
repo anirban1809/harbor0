@@ -38,6 +38,16 @@ import type { UserDirectory } from './directory';
 import { AdminService } from './service';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
+import { AdminForms } from './forms';
+import {
+    formAcceptingBody,
+    formBody,
+    formDetailSchema,
+    formInput,
+    formListSchema,
+    formResponsesSchema,
+    formSchema,
+} from '../../../../packages/contracts/src/forms';
 import {
     audienceCountBody,
     audienceCountSchema,
@@ -48,7 +58,6 @@ import {
     campaignReasonBody,
     campaignSchema,
     campaignScheduleBody,
-    surveyResultsSchema,
     emailGroupAddBody,
     emailGroupAddMatchingBody,
     MAX_GROUP_ADD_MATCHING,
@@ -128,6 +137,7 @@ export function createAdminApp(
     const beta = new Beta(service.repo, options.inviteRequired ?? false);
     const flags = new AdminFlags(admin);
     const campaigns = new AdminCampaigns(admin, options.webOrigin ?? '');
+    const forms = new AdminForms(admin, options.webOrigin ?? '');
     const app = new Hono<Env>();
     const cookie = (ctx: Context<Env>, name: string, value: string, maxAge: number) =>
         setCookie(ctx, name, value, {
@@ -566,9 +576,6 @@ export function createAdminApp(
         const { reason } = await body(ctx, campaignReasonBody);
         return ctx.json(campaignSchema.parse(await campaigns.stop(ctx.get('staff'), itemId(ctx), reason)));
     });
-    v1.get('/email/campaigns/:id/survey', guard('read'), async (ctx) =>
-        ctx.json(surveyResultsSchema.parse(await campaigns.surveyResults(itemId(ctx)))),
-    );
     v1.get('/email/campaigns/:id/recipients', guard('read'), async (ctx) => {
         const q = searchQuery
             .extend({ status: recipientStatus.optional() })
@@ -577,6 +584,31 @@ export function createAdminApp(
             recipientPageSchema.parse(await campaigns.recipients(itemId(ctx), q.status, q.cursor)),
         );
     });
+    // Forms: questions shared by link or from campaign emails, and their answers.
+    v1.get('/forms', guard('read'), async (ctx) => ctx.json(formListSchema.parse(await forms.list())));
+    v1.post('/forms', guard('forms'), async (ctx) => {
+        const i = await body(ctx, formInput);
+        return ctx.json(formSchema.parse(await forms.create(ctx.get('staff'), i)));
+    });
+    v1.get('/forms/:id', guard('read'), async (ctx) =>
+        ctx.json(formDetailSchema.parse(await forms.get(itemId(ctx)))),
+    );
+    v1.put('/forms/:id', guard('forms'), async (ctx) => {
+        const { expectedUpdatedAt, ...fields } = await body(ctx, formBody);
+        return ctx.json(
+            formSchema.parse(await forms.update(ctx.get('staff'), itemId(ctx), fields, expectedUpdatedAt)),
+        );
+    });
+    v1.post('/forms/:id/accepting', guard('forms'), async (ctx) => {
+        const { accepting } = await body(ctx, formAcceptingBody);
+        return ctx.json(formSchema.parse(await forms.setAccepting(ctx.get('staff'), itemId(ctx), accepting)));
+    });
+    v1.delete('/forms/:id', guard('forms'), async (ctx) =>
+        ctx.json(deleted.parse(await forms.delete(ctx.get('staff'), itemId(ctx)))),
+    );
+    v1.get('/forms/:id/responses', guard('read'), async (ctx) =>
+        ctx.json(formResponsesSchema.parse(await forms.responses(itemId(ctx)))),
+    );
     app.route('/api/v1/admin', v1);
     app.notFound((ctx) =>
         ctx.json({ error: { code: 'NOT_FOUND', message: 'Endpoint not found.' } }, 404),

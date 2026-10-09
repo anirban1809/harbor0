@@ -55,23 +55,29 @@ export class EmailLinks {
       oneClick: `${this.webOrigin}/api/v1/email/unsubscribe?t=${t}`,
     };
   }
-  private signSurvey(campaignId: string, key: string) {
-    return createHmac('sha256', this.secret).update(`survey:${campaignId}:${key}`).digest('base64url');
+  private signRespondent(subject: string) {
+    return createHmac('sha256', this.secret).update(`respondent:${subject}`).digest('base64url');
   }
-  /** One recipient's link to a campaign's survey; `key` is their recipient key. */
-  survey(campaignId: string, key: string) {
-    const token = `${campaignId}.${Buffer.from(key).toString('base64url')}.${this.signSurvey(campaignId, key)}`;
-    return `${this.webOrigin}/survey?t=${encodeURIComponent(token)}`;
+  /**
+   * Names who a campaign email went to, for the form links in it: an account, or an address
+   * without one. It is signed apart from unsubscribe tokens, so neither works as the other.
+   */
+  respondentToken(to: LinkSubject) {
+    const subject =
+      'userId' in to
+        ? to.userId
+        : `${ADDRESS}${Buffer.from(normalizeEmail(to.email)).toString('base64url')}`;
+    return `${subject}.${this.signRespondent(subject)}`;
   }
-  /** The campaign and recipient a survey token was issued for, or undefined if not ours. */
-  verifySurvey(token: string): { campaignId: string; key: string } | undefined {
-    const [campaignId, encodedKey, signature, ...rest] = token.split('.');
-    if (!campaignId || !encodedKey || !signature || rest.length) return undefined;
-    const key = Buffer.from(encodedKey, 'base64url').toString();
-    const expected = Buffer.from(this.signSurvey(campaignId, key));
+  verifyRespondent(token: string): LinkSubject | undefined {
+    const [subject, signature, ...rest] = token.split('.');
+    if (!subject || !signature || rest.length) return undefined;
+    const expected = Buffer.from(this.signRespondent(subject));
     const given = Buffer.from(signature);
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return undefined;
-    return { campaignId, key };
+    return subject.startsWith(ADDRESS)
+      ? { email: Buffer.from(subject.slice(ADDRESS.length), 'base64url').toString() }
+      : { userId: subject };
   }
   unsubscribe(userId: string): Unsubscribe {
     return this.links(this.token(userId));

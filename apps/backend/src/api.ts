@@ -14,11 +14,12 @@ import {
   backupRestoreSchema,
 } from '../../../packages/contracts/src/backups';
 import {
-  surveyFormSchema,
-  surveySubmitBody,
-  surveySubmitResultSchema,
-} from '../../../packages/contracts/src/campaigns';
-import { surveyForm, submitSurvey } from './surveys';
+  browserId,
+  formSubmitBody,
+  formSubmitResultSchema,
+  formViewSchema,
+} from '../../../packages/contracts/src/forms';
+import { formView, submitForm } from './forms';
 import { SyncRelay } from './sync-relay';
 import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
@@ -659,28 +660,48 @@ export function createApp(
     }),
     true,
   );
-  // A campaign's survey, from the signed link in one recipient's email: no sign-in needed.
-  const surveyToken = async (ctx: Context<Env>) => {
-    const token = ctx.req.query('t');
-    await rateLimit(`email-link:${token ?? ''}`, 30);
-    return token;
+  // Forms from the console, answered without signing in: from a shared link, or a campaign
+  // email's personal link (`r`). A signed-in session, when there is one, says who is answering.
+  const formHints = async (ctx: Context<Env>, r?: string, browser?: string) => {
+    let accountId: string | undefined;
+    const token = bearer(ctx);
+    if (token)
+      try {
+        const identity = await auth.identity(token);
+        if (identity.emailVerified) accountId = identity.id;
+      } catch {
+        // An expired or revoked session answers as if signed out.
+      }
+    return { r, browser, accountId };
   };
   add(
     'get',
-    '/v1/email/survey',
-    'The survey behind a survey link, with any answers already sent',
+    '/v1/forms/:id',
+    'A form to answer, and who the answers would be recorded as',
     undefined,
-    z.object({ form: surveyFormSchema }),
-    async (ctx) => ({ form: await surveyForm(service.repo, emailLinks, await surveyToken(ctx)) }),
+    z.object({ view: formViewSchema }),
+    async (ctx) => {
+      const id = p(ctx, 'id');
+      const browser = browserId.safeParse(ctx.req.query('b')).data;
+      const r = z.string().max(400).safeParse(ctx.req.query('r')).data;
+      await rateLimit(`form-view:${id}:${browser ?? r ?? ''}`, 60);
+      return { view: await formView(service.repo, emailLinks, id, await formHints(ctx, r, browser)) };
+    },
     true,
   );
   add(
     'post',
-    '/v1/email/survey',
-    'Send, or change, the answers to the survey behind a survey link',
-    surveySubmitBody,
-    surveySubmitResultSchema,
-    async (ctx, i) => submitSurvey(service.repo, emailLinks, await surveyToken(ctx), i.answers),
+    '/v1/forms/:id/responses',
+    'Answer a form; with one response per person, answering again replaces the earlier answers',
+    formSubmitBody,
+    formSubmitResultSchema,
+    async (ctx, i) => {
+      const id = p(ctx, 'id');
+      await rateLimit(`form:${id}:${i.r ?? i.browser ?? ''}`, 10);
+      // A ceiling for the form as a whole, against scripted answers from many browser IDs.
+      await rateLimit(`form:${id}`, 300);
+      return submitForm(service.repo, emailLinks, id, await formHints(ctx, i.r, i.browser), i.answers);
+    },
     true,
   );
   add(

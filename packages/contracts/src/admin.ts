@@ -29,6 +29,7 @@ export const staffPermissions = {
     'beta',
     'flags',
     'campaigns',
+    'forms',
   ],
 } as const satisfies Record<z.infer<typeof staffRole>, readonly string[]>;
 export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];

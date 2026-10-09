@@ -13,7 +13,7 @@ import type {
   EmailTemplateBody,
   Recipient,
 } from '../../../../packages/contracts/src/campaigns';
-import { campaignVars, contentProblems, sampleVars } from '../campaign-content';
+import { campaignVars, contentProblems, linkedForms, sampleVars } from '../campaign-content';
 import {
   addressKey,
   allRows,
@@ -40,7 +40,7 @@ import { composeEmail, type Email } from '../emails';
 import { EmailSuppressions } from '../email-preferences';
 import { assert } from '../errors';
 import { transact, type Transaction } from '../repository';
-import { surveyResults } from '../surveys';
+import { FORM_PK } from '../forms';
 import type { AdminService } from './service';
 
 const history = (kind: 'TEMPLATE' | 'GROUP' | 'CAMPAIGN', id: string) =>
@@ -116,12 +116,20 @@ export class AdminCampaigns {
     ]);
     return { template, history: log };
   }
-  private checkContent(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown' | 'survey'>) {
+  /** Problems with the content, including links to forms that don't exist. */
+  private async contentIssues(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>) {
     const problems = contentProblems(content);
+    for (const formId of linkedForms(content))
+      if (!(await this.repo.get({ pk: FORM_PK, sk: formId })))
+        problems.push(`{{form:${formId}}} links to a form that doesn't exist.`);
+    return problems;
+  }
+  private async checkContent(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>) {
+    const problems = await this.contentIssues(content);
     assert(!problems.length, 'INVALID_TEMPLATE', problems.join(' '), 400);
   }
   async createTemplate(staff: Staff, input: Omit<EmailTemplateBody, 'expectedUpdatedAt'>) {
-    this.checkContent(input);
+    await this.checkContent(input);
     const id = randomUUID();
     const at = new Date().toISOString();
     const template: StoredTemplate = {
@@ -131,7 +139,6 @@ export class AdminCampaigns {
       subject: input.subject,
       preheader: input.preheader,
       markdown: input.markdown,
-      survey: input.survey,
       createdAt: at,
       createdBy: staff.email,
       updatedAt: at,
@@ -144,7 +151,7 @@ export class AdminCampaigns {
     return template;
   }
   async updateTemplate(staff: Staff, id: string, input: EmailTemplateBody) {
-    this.checkContent(input);
+    await this.checkContent(input);
     return transact(this.repo, async (tx) => {
       const template = await getRow<StoredTemplate>(tx, TEMPLATE_PK, id, 'template');
       changedSince('template', template, input.expectedUpdatedAt);
@@ -153,8 +160,8 @@ export class AdminCampaigns {
       await tx.put(TEMPLATE_PK, id, next);
       await this.audit(tx, staff, 'TEMPLATE', id, 'EMAIL_TEMPLATE_CHANGED', {
         name: next.name,
-        changed: (['name', 'category', 'subject', 'preheader', 'markdown', 'survey'] as const).filter(
-          (k) => JSON.stringify(template[k] ?? null) !== JSON.stringify(next[k] ?? null),
+        changed: (['name', 'category', 'subject', 'preheader', 'markdown'] as const).filter(
+          (k) => template[k] !== next[k],
         ),
       });
       return next;
@@ -192,8 +199,8 @@ export class AdminCampaigns {
       to,
       content,
       vars,
-      // Previews and tests aren't sent to a recipient, so their survey link opens a notice instead.
-      ...(content.survey ? { survey: `${this.webOrigin}/survey?t=test` } : {}),
+      // Previews and tests go to no recipient: their form links open in test mode.
+      respondent: 'test',
       ...(content.category === 'PRODUCT'
         ? { unsubscribe: { page: `${this.webOrigin}/settings`, oneClick: '' } }
         : {}),
@@ -206,12 +213,12 @@ export class AdminCampaigns {
       subject: message.subject,
       html: message.html,
       text: message.text,
-      problems: contentProblems(content),
+      problems: await this.contentIssues(content),
     };
   }
   /** Queues the content to the staff member's own address; the jobs function sends it within a minute. */
   async test(staff: Staff, content: CampaignContent, sampleUserId?: string) {
-    this.checkContent(content);
+    await this.checkContent(content);
     const vars = await this.vars(sampleUserId);
     await transact(this.repo, async (tx) => {
       await queueEmail(
@@ -664,7 +671,7 @@ export class AdminCampaigns {
   async schedule(staff: Staff, id: string, at: string | null, reason: string, expectedUpdatedAt: string | null) {
     const current = await getRow<StoredCampaign>(read(this.repo), CAMPAIGN_PK, id, 'campaign');
     const template = await this.checkTemplate(current.templateId);
-    this.checkContent(template);
+    await this.checkContent(template);
     const when = at ? new Date(at) : new Date();
     assert(
       when.getTime() >= Date.now() - 60_000,
@@ -687,7 +694,6 @@ export class AdminCampaigns {
         preheader: template.preheader,
         markdown: template.markdown,
         category: template.category,
-        survey: template.survey ?? null,
       };
       const scheduledAt = when.toISOString();
       const next: StoredCampaign = {
@@ -771,9 +777,6 @@ export class AdminCampaigns {
       return next;
     });
     return this.view(campaign);
-  }
-  async surveyResults(id: string) {
-    return surveyResults(this.repo, id);
   }
   async recipients(id: string, status?: Recipient['status'], cursor?: string) {
     await getRow<StoredCampaign>(read(this.repo), CAMPAIGN_PK, id, 'campaign');
