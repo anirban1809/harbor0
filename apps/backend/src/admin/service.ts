@@ -19,6 +19,7 @@ import { assert } from '../errors';
 import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
 import { accountsOnDevice, type DeviceAccount } from '../signup-guard';
+import { platformCosts } from '../platform-costs';
 import { indexAccounts, matchUsers, PLATFORMS, type IndexedUser, type Platform } from '../user-filters';
 
 const AUDIT = 'ADMIN_AUDIT';
@@ -109,12 +110,13 @@ export class AdminService {
         return { items: page.rows.map((r) => r.data as AuditEntry), nextCursor: page.cursor };
     }
     async overview(refresh = false) {
-        const [estimatedUsers, storage, recent] = await Promise.all([
+        const [estimatedUsers, storage, recent, costs] = await Promise.all([
             this.directory.estimatedUsers().catch(() => null),
             this.storageTotals(refresh),
             this.auditLog(undefined, 15),
+            platformCosts(this.repo),
         ]);
-        return { estimatedUsers, storage, recent: recent.items };
+        return { estimatedUsers, storage, recent: recent.items, costs };
     }
     /** Storage across all accounts, recomputed when older than 15 minutes or on request. */
     async storageTotals(refresh = false): Promise<StorageTotals> {

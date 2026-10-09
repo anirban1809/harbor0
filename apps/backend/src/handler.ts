@@ -2,6 +2,7 @@ import { handle, type LambdaEvent, type LambdaContext } from 'hono/aws-lambda';
 import type { DynamoDBStreamEvent } from 'aws-lambda';
 import { runtime, realtimeRuntime, adminRuntime, mailEventRuntime } from './runtime';
 import type { SesEventDetail } from './email-preferences';
+import { costExplorerSource, refreshCostsIfDue } from './platform-costs';
 export async function handler(event: LambdaEvent, context: LambdaContext) {
   return handle((await runtime()).app)(event, context);
 }
@@ -10,10 +11,17 @@ export async function admin(event: LambdaEvent, context: LambdaContext) {
 }
 export async function jobs() {
   const r = await runtime();
-  return r.service.runJobs(r.sendEmail, {
+  // The daily cost figures for the console; a failure here must not hold up user jobs.
+  const costs = refreshCostsIfDue(r.service.repo, {
+    aws: costExplorerSource(),
+    objects: () => r.service.storage.inventory(),
+  }).catch((error) => console.error('Platform cost check failed', error));
+  const result = await r.service.runJobs(r.sendEmail, {
     emailLinks: r.emailLinks,
     ratePerSecond: r.campaignRate,
   });
+  await costs;
+  return result;
 }
 type SocketEvent = {
   requestContext: { routeKey: string; connectionId: string };

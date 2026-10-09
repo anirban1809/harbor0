@@ -806,3 +806,7 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.table .admin-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

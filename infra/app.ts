@@ -287,6 +287,10 @@ for (const fn of [apiFunction, jobsFunction]) {
   );
   emailLinkSecret.grantRead(fn);
 }
+// The maintenance worker reads the AWS bill once a day for the console's running costs.
+jobsFunction.addToRolePolicy(
+  new iam.PolicyStatement({ actions: ['ce:GetCostAndUsage'], resources: ['*'] }),
+);
 // Hard bounces and complaints are recorded so optional email (campaigns) skips those addresses.
 const mailEventsFunction = new lambda.Function(stack, 'MailEventHandler', {
   runtime: lambda.Runtime.NODEJS_22_X,

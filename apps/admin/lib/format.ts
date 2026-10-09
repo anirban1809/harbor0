@@ -11,6 +11,18 @@ export function bytes(value: number | null | undefined) {
   return `${n >= 100 || unit === 0 ? Math.round(n) : n.toFixed(n >= 10 ? 1 : 2).replace(/\.?0+$/, '')} ${units[unit]}`;
 }
 export const GB = 1_000_000_000;
+/** US dollars to the cent, with a fraction of a cent shown as under a cent. */
+export function usd(value: number) {
+  if (value > 0 && value < 0.01) return '<$0.01';
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+/** A UTC calendar day (YYYY-MM-DD) such as 4 Oct 2026. */
+export function day(value: string) {
+  return new Date(`${value}T00:00:00Z`).toLocaleDateString(undefined, {
+    dateStyle: 'medium',
+    timeZone: 'UTC',
+  });
+}
 export const TB = 1_000_000_000_000;
 
 export function date(value: string | null | undefined) {

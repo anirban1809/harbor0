@@ -32,7 +32,10 @@ export interface ObjectStorage {
     bytes: Uint8Array,
   ): Promise<CompletedPart>;
   cleanupArchive(prefix: string): Promise<void>;
+  /** Every stored object's size and when it was written; one Class A list call per 1,000. */
+  inventory(): Promise<StoredObject[]>;
 }
+export type StoredObject = { size: number; modifiedAt: string };
 export class R2Storage implements ObjectStorage {
   private client: S3Client;
   constructor(
@@ -209,6 +212,22 @@ export class R2Storage implements ObjectStorage {
       uploadMarker = page.NextUploadIdMarker;
     } while (keyMarker);
   }
+  async inventory() {
+    const objects: StoredObject[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.client.send(
+        new ListObjectsV2Command({ Bucket: this.bucket, ContinuationToken: cursor }),
+      );
+      for (const object of page.Contents ?? [])
+        objects.push({
+          size: object.Size ?? 0,
+          modifiedAt: (object.LastModified ?? new Date()).toISOString(),
+        });
+      cursor = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (cursor);
+    return objects;
+  }
 }
 export class MemoryStorage implements ObjectStorage {
   objects = new Map<string, Uint8Array>();
@@ -266,5 +285,9 @@ export class MemoryStorage implements ObjectStorage {
     for (const key of this.objects.keys()) if (key.startsWith(prefix)) this.objects.delete(key);
     for (const [id, upload] of this.uploads)
       if (upload.key.startsWith(prefix)) this.uploads.delete(id);
+  }
+  async inventory() {
+    const modifiedAt = new Date().toISOString();
+    return [...this.objects.values()].map((bytes) => ({ size: bytes.byteLength, modifiedAt }));
   }
 }

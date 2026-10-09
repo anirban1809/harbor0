@@ -208,9 +208,36 @@ export const storageTotalsSchema = z.object({
    */
   orphans: z.object({ accounts: z.number(), usedBytes: z.number(), allocatedBytes: z.number() }),
 });
+/**
+ * What running harbor0 has cost since `since`, in USD: the AWS bill from Cost Explorer (before
+ * credits, refunds and tax) plus R2 storage at Cloudflare's standard rate with no free tier.
+ * Refreshed daily at 06:00 IST; days are UTC, as AWS bills them.
+ */
+export const platformCostsSchema = z.object({
+  computedAt: z.string(),
+  since: z.string(),
+  /** The last day included, the UTC day before the refresh. */
+  through: z.string(),
+  totalUsd: z.number(),
+  aws: z.object({
+    totalUsd: z.number(),
+    services: z.array(z.object({ service: z.string(), usd: z.number() })),
+  }),
+  r2: z.object({
+    totalUsd: z.number(),
+    /** USD per decimal GB-month. R2 operations are not counted. */
+    rate: z.number(),
+    /** Bytes in the bucket at the refresh. */
+    storedBytes: z.number(),
+    /** Days priced from objects' write dates; later deletions make these low. */
+    reconstructedDays: z.number(),
+  }),
+  daily: z.array(z.object({ date: z.string(), awsUsd: z.number(), r2Usd: z.number() })),
+});
 export const adminOverviewSchema = z.object({
   estimatedUsers: z.number().nullable(),
   storage: storageTotalsSchema.nullable(),
+  costs: platformCostsSchema.nullable().default(null),
   recent: z.array(auditEntrySchema),
 });
 
@@ -300,6 +327,7 @@ export type AdminUserFilters = z.infer<typeof adminUserFiltersSchema>;
 export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
+export type PlatformCosts = z.infer<typeof platformCostsSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;
 export type AdminTestInvite = z.infer<typeof adminTestInviteSchema>;
 export type AdminPurgeResult = z.infer<typeof adminPurgeResultSchema>;
