@@ -5,7 +5,11 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Trash2, UserPlus } from 'lucide-react';
 import type { EmailGroup } from '../../../../packages/contracts/src/campaigns';
-import { EVERYONE_GROUP, MAX_GROUP_ADD } from '../../../../packages/contracts/src/campaigns';
+import {
+  EVERYONE_GROUP,
+  MAX_GROUP_ADD,
+  WINDOWS_USERS_GROUP,
+} from '../../../../packages/contracts/src/campaigns';
 import { Badge } from '../../../web/components/ui/badge';
 import { Alert } from '../../../web/components/ui/alert';
 import { Button } from '../../../web/components/ui/button';
@@ -331,11 +335,11 @@ function GroupDetail({ id }: { id: string }) {
           {builtIn && (
             <Card title="Who is in it">
               <p>
-                Every account that has signed in to the Mac app, or to harbor0 in a browser on macOS
-                (Safari, Chrome, Firefox or Edge), even if it has since signed out. It is worked out
-                again when a campaign starts sending, so new Mac users are included. As with any
-                group, deleted, suspended and unverified accounts are skipped, and product updates
-                skip people who unsubscribed.
+                {id === WINDOWS_USERS_GROUP
+                  ? 'Every account that has signed in to the Windows app, or to harbor0 in a browser on Windows (Chrome, Edge or Firefox), even if it has since signed out. It is worked out again when a campaign starts sending, so new Windows users are included.'
+                  : 'Every account that has signed in to the Mac app, or to harbor0 in a browser on macOS (Safari, Chrome, Firefox or Edge), even if it has since signed out. It is worked out again when a campaign starts sending, so new Mac users are included.'}{' '}
+                As with any group, deleted, suspended and unverified accounts are skipped, and
+                product updates skip people who unsubscribed.
               </p>
               <p className="admin-muted">
                 The list below is refreshed every 15 minutes. It can&apos;t be renamed, edited or

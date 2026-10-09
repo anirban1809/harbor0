@@ -118,7 +118,13 @@ export const EVERYONE_GROUP = 'everyone';
  * on macOS. Like Everyone it has no stored members and is worked out when a campaign sends.
  */
 export const MAC_USERS_GROUP = 'mac-users';
-export const BUILT_IN_GROUPS: readonly string[] = [EVERYONE_GROUP, MAC_USERS_GROUP];
+/** The same for Windows: the desktop app on Windows or a browser on Windows. */
+export const WINDOWS_USERS_GROUP = 'windows-users';
+export const BUILT_IN_GROUPS: readonly string[] = [
+  EVERYONE_GROUP,
+  MAC_USERS_GROUP,
+  WINDOWS_USERS_GROUP,
+];
 export const emailGroupSchema = z.object({
   id: z.string(),
   name: z.string(),

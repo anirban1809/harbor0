@@ -10,7 +10,11 @@ import type {
   RecipientSkipReason,
 } from '../../../packages/contracts/src/campaigns';
 import { normalizeEmail } from '@harbor/contracts';
-import { EVERYONE_GROUP, MAC_USERS_GROUP } from '../../../packages/contracts/src/campaigns';
+import {
+  EVERYONE_GROUP,
+  MAC_USERS_GROUP,
+  WINDOWS_USERS_GROUP,
+} from '../../../packages/contracts/src/campaigns';
 import { signupLinkFor } from './beta';
 import { campaignVars } from './campaign-content';
 import { userPK, type Account, type StorageService } from './domain';
@@ -92,18 +96,30 @@ export async function accountIdFor(repo: Repository, email: string) {
 }
 
 /**
- * Whether a device session was a Mac: the desktop app on macOS, or a browser the web app named
- * "<browser> on macOS" (browserName in apps/web/lib/device-key.ts).
+ * The built-in groups of accounts that have used a desktop system: its desktop app, or a
+ * browser the web app named "<browser> on <system>" (browserName in apps/web/lib/device-key.ts).
  */
-export const isMacDevice = (device: DeviceSighting) =>
-  device.platform === 'MACOS' ||
-  (device.platform === 'WEB' && / on macOS$/.test(device.name ?? ''));
+export const PLATFORM_GROUPS = {
+  [MAC_USERS_GROUP]: { platform: 'MACOS', system: 'macOS' },
+  [WINDOWS_USERS_GROUP]: { platform: 'WINDOWS', system: 'Windows' },
+} as const;
+export type PlatformGroup = keyof typeof PLATFORM_GROUPS;
+export const isPlatformGroup = (id: string): id is PlatformGroup => id in PLATFORM_GROUPS;
 
-/** Accounts that have used a Mac, signed out or not; the Mac users group. */
-export async function macUserIds(repo: Repository) {
+/** Whether a device session was on a platform group's system. */
+export const usedPlatform = (device: DeviceSighting, groupId: PlatformGroup) => {
+  const { platform, system } = PLATFORM_GROUPS[groupId];
+  return (
+    device.platform === platform ||
+    (device.platform === 'WEB' && (device.name ?? '').endsWith(` on ${system}`))
+  );
+};
+
+/** Accounts that have used a platform group's system, signed out or not. */
+export async function platformUserIds(repo: Repository, groupId: PlatformGroup) {
   const ids = new Set<string>();
   for (const device of await repo.scanDevices())
-    if (device.userId && isMacDevice(device)) ids.add(device.userId);
+    if (device.userId && usedPlatform(device, groupId)) ids.add(device.userId);
   return [...ids];
 }
 
@@ -121,8 +137,8 @@ export async function audienceRecipients(repo: Repository, audience: CampaignAud
       for (const profile of await repo.scanProfiles()) if (profile.id) ids.add(profile.id);
       continue;
     }
-    if (groupId === MAC_USERS_GROUP) {
-      for (const id of await macUserIds(repo)) ids.add(id);
+    if (isPlatformGroup(groupId)) {
+      for (const id of await platformUserIds(repo, groupId)) ids.add(id);
       continue;
     }
     const group = (await repo.get({ pk: GROUP_PK, sk: groupId }))?.data as StoredGroup | undefined;

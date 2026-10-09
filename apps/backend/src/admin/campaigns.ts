@@ -5,6 +5,7 @@ import {
   BUILT_IN_GROUPS,
   EVERYONE_GROUP,
   MAC_USERS_GROUP,
+  WINDOWS_USERS_GROUP,
 } from '../../../../packages/contracts/src/campaigns';
 import type {
   CampaignBody,
@@ -24,7 +25,9 @@ import {
   emptyCounts,
   getRow,
   GROUP_PK,
-  macUserIds,
+  isPlatformGroup,
+  platformUserIds,
+  type PlatformGroup,
   memberPK,
   memberSK,
   read,
@@ -60,11 +63,24 @@ const stamp = (staff: Staff, row: { updatedAt: string }) => {
   };
 };
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** The Mac users group's accounts as last worked out, for the console; sends always rescan. */
-type MacUsersCache = { computedAt: string; userIds: string[] };
-const MAC_USERS_CACHE = { pk: 'ADMIN_STATS', sk: 'MAC_USERS' };
-const MAC_USERS_MAX_AGE_MS = 15 * 60_000;
-const MAC_MEMBER_PAGE = 50;
+/** A platform group's accounts as last worked out, for the console; sends always rescan. */
+type PlatformUsersCache = { computedAt: string; userIds: string[] };
+const PLATFORM_USERS = {
+  [MAC_USERS_GROUP]: {
+    cacheSK: 'MAC_USERS',
+    name: 'Mac users',
+    description:
+      'Accounts that have used the Mac app or a browser on macOS, worked out when a campaign starts sending.',
+  },
+  [WINDOWS_USERS_GROUP]: {
+    cacheSK: 'WINDOWS_USERS',
+    name: 'Windows users',
+    description:
+      'Accounts that have used the Windows app or a browser on Windows, worked out when a campaign starts sending.',
+  },
+} satisfies Record<PlatformGroup, { cacheSK: string; name: string; description: string }>;
+const PLATFORM_USERS_MAX_AGE_MS = 15 * 60_000;
+const MEMBER_PAGE = 50;
 // Dynamic groups' counts and member lists reread every profile and device; one read serves a while.
 const DYNAMIC_INDEX_MAX_AGE_MS = 2 * 60_000;
 const MAX_SCHEDULE_AHEAD_MS = 90 * 86400_000;
@@ -125,7 +141,9 @@ export class AdminCampaigns {
     return { template, history: log };
   }
   /** Problems with the content, including links to forms that don't exist. */
-  private async contentIssues(content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>) {
+  private async contentIssues(
+    content: Pick<CampaignContent, 'subject' | 'preheader' | 'markdown'>,
+  ) {
     const problems = contentProblems(content);
     for (const formId of linkedForms(content))
       if (!(await this.repo.get({ pk: FORM_PK, sk: formId })))
@@ -266,27 +284,26 @@ export class AdminCampaigns {
       updatedBy: 'Built in',
     };
   }
-  /** Accounts that have used a Mac, rescanned when the cached list is over 15 minutes old. */
-  private async macUserIds(): Promise<MacUsersCache> {
-    const cached = (await this.repo.get(MAC_USERS_CACHE))?.data as MacUsersCache | undefined;
-    if (cached && Date.now() - Date.parse(cached.computedAt) < MAC_USERS_MAX_AGE_MS) return cached;
+  /** Accounts that have used a platform, rescanned when the cached list is over 15 minutes old. */
+  private async platformUserIds(id: PlatformGroup): Promise<PlatformUsersCache> {
+    const key = { pk: 'ADMIN_STATS', sk: PLATFORM_USERS[id].cacheSK };
+    const cached = (await this.repo.get(key))?.data as PlatformUsersCache | undefined;
+    if (cached && Date.now() - Date.parse(cached.computedAt) < PLATFORM_USERS_MAX_AGE_MS)
+      return cached;
     const fresh = {
       computedAt: new Date().toISOString(),
-      userIds: (await macUserIds(this.repo)).sort(),
+      userIds: (await platformUserIds(this.repo, id)).sort(),
     };
-    await transact(this.repo, (tx) => tx.put(MAC_USERS_CACHE.pk, MAC_USERS_CACHE.sk, fresh)).catch(
-      () => undefined,
-    );
+    await transact(this.repo, (tx) => tx.put(key.pk, key.sk, fresh)).catch(() => undefined);
     return fresh;
   }
-  /** The built-in group of accounts that have used the Mac app or a browser on macOS. */
-  private async macUsers(): Promise<StoredGroup> {
-    const { computedAt, userIds } = await this.macUserIds();
+  /** A built-in group of accounts that have used a platform's app or a browser on it. */
+  private async platformUsers(id: PlatformGroup): Promise<StoredGroup> {
+    const { computedAt, userIds } = await this.platformUserIds(id);
     return {
-      id: MAC_USERS_GROUP,
-      name: 'Mac users',
-      description:
-        'Accounts that have used the Mac app or a browser on macOS, worked out when a campaign starts sending.',
+      id,
+      name: PLATFORM_USERS[id].name,
+      description: PLATFORM_USERS[id].description,
       memberCount: userIds.length,
       builtIn: true,
       createdAt: '',
@@ -296,7 +313,7 @@ export class AdminCampaigns {
     };
   }
   private builtIn(id: string) {
-    return id === EVERYONE_GROUP ? this.everyone() : this.macUsers();
+    return isPlatformGroup(id) ? this.platformUsers(id) : this.everyone();
   }
   private notBuiltIn(id: string) {
     assert(
@@ -307,14 +324,20 @@ export class AdminCampaigns {
     );
   }
   async groups() {
-    const [everyone, macUsers, groups] = await Promise.all([
+    const [everyone, macUsers, windowsUsers, groups] = await Promise.all([
       this.everyone(),
-      this.macUsers(),
+      this.platformUsers(MAC_USERS_GROUP),
+      this.platformUsers(WINDOWS_USERS_GROUP),
       allRows<StoredGroup>(this.repo, GROUP_PK),
     ]);
     const live = await Promise.all(groups.map((g) => this.live(g)));
     return {
-      items: [everyone, macUsers, ...live.sort((a, b) => a.name.localeCompare(b.name))],
+      items: [
+        everyone,
+        macUsers,
+        windowsUsers,
+        ...live.sort((a, b) => a.name.localeCompare(b.name)),
+      ],
     };
   }
   private dynamicIndex?: { at: number; users: Promise<IndexedUser[]> };
@@ -450,11 +473,11 @@ export class AdminCampaigns {
   async members(id: string, cursor?: string) {
     // Everyone has no stored members; the console lists accounts on the Users page.
     if (id === EVERYONE_GROUP) return { items: [], nextCursor: null };
-    if (id === MAC_USERS_GROUP) {
-      const { computedAt, userIds } = await this.macUserIds();
+    if (isPlatformGroup(id)) {
+      const { computedAt, userIds } = await this.platformUserIds(id);
       const start = Number(cursor ?? 0) || 0;
       const items = await Promise.all(
-        userIds.slice(start, start + MAC_MEMBER_PAGE).map(async (userId): Promise<StoredMember> => {
+        userIds.slice(start, start + MEMBER_PAGE).map(async (userId): Promise<StoredMember> => {
           const account = (await this.repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
             Account | undefined;
           return {
@@ -466,14 +489,14 @@ export class AdminCampaigns {
           };
         }),
       );
-      const next = start + MAC_MEMBER_PAGE;
+      const next = start + MEMBER_PAGE;
       return { items, nextCursor: next < userIds.length ? String(next) : null };
     }
     const group = await getRow<StoredGroup>(read(this.repo), GROUP_PK, id, 'group');
     if (group.rule) {
       const followers = await this.followers(group.rule);
       const start = Number(cursor ?? 0) || 0;
-      const next = start + MAC_MEMBER_PAGE;
+      const next = start + MEMBER_PAGE;
       return {
         items: followers.slice(start, next).map((u) => ({
           userId: u.id,

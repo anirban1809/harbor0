@@ -578,7 +578,12 @@ describe('the Everyone group', () => {
   it('is listed first, holds every account, and cannot be changed', async () => {
     const mine = await ok(admin, 'POST', '/email/groups', { name: 'Testers' });
     const groups = (await ok(support, 'GET', '/email/groups')).items;
-    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', 'mac-users', mine.id]);
+    expect(groups.map((g: { id: string }) => g.id)).toEqual([
+      'everyone',
+      'mac-users',
+      'windows-users',
+      mine.id,
+    ]);
     expect(groups[0]).toMatchObject({ name: 'Everyone', builtIn: true, memberCount: 2 });
     expect((await ok(admin, 'GET', '/email/groups/everyone')).group.builtIn).toBe(true);
     for (const [method, path, body] of [
@@ -641,8 +646,13 @@ describe('the Mac users group', () => {
     await service.registerDevice('bob', { name: 'Chrome on Windows', platform: 'WEB' });
     await service.registerDevice('bob', { name: 'Pixel 9', platform: 'ANDROID' });
     const groups = (await ok(support, 'GET', '/email/groups')).items;
-    expect(groups.map((g: { id: string }) => g.id)).toEqual(['everyone', 'mac-users']);
+    expect(groups.map((g: { id: string }) => g.id)).toEqual([
+      'everyone',
+      'mac-users',
+      'windows-users',
+    ]);
     expect(groups[1]).toMatchObject({ name: 'Mac users', builtIn: true, memberCount: 1 });
+    expect(groups[2]).toMatchObject({ name: 'Windows users', builtIn: true, memberCount: 1 });
     const members = await ok(admin, 'GET', '/email/groups/mac-users/members');
     expect(members.items.map((m: { email: string }) => m.email)).toEqual(['alice@example.test']);
     for (const [method, path, body] of [
@@ -668,6 +678,37 @@ describe('the Mac users group', () => {
       expectedUpdatedAt: campaign.updatedAt,
     });
     await service.registerDevice('bob', { name: 'MacBook Air', platform: 'MACOS' });
+    await service.runJobs(async () => {});
+    const sent = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=SENT`);
+    expect(sent.items.map((r: { email: string }) => r.email).sort()).toEqual([
+      'alice@example.test',
+      'bob@example.test',
+    ]);
+  });
+});
+
+describe('the Windows users group', () => {
+  it('holds accounts that used the Windows app or a browser on Windows', async () => {
+    await service.registerDevice('alice', { name: 'Edge on Windows', platform: 'WEB' });
+    await service.registerDevice('bob', { name: 'Safari on macOS', platform: 'WEB' });
+    const members = await ok(admin, 'GET', '/email/groups/windows-users/members');
+    expect(members.items.map((m: { email: string }) => m.email)).toEqual(['alice@example.test']);
+    const r = await call(admin, 'DELETE', '/email/groups/windows-users');
+    expect(r.status).toBe(409);
+    expect(r.data.error.code).toBe('BUILT_IN_GROUP');
+
+    const t = await ok(admin, 'POST', '/email/templates', template('SERVICE'));
+    const campaign = await ok(admin, 'POST', '/email/campaigns', {
+      name: 'Windows app',
+      templateId: t.id,
+      audience: { groupIds: ['windows-users'], userIds: [] },
+    });
+    await ok(admin, 'POST', `/email/campaigns/${campaign.id}/schedule`, {
+      at: null,
+      reason: 'Windows release',
+      expectedUpdatedAt: campaign.updatedAt,
+    });
+    await service.registerDevice('bob', { name: 'DESKTOP-1', platform: 'WINDOWS' });
     await service.runJobs(async () => {});
     const sent = await ok(admin, 'GET', `/email/campaigns/${campaign.id}/recipients?status=SENT`);
     expect(sent.items.map((r: { email: string }) => r.email).sort()).toEqual([
