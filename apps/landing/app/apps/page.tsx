@@ -14,7 +14,12 @@ const mac: Download | null = {
   url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.6/harbor0-0.1.6-mac-arm64.dmg',
   sha256: 'b02354f2876fea0a1e43465b813678600b4ff9100e5af8f08aee7ab4d06be681',
 };
-const windows: Download | null = null;
+const windows: Download | null = {
+  version: '0.1.6',
+  size: '113 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.6/harbor0-0.1.6-win-x64.exe',
+  sha256: '2690a499e51e30db643b8fcb0ec6434e04fa950b8b95c03b237d9ad0bec8be83',
+};
 
 const computers = windows ? 'on Mac and Windows' : 'on your Mac';
 
