@@ -46,14 +46,10 @@ const headers = new cloudfront.ResponseHeadersPolicy(stack, 'WebHeaders', {
             override: true,
         },
     },
-    // Keep staging out of search results.
-    ...(harborEnv.production
-        ? {}
-        : {
-            customHeadersBehavior: {
-                customHeaders: [{ header: 'X-Robots-Tag', value: 'noindex, nofollow', override: true }],
-            },
-        }),
+    // The app is behind sign-in; only the landing site (harbor0.com) should be in search results.
+    customHeadersBehavior: {
+        customHeaders: [{ header: 'X-Robots-Tag', value: 'noindex, nofollow', override: true }],
+    },
 });
 const staticCache = new cloudfront.CachePolicy(stack, 'StaticCache', {
     minTtl: Duration.seconds(0),
