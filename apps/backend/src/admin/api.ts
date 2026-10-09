@@ -21,6 +21,7 @@ import {
     adminTestInviteSchema,
     adminUserDetailSchema,
     adminUserPageSchema,
+    adminUserFiltersSchema,
     adminUserSortSchema,
     adminWaveBody,
     auditEntrySchema,
@@ -96,7 +97,9 @@ const searchQuery = z.object({
     q: z.string().max(254).default(''),
     cursor: z.string().max(4096).optional(),
 });
-const userSearchQuery = searchQuery.extend(adminUserSortSchema.partial().shape);
+const userSearchQuery = searchQuery
+    .extend(adminUserSortSchema.partial().shape)
+    .extend(adminUserFiltersSchema.shape);
 
 export type AdminAppOptions = {
     /** The console's own origins; state-changing requests from anywhere else are refused. */
@@ -315,8 +318,13 @@ export function createAdminApp(
         return ctx.json(auditPageSchema.parse(await admin.auditLog(cursor)));
     });
     v1.get('/users', guard('read'), async (ctx) => {
-        const { q, cursor, sort, order } = userSearchQuery.parse(ctx.req.query());
-        const page = await admin.search(q, cursor, sort ? { sort, order: order ?? 'desc' } : undefined);
+        const { q, cursor, sort, order, ...filters } = userSearchQuery.parse(ctx.req.query());
+        const page = await admin.search(
+            q,
+            cursor,
+            sort ? { sort, order: order ?? 'desc' } : undefined,
+            filters,
+        );
         return ctx.json(adminUserPageSchema.parse(page));
     });
     v1.get('/users/:id', guard('read'), async (ctx) => {

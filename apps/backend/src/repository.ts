@@ -40,7 +40,12 @@ export interface Repository {
   /** Every device session's account, platform and name; a full-table read like scanProfiles. */
   scanDevices(): Promise<DeviceSighting[]>;
 }
-export type DeviceSighting = { userId?: string; platform?: string; name?: string };
+export type DeviceSighting = {
+  userId?: string;
+  platform?: string;
+  name?: string;
+  lastSeenAt?: string;
+};
 export type ProfileStorage = {
   id?: string;
   storageUsedBytes?: number;
@@ -50,6 +55,12 @@ export type ProfileStorage = {
   purgingBytes?: number;
   deletedAt?: string;
   purgeAt?: string;
+  email?: string;
+  username?: string;
+  displayName?: string;
+  createdAt?: string;
+  suspendedAt?: string;
+  freeQuotaBytes?: number;
 };
 const PROFILE_FIELDS = [
   'id',
@@ -60,6 +71,12 @@ const PROFILE_FIELDS = [
   'purgingBytes',
   'deletedAt',
   'purgeAt',
+  'email',
+  'username',
+  'displayName',
+  'createdAt',
+  'suspendedAt',
+  'freeQuotaBytes',
 ] as const;
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
 /** A cursor that resumes a query just after this row. */
@@ -204,6 +221,7 @@ export class DynamoRepository implements Repository {
       'userId',
       'platform',
       'name',
+      'lastSeenAt',
     ]);
   }
   /** The chosen `data` fields of every row the filter keeps. */
@@ -307,8 +325,8 @@ export class MemoryRepository implements Repository {
     return [...this.rows.values()]
       .filter((r) => r.sk.startsWith('DEVICE#'))
       .map((r) => {
-        const { userId, platform, name } = r.data as DeviceSighting;
-        return { userId, platform, name };
+        const { userId, platform, name, lastSeenAt } = r.data as DeviceSighting;
+        return { userId, platform, name, lastSeenAt };
       });
   }
   async commit(writes: Write[], checks: Write[]) {

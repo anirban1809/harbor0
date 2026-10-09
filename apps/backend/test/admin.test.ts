@@ -138,6 +138,45 @@ describe('management console API', () => {
     expect((await call(cookie, 'GET', '/users?sort=size')).status).toBe(400);
   });
 
+  it('filters accounts by state, platform, storage and activity, combined, with totals', async () => {
+    const cookie = await signIn('support@example.test');
+    const repo = service.repo as MemoryRepository;
+    const bob = [...userAuth.users.values()].find((u) => u.id === 'bob')!;
+    await service.registerDevice('bob', { name: 'Pixel', platform: 'ANDROID' }, 'bob-phone');
+    (repo.rows.get('USER#bob|PROFILE')!.data as Record<string, number>).storageUsedBytes = 5;
+    (repo.rows.get('USER#alice|PROFILE')!.data as Record<string, string>).suspendedAt =
+      new Date().toISOString();
+    const list = async (query: string) => {
+      const page = await (await call(cookie, 'GET', `/users?${query}`)).json();
+      return { ids: (page.items as { id: string }[]).map((u) => u.id).sort(), page };
+    };
+    expect((await list('platform=ANDROID')).ids).toEqual([bob.id]);
+    expect((await list('platform=MOBILE&storage=uploaded')).ids).toEqual(['bob']);
+    expect((await list('platform=MOBILE&storage=empty')).ids).toEqual([]);
+    expect((await list('platform=WEB&state=suspended')).ids).toEqual(['alice']);
+    expect((await list('state=active')).ids).toEqual(['bob']);
+    expect((await list('platform=NONE')).ids).toEqual([]);
+    expect((await list('seen=7d&joined=1d')).ids).toEqual(['alice', 'bob']);
+    expect((await list('seen=inactive-30d')).ids).toEqual([]);
+    expect((await list('q=al&platform=WEB')).ids).toEqual(['alice']);
+    const { page } = await list('platform=WEB');
+    expect(page.summary).toMatchObject({
+      accounts: 2,
+      usedBytes: 5,
+      active30d: 2,
+      platforms: { WEB: 2, ANDROID: 1 },
+    });
+    expect(page.items.find((u: { id: string }) => u.id === 'bob')).toMatchObject({
+      platforms: ['ANDROID', 'WEB'],
+      lastSeenAt: expect.any(String),
+    });
+    // The plain list carries each account's platforms too, without totals.
+    const plain = await (await call(cookie, 'GET', '/users?q=alice')).json();
+    expect(plain.summary).toBeNull();
+    expect(plain.items[0]).toMatchObject({ platforms: ['WEB'], suspended: true });
+    expect((await call(cookie, 'GET', '/users?platform=PALM')).status).toBe(400);
+  });
+
   it('lets admins change the storage limit, audited, and the user sees it', async () => {
     const support = await signIn('support@example.test');
     expect(

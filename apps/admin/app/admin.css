@@ -152,6 +152,16 @@ body {
 .admin-search .input-group {
   flex: 1;
 }
+.admin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.admin-filters .btn svg {
+  width: 14px;
+  height: 14px;
+}
 .admin-stats {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));

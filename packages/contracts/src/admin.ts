@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { deviceSchema, storageSchema } from './index';
+import { deviceSchema, platform, storageSchema } from './index';
 import { flagReason, flagRuleSchema } from './flags';
 
 /**
@@ -118,19 +118,56 @@ export const adminUserDetailSchema = z.object({
 });
 /** How the console orders the account list; Cognito's own order is unsorted. */
 export const adminUserSortSchema = z.object({
-  sort: z.enum(['created', 'storage']),
+  sort: z.enum(['created', 'storage', 'seen']),
   order: z.enum(['asc', 'desc']).default('desc'),
 });
+/**
+ * Narrows the account list. Each filter is optional and they all apply together, so
+ * `platform=ANDROID&seen=inactive-30d` is the Android users who have gone quiet.
+ */
+export const adminUserFiltersSchema = z.object({
+  /** Account state; `never-signed-in` has a sign-in account but no profile yet. */
+  state: z
+    .enum(['active', 'unverified', 'disabled', 'suspended', 'deleted', 'never-signed-in'])
+    .optional(),
+  /** A platform the account has signed in from, a group of them, or `NONE` for no sign-ins. */
+  platform: z.enum([...platform.options, 'MOBILE', 'DESKTOP', 'NONE']).optional(),
+  /** Bytes stored, or the share of the quota they take. */
+  storage: z.enum(['empty', 'uploaded', 'over-50', 'over-90']).optional(),
+  /** Whether staff raised the quota above what the account got at sign-up. */
+  quota: z.enum(['standard', 'raised']).optional(),
+  /** When any of the account's devices was last seen. */
+  seen: z.enum(['1d', '7d', '30d', 'inactive-30d', 'never']).optional(),
+  /** When the account was created. */
+  joined: z.enum(['1d', '7d', '30d', '90d', 'older-90d']).optional(),
+});
+export const adminUserListItemSchema = directoryUserSchema.extend({
+  quotaBytes: z.number().nullable(),
+  usedBytes: z.number().nullable(),
+  suspended: z.boolean(),
+  deleted: z.boolean(),
+  /** Platforms the account has signed in from, signed out or not. */
+  platforms: z.array(platform).default([]),
+  /** The latest time any of its devices was seen. */
+  lastSeenAt: z.string().nullable().default(null),
+});
 export const adminUserPageSchema = z.object({
-  items: z.array(
-    directoryUserSchema.extend({
-      quotaBytes: z.number().nullable(),
-      usedBytes: z.number().nullable(),
-      suspended: z.boolean(),
-      deleted: z.boolean(),
-    }),
-  ),
+  items: z.array(adminUserListItemSchema),
   nextCursor: z.string().nullable(),
+  /** Every account that matches, across all pages; only when filtering or sorting. */
+  summary: z
+    .object({
+      computedAt: z.string(),
+      accounts: z.number(),
+      usedBytes: z.number(),
+      quotaBytes: z.number(),
+      /** Matching accounts seen on any device in the last 30 days. */
+      active30d: z.number(),
+      /** Matching accounts per platform they have signed in from. */
+      platforms: z.partialRecord(platform, z.number()),
+    })
+    .nullable()
+    .default(null),
 });
 export const auditPageSchema = z.object({
   items: z.array(auditEntrySchema),
@@ -248,6 +285,8 @@ export type AdminUserDetail = z.infer<typeof adminUserDetailSchema>;
 export type AdminUserEmail = z.infer<typeof adminUserEmailSchema>;
 export type AdminUserPage = z.infer<typeof adminUserPageSchema>;
 export type AdminUserSort = z.infer<typeof adminUserSortSchema>;
+export type AdminUserFilters = z.infer<typeof adminUserFiltersSchema>;
+export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export type AdminBeta = z.infer<typeof adminBetaSchema>;
