@@ -20,6 +20,7 @@ import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
 import { accountsOnDevice, type DeviceAccount } from '../signup-guard';
 import { platformCosts } from '../platform-costs';
+import { recentUsage, type ActivitySource, type RecentUsage } from './activity';
 import { indexAccounts, matchUsers, PLATFORMS, type IndexedUser, type Platform } from '../user-filters';
 
 const AUDIT = 'ADMIN_AUDIT';
@@ -36,11 +37,20 @@ const USER_PAGE = 50;
 const USER_INDEX_MAX_AGE_MS = 2 * 60_000;
 const DAY_MS = 86400_000;
 
-type Sortable = Pick<AdminUserListItem, 'id' | 'createdAt' | 'usedBytes' | 'lastSeenAt'>;
+type Sortable = Pick<
+    AdminUserListItem,
+    'id' | 'createdAt' | 'usedBytes' | 'lastSeenAt' | 'lastActivityAt'
+>;
 /** Orders accounts by `sort`; accounts without the value (no profile yet) always come last. */
 function compareUsers({ sort, order }: AdminUserSort) {
     const value = (u: Sortable) =>
-        sort === 'created' ? u.createdAt : sort === 'seen' ? u.lastSeenAt : u.usedBytes;
+        sort === 'created'
+            ? u.createdAt
+            : sort === 'seen'
+              ? u.lastSeenAt
+              : sort === 'activity'
+                ? u.lastActivityAt
+                : u.usedBytes;
     return (a: Sortable, b: Sortable) => {
         const x = value(a);
         const y = value(b);
@@ -70,6 +80,8 @@ export class AdminService {
     constructor(
         private service: StorageService,
         private directory: UserDirectory,
+        /** Reads the customer API's request log, for the list's usage filter and sort. */
+        private activity?: ActivitySource,
     ) { }
     get repo() {
         return this.service.repo;
@@ -179,7 +191,7 @@ export class AdminService {
         filters: AdminUserFilters = {},
     ): Promise<AdminUserPage> {
         const q = query.trim();
-        if (hasFilters(filters) || (sort && !q) || sort?.sort === 'seen')
+        if (hasFilters(filters) || (sort && !q) || sort?.sort === 'seen' || sort?.sort === 'activity')
             return this.filtered(q, filters, sort, cursor);
         let page = await this.directory.list(q, cursor);
         if (q && !q.includes('@') && !uuid.test(q)) {
@@ -223,17 +235,57 @@ export class AdminService {
     }
     private async buildUserIndex() {
         const computedAt = new Date().toISOString();
-        const [directory, profiles, devices] = await Promise.all([
+        const [directory, profiles, setups] = await Promise.all([
             this.directory.all(),
             this.repo.scanProfiles(),
-            this.repo.scanDevices(),
+            this.repo.scanSetups(),
         ]);
-        return { computedAt, users: indexAccounts(profiles, devices, directory) };
+        return {
+            computedAt,
+            users: indexAccounts(profiles, setups.devices, directory, setups.setups),
+        };
     }
-    /** Every account the list shows for `query` and `filters`, in no particular order. */
-    async matching(query: string, filters: AdminUserFilters) {
-        const { computedAt, users } = await this.indexUsers();
-        return { computedAt, matches: matchUsers(users, query, filters) };
+    private usage?: Promise<{ computedAt: string; byUser: RecentUsage; }>;
+    private usageAt = 0;
+    /** Every account's latest usage from the request log, reused for two minutes like the index. */
+    private recentUsage() {
+        assert(
+            this.activity,
+            'UNAVAILABLE',
+            'The request log is not connected here. Set API_LOG_GROUP to filter by usage.',
+            503,
+        );
+        if (this.usage && Date.now() - this.usageAt < USER_INDEX_MAX_AGE_MS) return this.usage;
+        this.usageAt = Date.now();
+        const computedAt = new Date().toISOString();
+        this.usage = recentUsage(this.activity)
+            .then((byUser) => ({ computedAt, byUser }))
+            .catch((error) => {
+                this.usage = undefined;
+                throw error;
+            });
+        return this.usage;
+    }
+    /**
+     * Every account the list shows for `query` and `filters`, in no particular order. With
+     * `withActivity` (always when filtering by usage) each carries its latest usage.
+     */
+    async matching(query: string, filters: AdminUserFilters, withActivity = !!filters.activity) {
+        const [{ computedAt, users }, usage] = await Promise.all([
+            this.indexUsers(),
+            withActivity ? this.recentUsage() : undefined,
+        ]);
+        const all = usage
+            ? users.map((u) => {
+                const latest = usage.byUser.get(u.id);
+                return { ...u, lastActivityAt: latest?.at ?? null, lastAction: latest?.action ?? null };
+            })
+            : users;
+        return {
+            computedAt,
+            activityComputedAt: usage?.computedAt ?? null,
+            matches: matchUsers(all, query, filters),
+        };
     }
     /**
      * The accounts that match `query` and `filters`, in `sort` order (newest first by default),
@@ -246,7 +298,11 @@ export class AdminService {
         cursor?: string,
     ): Promise<AdminUserPage> {
         const start = cursor && /^\d+$/.test(cursor) ? Number(cursor) : 0;
-        const { computedAt, matches } = await this.matching(query, filters);
+        const { computedAt, activityComputedAt, matches } = await this.matching(
+            query,
+            filters,
+            !!filters.activity || sort?.sort === 'activity',
+        );
         matches.sort(compareUsers(sort ?? { sort: 'created', order: 'desc' }));
         const now = Date.now();
         const summary = {
@@ -256,16 +312,22 @@ export class AdminService {
             quotaBytes: 0,
             active30d: 0,
             platforms: {} as Partial<Record<Platform, number>>,
+            activityComputedAt,
+            usage24h: activityComputedAt ? 0 : null,
         };
         for (const u of matches) {
             summary.usedBytes += u.usedBytes ?? 0;
             summary.quotaBytes += u.quotaBytes ?? 0;
             if (u.lastSeenAt && now - Date.parse(u.lastSeenAt) <= 30 * DAY_MS) summary.active30d++;
             for (const p of u.platforms) summary.platforms[p] = (summary.platforms[p] ?? 0) + 1;
+            if (u.lastActivityAt && now - Date.parse(u.lastActivityAt) <= DAY_MS)
+                summary.usage24h = (summary.usage24h ?? 0) + 1;
         }
         const end = start + USER_PAGE;
         return {
-            items: matches.slice(start, end).map(({ hasProfile: _h, raisedQuota: _r, ...u }) => u),
+            items: matches
+                .slice(start, end)
+                .map(({ hasProfile: _h, raisedQuota: _r, desktopSync: _s, desktopBackup: _b, ...u }) => u),
             nextCursor: end < matches.length ? String(end) : null,
             summary,
         };
@@ -283,6 +345,8 @@ export class AdminService {
                     suspended: !!profile?.suspendedAt,
                     deleted: !!profile?.deletedAt,
                     ...(await this.deviceActivity(user.id)),
+                    lastActivityAt: null,
+                    lastAction: null,
                 };
             }),
         );

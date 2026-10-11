@@ -99,6 +99,12 @@ export const emailGroupRuleSchema = z
     message:
       "A group can't follow accounts that are unverified, disabled or never signed in; they can't get campaigns.",
     path: ['filters', 'state'],
+  })
+  // The job worker works groups out from the table alone; usage is only in the request log.
+  .refine((r) => !r.filters.activity, {
+    message:
+      "A group can't follow an activity filter. Add the matching accounts to a fixed group instead.",
+    path: ['filters', 'activity'],
   });
 export const emailGroupInput = z
   .object({

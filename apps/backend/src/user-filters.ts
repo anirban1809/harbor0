@@ -3,7 +3,7 @@ import type {
   AdminUserListItem,
   DirectoryUser,
 } from '../../../packages/contracts/src/admin';
-import type { DeviceSighting, ProfileStorage, Repository } from './repository';
+import type { DeviceSighting, ProfileStorage, Repository, SetupSighting } from './repository';
 
 /**
  * The console user list's filters, shared by the list itself and by dynamic email groups,
@@ -11,12 +11,20 @@ import type { DeviceSighting, ProfileStorage, Repository } from './repository';
  */
 export type Platform = AdminUserListItem['platforms'][number];
 const DAY_MS = 86400_000;
+const HOUR_MS = 3600_000;
 const MOBILE = new Set<Platform>(['IOS', 'ANDROID']);
 const DESKTOP = new Set<Platform>(['MACOS', 'WINDOWS', 'LINUX']);
 export const PLATFORMS = new Set<string>(['WEB', 'MACOS', 'WINDOWS', 'LINUX', 'IOS', 'ANDROID']);
 
 /** An indexed account: its list row plus what the filters need that the row does not show. */
-export type IndexedUser = AdminUserListItem & { hasProfile: boolean; raisedQuota: boolean };
+export type IndexedUser = AdminUserListItem & {
+  hasProfile: boolean;
+  raisedQuota: boolean;
+  /** A signed-in desktop app syncs at least one folder. */
+  desktopSync: boolean;
+  /** A signed-in desktop app backs up at least one folder. */
+  desktopBackup: boolean;
+};
 
 /**
  * Whether `at` falls in a filter's window: within the last N days (`14d`), more than N days
@@ -29,6 +37,19 @@ function inWindow(at: string | null, window: string | undefined, now: number) {
   const age = now - Date.parse(at);
   const limit = Number(/(\d+)d$/.exec(window)?.[1] ?? 0) * DAY_MS;
   return /^(inactive|older)-/.test(window) ? age > limit : age <= limit;
+}
+
+/**
+ * Whether the latest usage `at` passes an activity filter: within N hours (`6h`) or days
+ * (`7d`), none for more than N days (`inactive-7d`, which includes none at all), or `none`.
+ */
+function activityWindow(at: string | null, window: string | undefined, now: number) {
+  if (!window) return true;
+  if (window === 'none') return !at;
+  const [, inactive, n, unit] = /^(inactive-)?(\d+)([hd])$/.exec(window) ?? [];
+  const limit = Number(n) * (unit === 'h' ? HOUR_MS : DAY_MS);
+  if (inactive) return !at || now - Date.parse(at) > limit;
+  return !!at && now - Date.parse(at) <= limit;
 }
 
 /** Whether `user` passes every filter set in `filters`, as of `now`. */
@@ -72,6 +93,12 @@ export function matchesFilters(user: IndexedUser, filters: AdminUserFilters, now
   if (filters.quota === 'standard' && (user.raisedQuota || !user.hasProfile)) return false;
   if (!inWindow(user.lastSeenAt, filters.seen, now)) return false;
   if (!inWindow(user.createdAt, filters.joined, now)) return false;
+  if (!activityWindow(user.lastActivityAt, filters.activity, now)) return false;
+  const { desktopSync, desktopBackup } = user;
+  if (filters.desktop === 'sync' && !desktopSync) return false;
+  if (filters.desktop === 'backup' && !desktopBackup) return false;
+  if (filters.desktop === 'either' && !desktopSync && !desktopBackup) return false;
+  if (filters.desktop === 'neither' && (desktopSync || desktopBackup)) return false;
   return true;
 }
 
@@ -93,6 +120,41 @@ export function matchUsers(
   );
 }
 
+// Backups that are on: running, or failing and retrying.
+const BACKING_UP = new Set(['ACTIVE', 'ERROR']);
+
+/**
+ * Which accounts sync or back up folders from a signed-in desktop app. A device's sync folder
+ * list is keyed by its installation (or, for old builds, its session); a backup names both.
+ */
+export function desktopSetups(devices: DeviceSighting[], setups: SetupSighting[]) {
+  const desktops = new Map<string, Set<string>>();
+  for (const d of devices) {
+    const platform = d.platform as Platform | undefined;
+    if (!d.userId || !platform || !DESKTOP.has(platform)) continue;
+    if (d.revokedAt || d.status === 'REVOKED' || d.status === 'SIGNED_OUT') continue;
+    const keys = desktops.get(d.userId) ?? desktops.set(d.userId, new Set()).get(d.userId)!;
+    if (d.id) keys.add(`session:${d.id}`);
+    if (d.devicePublicId) keys.add(`installation:${d.devicePublicId}`);
+  }
+  const result = new Map<string, { sync: boolean; backup: boolean }>();
+  for (const s of setups) {
+    const keys = desktops.get(s.userId);
+    if (!keys) continue;
+    const entry =
+      result.get(s.userId) ?? result.set(s.userId, { sync: false, backup: false }).get(s.userId)!;
+    if (s.kind === 'SYNC' && s.folderCount > 0 && keys.has(s.key)) entry.sync = true;
+    if (
+      s.kind === 'BACKUP' &&
+      BACKING_UP.has(s.state ?? '') &&
+      ((s.deviceId && keys.has(`session:${s.deviceId}`)) ||
+        (s.devicePublicId && keys.has(`installation:${s.devicePublicId}`)))
+    )
+      entry.backup = true;
+  }
+  return result;
+}
+
 /**
  * Every account with what the filters read. With the sign-in `directory`, those are its
  * accounts plus deleted ones' tombstone profiles. Without it (the job worker), every profile:
@@ -102,7 +164,9 @@ export function indexAccounts(
   profiles: ProfileStorage[],
   devices: DeviceSighting[],
   directory?: DirectoryUser[],
+  setups: SetupSighting[] = [],
 ): IndexedUser[] {
+  const desktop = desktopSetups(devices, setups);
   const seen = new Map<string, { platforms: Set<Platform>; lastSeenAt: string | null }>();
   for (const d of devices) {
     if (!d.userId) continue;
@@ -126,8 +190,12 @@ export function indexAccounts(
       deleted: !!p?.deletedAt || (!hasSignIn && !!p),
       platforms: [...(activity?.platforms ?? [])].sort(),
       lastSeenAt: activity?.lastSeenAt ?? null,
+      lastActivityAt: null,
+      lastAction: null,
       hasProfile: !!p,
       raisedQuota: !!p?.freeQuotaBytes && (p.storageQuotaBytes ?? 0) > p.freeQuotaBytes,
+      desktopSync: !!desktop.get(user.id)?.sync,
+      desktopBackup: !!desktop.get(user.id)?.backup,
     };
   };
   const fromProfile = (p: ProfileStorage): DirectoryUser => ({
@@ -153,6 +221,9 @@ export async function profileMatches(
   repo: Repository,
   rule: { q: string; filters: AdminUserFilters },
 ) {
-  const [profiles, devices] = await Promise.all([repo.scanProfiles(), repo.scanDevices()]);
-  return matchUsers(indexAccounts(profiles, devices), rule.q, rule.filters);
+  const [profiles, { devices, setups }] = await Promise.all([
+    repo.scanProfiles(),
+    repo.scanSetups(),
+  ]);
+  return matchUsers(indexAccounts(profiles, devices, undefined, setups), rule.q, rule.filters);
 }

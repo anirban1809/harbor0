@@ -146,7 +146,7 @@ export function createAdminApp(
     auth: StaffAuth,
     options: AdminAppOptions,
 ) {
-    const admin = new AdminService(service, directory);
+    const admin = new AdminService(service, directory, options.activity);
     const beta = new Beta(service.repo, options.inviteRequired ?? false);
     const flags = new AdminFlags(admin);
     const campaigns = new AdminCampaigns(admin, options.webOrigin ?? '');

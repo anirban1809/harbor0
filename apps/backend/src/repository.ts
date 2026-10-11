@@ -39,13 +39,74 @@ export interface Repository {
   scanProfiles(): Promise<ProfileStorage[]>;
   /** Every device session's account, platform and name; a full-table read like scanProfiles. */
   scanDevices(): Promise<DeviceSighting[]>;
+  /**
+   * Every device session plus every sync folder list and backup folder, in one full-table
+   * read: what the console's user filters need to tell who syncs or backs up from where.
+   */
+  scanSetups(): Promise<{ devices: DeviceSighting[]; setups: SetupSighting[] }>;
 }
 export type DeviceSighting = {
   userId?: string;
   platform?: string;
   name?: string;
   lastSeenAt?: string;
+  id?: string;
+  devicePublicId?: string | null;
+  status?: string;
+  revokedAt?: string | null;
 };
+/** A device's list of synced folders (SYNCFOLDERS#) or a backup folder (BACKUP#). */
+export type SetupSighting =
+  | { kind: 'SYNC'; userId: string; key: string; folderCount: number }
+  | {
+      kind: 'BACKUP';
+      userId: string;
+      deviceId?: string;
+      devicePublicId?: string | null;
+      state?: string;
+    };
+const SETUP_FIELDS = [
+  'userId',
+  'platform',
+  'name',
+  'lastSeenAt',
+  'id',
+  'devicePublicId',
+  'status',
+  'revokedAt',
+  'key',
+  'folderIds',
+  'deviceId',
+  'state',
+] as const;
+type SetupRow = { pk: string; sk: string; data: Record<string, unknown> };
+/** Splits rows read for `scanSetups` into devices and setups. */
+function splitSetups(rows: SetupRow[]) {
+  const devices: DeviceSighting[] = [];
+  const setups: SetupSighting[] = [];
+  for (const { pk, sk, data: d } of rows) {
+    if (sk.startsWith('DEVICE#')) {
+      const { userId, platform, name, lastSeenAt, id, devicePublicId, status, revokedAt } =
+        d as DeviceSighting;
+      devices.push({ userId, platform, name, lastSeenAt, id, devicePublicId, status, revokedAt });
+    } else if (sk.startsWith('SYNCFOLDERS#') && pk.startsWith('USER#'))
+      setups.push({
+        kind: 'SYNC',
+        userId: pk.slice('USER#'.length),
+        key: String(d.key ?? ''),
+        folderCount: Array.isArray(d.folderIds) ? d.folderIds.length : 0,
+      });
+    else if (sk.startsWith('BACKUP#') && pk.startsWith('USER#'))
+      setups.push({
+        kind: 'BACKUP',
+        userId: pk.slice('USER#'.length),
+        deviceId: d.deviceId as string | undefined,
+        devicePublicId: d.devicePublicId as string | null | undefined,
+        state: d.state as string | undefined,
+      });
+  }
+  return { devices, setups };
+}
 export type ProfileStorage = {
   id?: string;
   storageUsedBytes?: number;
@@ -226,11 +287,21 @@ export class DynamoRepository implements Repository {
       'lastSeenAt',
     ]);
   }
-  /** The chosen `data` fields of every row the filter keeps. */
+  async scanSetups() {
+    const rows = await this.scanData<SetupRow>(
+      'begins_with(sk, :d) or begins_with(sk, :s) or begins_with(sk, :b)',
+      { ':d': 'DEVICE#', ':s': 'SYNCFOLDERS#', ':b': 'BACKUP#' },
+      SETUP_FIELDS,
+      true,
+    );
+    return splitSetups(rows);
+  }
+  /** The chosen `data` fields of every row the filter keeps, with the row's keys if `keys`. */
   private async scanData<T>(
     filter: string,
     values: Record<string, unknown>,
     fields: readonly string[],
+    keys = false,
   ) {
     // Parallel segments keep a large table within the console Lambda's timeout.
     const segments = 4;
@@ -245,7 +316,10 @@ export class DynamoRepository implements Repository {
               Segment: segment,
               TotalSegments: segments,
               FilterExpression: filter,
-              ProjectionExpression: fields.map((_, i) => `#d.#f${i}`).join(', '),
+              ProjectionExpression: [
+                ...(keys ? ['pk', 'sk'] : []),
+                ...fields.map((_, i) => `#d.#f${i}`),
+              ].join(', '),
               ExpressionAttributeNames: {
                 '#d': 'data',
                 ...Object.fromEntries(fields.map((f, i) => [`#f${i}`, f])),
@@ -254,7 +328,10 @@ export class DynamoRepository implements Repository {
               ExclusiveStartKey: start,
             }),
           );
-          for (const item of page.Items ?? []) out.push((item.data ?? {}) as T);
+          for (const item of page.Items ?? [])
+            out.push(
+              (keys ? { pk: item.pk, sk: item.sk, data: item.data ?? {} } : (item.data ?? {})) as T,
+            );
           start = page.LastEvaluatedKey;
         } while (start);
         return out;
@@ -330,6 +407,17 @@ export class MemoryRepository implements Repository {
         const { userId, platform, name, lastSeenAt } = r.data as DeviceSighting;
         return { userId, platform, name, lastSeenAt };
       });
+  }
+  async scanSetups() {
+    return splitSetups(
+      [...this.rows.values()]
+        .filter((r) => /^(DEVICE|SYNCFOLDERS|BACKUP)#/.test(r.sk))
+        .map((r) => ({
+          pk: r.pk,
+          sk: r.sk,
+          data: structuredClone(r.data) as Record<string, unknown>,
+        })),
+    );
   }
   async commit(writes: Write[], checks: Write[]) {
     if (writes.length + checks.length > 100)

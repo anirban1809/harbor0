@@ -345,8 +345,8 @@ export class AdminCampaigns {
   private dynamicUsers() {
     if (this.dynamicIndex && Date.now() - this.dynamicIndex.at < DYNAMIC_INDEX_MAX_AGE_MS)
       return this.dynamicIndex.users;
-    const users = Promise.all([this.repo.scanProfiles(), this.repo.scanDevices()]).then(
-      ([profiles, devices]) => indexAccounts(profiles, devices),
+    const users = Promise.all([this.repo.scanProfiles(), this.repo.scanSetups()]).then(
+      ([profiles, { devices, setups }]) => indexAccounts(profiles, devices, undefined, setups),
     );
     users.catch(() => (this.dynamicIndex = undefined));
     this.dynamicIndex = { at: Date.now(), users };

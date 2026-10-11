@@ -117,11 +117,15 @@ export const adminUserDetailSchema = z.object({
 });
 /** How the console orders the account list; Cognito's own order is unsorted. */
 export const adminUserSortSchema = z.object({
-  sort: z.enum(['created', 'storage', 'seen']),
+  /** `activity` is the last upload, download or other usage, from the request log. */
+  sort: z.enum(['created', 'storage', 'seen', 'activity']),
   order: z.enum(['asc', 'desc']).default('desc'),
 });
 /** A day count in a filter window, from 1 day to 10 years. */
 const days = '([1-9]\\d{0,3})d';
+/** Hours or days the request log still covers: up to 720 hours or 30 days. */
+const hours = '([1-9]|[1-9]\\d|[1-6]\\d\\d|7[01]\\d|720)h';
+const logDays = '([1-9]|[12]\\d|30)d';
 /**
  * Narrows the account list. Each filter is optional and they all apply together, so
  * `platform=ANDROID&seen=inactive-30d` is the Android users who have gone quiet. The numeric
@@ -151,6 +155,21 @@ export const adminUserFiltersSchema = z.object({
     .string()
     .regex(new RegExp(`^(${days}|older-${days})$`))
     .optional(),
+  /**
+   * What the account's desktop apps do: sync folders (`sync`), back up folders (`backup`),
+   * either, or `neither`. Counts signed-in Mac, Windows and Linux apps only, and backups that
+   * are on (not paused, archived or removed).
+   */
+  desktop: z.enum(['sync', 'backup', 'either', 'neither']).optional(),
+  /**
+   * Usage (uploads, downloads, file changes, sync and backups) within N hours (`Nh`) or days
+   * (`Nd`), none for more than N days (`inactive-Nd`), or none at all (`none`). Read from the
+   * request log, which keeps 30 days, so days go up to 30.
+   */
+  activity: z
+    .string()
+    .regex(new RegExp(`^(none|${hours}|${logDays}|inactive-${logDays})$`))
+    .optional(),
 });
 export const adminUserListItemSchema = directoryUserSchema.extend({
   quotaBytes: z.number().nullable(),
@@ -161,6 +180,10 @@ export const adminUserListItemSchema = directoryUserSchema.extend({
   platforms: z.array(platform).default([]),
   /** The latest time any of its devices was seen. */
   lastSeenAt: z.string().nullable().default(null),
+  /** The account's latest usage in the request log, when the list was asked for it. */
+  lastActivityAt: z.string().nullable().default(null),
+  /** What that was, a `USAGE_ACTIONS` value such as UPLOADED. */
+  lastAction: z.string().nullable().default(null),
 });
 export const adminUserPageSchema = z.object({
   items: z.array(adminUserListItemSchema),
@@ -176,6 +199,10 @@ export const adminUserPageSchema = z.object({
       active30d: z.number(),
       /** Matching accounts per platform they have signed in from. */
       platforms: z.partialRecord(platform, z.number()),
+      /** When the request log was read for usage; null when the list didn't need it. */
+      activityComputedAt: z.string().nullable().default(null),
+      /** Matching accounts that uploaded, downloaded or changed anything in 24 hours. */
+      usage24h: z.number().nullable().default(null),
     })
     .nullable()
     .default(null),

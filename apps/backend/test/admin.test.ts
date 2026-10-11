@@ -8,6 +8,7 @@ import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
 import { DevelopmentStaffAuth } from '../src/admin/staff-auth';
+import { desktopSetups } from '../src/user-filters';
 
 const ORIGIN = 'http://console.test';
 let userAuth: DevelopmentAuth;
@@ -170,6 +171,78 @@ describe('management console API', () => {
     expect(plain.summary).toBeNull();
     expect(plain.items[0]).toMatchObject({ platforms: ['WEB'], suspended: true });
     expect((await call(cookie, 'GET', '/users?platform=PALM')).status).toBe(400);
+  });
+
+  it('filters by desktop sync or backup and by usage, and sorts by last use', async () => {
+    const repo = service.repo as MemoryRepository;
+    const queries: string[] = [];
+    const lastUse = new Date(Date.now() - 3600_000).toISOString();
+    const withLog = createAdminApp(
+      service,
+      new DevelopmentDirectory(userAuth),
+      new DevelopmentStaffAuth(),
+      {
+        origins: [ORIGIN],
+        secureCookies: false,
+        activity: async (query) => {
+          queries.push(query);
+          return [
+            {
+              userId: 'bob',
+              lastAt: lastUse.replace('T', ' ').replace('Z', ''),
+              m: 'POST',
+              r: '/v1/uploads/:id/complete',
+            },
+          ];
+        },
+      },
+    ).app;
+    adminApp = withLog;
+    const cookie = await signIn('support@example.test');
+    // Bob syncs a folder from his Mac; Alice backs one up from hers.
+    await service.registerDevice('bob', { name: 'Mac', platform: 'MACOS' }, 'bob-mac');
+    const folder = await service.createFolder('bob', {
+      operationId: crypto.randomUUID(),
+      parentId: null,
+      name: 'Work',
+    });
+    await service.setSyncFolders('bob', 'bob-mac', [folder.item.id]);
+    await service.registerDevice('alice', { name: 'Mac', platform: 'MACOS' }, 'alice-mac');
+    await transact(repo, (tx) =>
+      tx.put('USER#alice', 'BACKUP#b1', {
+        id: 'b1',
+        userId: 'alice',
+        deviceId: 'alice-mac',
+        state: 'ACTIVE',
+      }),
+    );
+    const list = async (query: string) => {
+      const page = await (await call(cookie, 'GET', `/users?${query}`)).json();
+      return { ids: (page.items as { id: string }[]).map((u) => u.id), page };
+    };
+    expect((await list('desktop=sync')).ids).toEqual(['bob']);
+    expect((await list('desktop=backup')).ids).toEqual(['alice']);
+    expect((await list('desktop=either')).ids.sort()).toEqual(['alice', 'bob']);
+    expect((await list('desktop=neither')).ids).toEqual([]);
+    expect(queries).toEqual([]);
+
+    const recent = await list('activity=24h');
+    expect(recent.ids).toEqual(['bob']);
+    expect(recent.page.items[0]).toMatchObject({ lastActivityAt: lastUse, lastAction: 'UPLOADED' });
+    expect(recent.page.summary).toMatchObject({
+      usage24h: 1,
+      activityComputedAt: expect.any(String),
+    });
+    expect((await list('activity=none')).ids).toEqual(['alice']);
+    expect((await list('activity=inactive-1d')).ids).toEqual(['alice']);
+    expect((await list('activity=2h')).ids).toEqual(['bob']);
+    const sorted = await list('sort=activity&order=desc');
+    expect(sorted.ids).toEqual(['bob', 'alice']);
+    // One log read serves the list for a while.
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('latest(route)');
+    for (const bad of ['activity=31d', 'activity=721h', 'desktop=always'])
+      expect((await call(cookie, 'GET', `/users?${bad}`)).status).toBe(400);
   });
 
   it('lets admins change the storage limit, audited, and the user sees it', async () => {
@@ -438,5 +511,28 @@ describe('management console API', () => {
       allocatedBytes: 0,
       orphans: { accounts: 1, usedBytes: 0, allocatedBytes: 1_000_000_000_000 },
     });
+  });
+});
+
+describe('desktop sync and backup filter', () => {
+  it('counts only signed-in desktop apps and backups that are on', () => {
+    const devices = [
+      { userId: 'a', id: 'mac', platform: 'MACOS', devicePublicId: 'pk1' },
+      { userId: 'b', id: 'phone', platform: 'ANDROID' },
+      { userId: 'c', id: 'pc', platform: 'WINDOWS', status: 'SIGNED_OUT' },
+      { userId: 'd', id: 'old', platform: 'LINUX' },
+    ];
+    const result = desktopSetups(devices, [
+      { kind: 'SYNC', userId: 'a', key: 'installation:pk1', folderCount: 2 },
+      { kind: 'SYNC', userId: 'b', key: 'session:phone', folderCount: 1 },
+      { kind: 'BACKUP', userId: 'c', deviceId: 'pc', state: 'ACTIVE' },
+      { kind: 'BACKUP', userId: 'd', deviceId: 'old', state: 'ARCHIVED' },
+      { kind: 'SYNC', userId: 'd', key: 'session:old', folderCount: 0 },
+      { kind: 'BACKUP', userId: 'a', devicePublicId: 'pk1', state: 'ERROR' },
+    ]);
+    expect(result.get('a')).toEqual({ sync: true, backup: true });
+    expect(result.get('b')).toBeUndefined();
+    expect(result.get('c')).toBeUndefined();
+    expect(result.get('d')).toEqual({ sync: false, backup: false });
   });
 });

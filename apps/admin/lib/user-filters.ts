@@ -76,6 +76,17 @@ export const FILTERS: {
     ],
   },
   {
+    key: 'desktop',
+    label: 'Desktop app',
+    options: [
+      ['', 'Any desktop use'],
+      ['sync', 'Syncs folders'],
+      ['backup', 'Backs up folders'],
+      ['either', 'Syncs or backs up'],
+      ['neither', 'No desktop sync or backup'],
+    ],
+  },
+  {
     key: 'storage',
     label: 'Storage',
     options: [
@@ -129,6 +140,24 @@ export const FILTERS: {
     custom: [
       custom('joined', 'Joined within N days…', 'days', '', 'd', 9999),
       custom('older', 'Joined over N days ago…', 'days', 'older-', 'd', 9999),
+    ],
+  },
+  {
+    key: 'activity',
+    label: 'Usage',
+    options: [
+      ['', 'Any usage'],
+      ['1h', 'Used in the last hour'],
+      ['24h', 'Used in 24 hours'],
+      ['7d', 'Used in 7 days'],
+      ['30d', 'Used in 30 days'],
+      ['inactive-7d', 'Nothing used in 7+ days'],
+      ['none', 'Nothing used in 30 days'],
+    ],
+    custom: [
+      custom('activity-hours', 'Used within N hours…', 'hours', '', 'h', 720),
+      custom('activity-days', 'Used within N days…', 'days', '', 'd', 30),
+      custom('activity-inactive', 'Nothing used for N+ days…', 'days', 'inactive-', 'd', 30),
     ],
   },
 ];

@@ -21,6 +21,7 @@ import { PageHeader, Shell, useCan } from '../../components/shell';
 import { StatusBadges } from '../../components/status-badges';
 import { StorageMeter } from '../../components/storage-meter';
 import { Stat } from '../../components/storage-totals';
+import { actionNames } from '../../components/activity-parts';
 import { api } from '../../lib/api';
 import { bytes, date, plural, relative } from '../../lib/format';
 import {
@@ -113,7 +114,13 @@ function FilterControl({
 }
 
 /** Combinations staff ask about often, one click each. */
-const PRESETS: { label: string; filters: AdminUserFilters }[] = [
+const PRESETS: { label: string; filters: AdminUserFilters; sort?: AdminUserSort }[] = [
+  {
+    label: 'Recently used',
+    filters: { activity: '24h' },
+    sort: { sort: 'activity', order: 'desc' },
+  },
+  { label: 'Desktop sync or backup', filters: { desktop: 'either' } },
   { label: 'Signed up, never uploaded', filters: { state: 'active', storage: 'empty' } },
   { label: 'Verified, never signed in', filters: { state: 'never-signed-in' } },
   { label: 'Gone quiet', filters: { state: 'active', storage: 'uploaded', seen: 'inactive-30d' } },
@@ -125,7 +132,8 @@ const PRESETS: { label: string; filters: AdminUserFilters }[] = [
 
 function readSort(params: URLSearchParams): AdminUserSort | null {
   const sort = params.get('sort');
-  if (sort !== 'created' && sort !== 'storage' && sort !== 'seen') return null;
+  if (sort !== 'created' && sort !== 'storage' && sort !== 'seen' && sort !== 'activity')
+    return null;
   return { sort, order: params.get('order') === 'asc' ? 'asc' : 'desc' };
 }
 
@@ -158,6 +166,13 @@ function Summary({ summary }: { summary: NonNullable<AdminUserPage['summary']> }
           value={summary.active30d.toLocaleString()}
           hint={share(summary.active30d)}
         />
+        {summary.usage24h !== null && (
+          <Stat
+            label="Used in 24 hours"
+            value={summary.usage24h.toLocaleString()}
+            hint={share(summary.usage24h)}
+          />
+        )}
         <Stat
           label="Storage used"
           value={bytes(summary.usedBytes)}
@@ -182,11 +197,13 @@ function SortHeader({
   label,
   current,
   onSort,
+  title,
 }: {
   column: SortKey;
   label: string;
   current: AdminUserSort | null;
   onSort: (sort: AdminUserSort) => void;
+  title?: string;
 }) {
   const active = current?.sort === column ? current.order : null;
   const Icon = active === 'asc' ? ArrowUp : active === 'desc' ? ArrowDown : ArrowUpDown;
@@ -195,6 +212,7 @@ function SortHeader({
       <button
         type="button"
         className="admin-sort"
+        title={title}
         data-active={active ? '' : undefined}
         onClick={() => onSort({ sort: column, order: active === 'desc' ? 'asc' : 'desc' })}
       >
@@ -240,6 +258,8 @@ function Users() {
   const onSort = (s: AdminUserSort) => go(q, s, filters);
   const items = users.data?.pages.flatMap((p) => p.items) ?? [];
   const summary = users.data?.pages[0]?.summary ?? null;
+  // Usage comes from the request log, read only when the list filters or sorts by it.
+  const usageLoaded = !!summary?.activityComputedAt;
   const canGroup = useCan('campaigns');
   const [selected, setSelected] = useState<Map<string, (typeof items)[number]>>(new Map());
   const [addition, setAddition] = useState<GroupAddition | null>(null);
@@ -319,7 +339,9 @@ function Users() {
               size="sm"
               variant={active ? 'primary' : 'outline'}
               aria-pressed={active}
-              onClick={() => go(q, sort, active ? {} : preset.filters)}
+              onClick={() =>
+                go(q, active ? sort : (preset.sort ?? sort), active ? {} : preset.filters)
+              }
             >
               {preset.label}
             </Button>
@@ -392,6 +414,13 @@ function Users() {
               <th>Platforms</th>
               <SortHeader column="storage" label="Storage" current={sort} onSort={onSort} />
               <SortHeader column="seen" label="Last active" current={sort} onSort={onSort} />
+              <SortHeader
+                column="activity"
+                label="Last used"
+                current={sort}
+                onSort={onSort}
+                title="Latest upload, download, file change, sync or backup, from the request log (30 days)"
+              />
               <SortHeader column="created" label="Created" current={sort} onSort={onSort} />
             </tr>
           </thead>
@@ -440,6 +469,21 @@ function Users() {
                 </td>
                 <td className="admin-nowrap" title={u.lastSeenAt ? date(u.lastSeenAt) : undefined}>
                   {relative(u.lastSeenAt)}
+                </td>
+                <td
+                  className="admin-nowrap"
+                  title={u.lastActivityAt ? date(u.lastActivityAt) : undefined}
+                >
+                  {usageLoaded && (
+                    <>
+                      {u.lastActivityAt ? relative(u.lastActivityAt) : '—'}
+                      {u.lastAction && (
+                        <div className="admin-muted">
+                          {actionNames[u.lastAction] ?? u.lastAction}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </td>
                 <td className="admin-nowrap">{date(u.createdAt)}</td>
               </tr>

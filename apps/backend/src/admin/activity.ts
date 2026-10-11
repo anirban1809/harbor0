@@ -254,10 +254,31 @@ const usageKeys = (actions?: readonly UsageAction[]) =>
  * The account's successful usage requests. A desktop app re-sends its sync folder list on
  * every start, so that one only counts when its line says folders were added or removed.
  */
-const usageFilter = (userId: string, actions?: readonly UsageAction[]) =>
-  `${mine(userId)} and event = "request" and status < 400` +
+const usageFilter = (userId: string | null, actions?: readonly UsageAction[]) =>
+  `${userId ? mine(userId) : 'filter ispresent(userId)'} and event = "request" and status < 400` +
   ` and concat(method, " ", route) in [${usageKeys(actions).join(', ')}]` +
   ' and (concat(method, " ", route) != "PUT /v1/sync/folders" or ispresent(usage.added))';
+
+/** Each account's latest usage, by account ID. */
+export type RecentUsage = Map<string, { at: string; action: UsageAction | null }>;
+/**
+ * Every account's latest usage in the 30 days the request log keeps: one query over the whole
+ * log (about 3 GB, so around $0.015), which the console reuses for a couple of minutes.
+ */
+export async function recentUsage(source: ActivitySource, now = Date.now()): Promise<RecentUsage> {
+  const { start, end } = bounds('30d', now);
+  const rows = await source(
+    `${usageFilter(null)}` +
+      ' | stats max(@timestamp) as lastAt, latest(method) as m, latest(route) as r by userId',
+    start,
+    end,
+  );
+  return new Map(
+    rows
+      .filter((r) => r.userId && r.lastAt)
+      .map((r) => [r.userId!, { at: iso(r.lastAt), action: usageAction(r.m ?? '', r.r ?? '') }]),
+  );
+}
 const UPLOADED_KEY = 'POST /v1/uploads/:id/complete';
 const DOWNLOADED_KEY = 'POST /v1/downloads';
 

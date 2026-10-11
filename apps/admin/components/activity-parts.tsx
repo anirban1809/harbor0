@@ -15,6 +15,33 @@ export const rangeNames: Record<AdminActivityRange, string> = {
 };
 export const isRange = (value: string | null): value is AdminActivityRange =>
   (adminActivityRanges as readonly string[]).includes(value ?? '');
+/** What a usage action was, in words, e.g. UPLOADED → "Uploaded a file". */
+export const actionNames: Record<string, string> = {
+  UPLOADED: 'Uploaded a file',
+  DOWNLOADED: 'Downloaded',
+  FOLDER_ZIPPED: 'Downloaded a folder as ZIP',
+  FOLDER_CREATED: 'Created a folder',
+  RENAMED: 'Renamed',
+  MOVED: 'Moved',
+  TRASHED: 'Moved to trash',
+  UNTRASHED: 'Restored from trash',
+  DELETED: 'Deleted forever',
+  TRASH_EMPTIED: 'Emptied the trash',
+  VERSION_RESTORED: 'Restored an older version',
+  TRANSFER_SENT: 'Sent files',
+  TRANSFER_SAVED: 'Saved received files',
+  SHARED: 'Shared an item',
+  SYNC_SHARED: 'Invited someone to sync a folder',
+  SYNC_FOLDERS_CHANGED: 'Changed sync folders',
+  SYNC_FOLDER_REMOVED: 'Stopped syncing a folder everywhere',
+  BACKUP_ADDED: 'Added a backup folder',
+  BACKUP_STARTED: 'Backup started',
+  BACKUP_FINISHED: 'Backup finished',
+  BACKUP_DISCONNECTED: 'Disconnected a backup',
+  BACKUP_ARCHIVED: 'Archived a backup',
+  BACKUP_RESUMED: 'Resumed a backup',
+  BACKUP_RESTORED: 'Restored from a backup',
+};
 export const kindNames: Record<string, string> = {
   UPLOAD_FAILED: 'Upload failed',
   UPLOAD_PART_RETRY: 'Part retried',
