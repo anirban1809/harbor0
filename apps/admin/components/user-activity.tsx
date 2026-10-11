@@ -16,7 +16,7 @@ import { Select } from '../../web/components/ui/select';
 import { DataTable } from '../../web/components/ui/table';
 import { Skeleton } from '../../web/components/ui/skeleton';
 import { api } from '../lib/api';
-import { date, relative } from '../lib/format';
+import { bytes, date, relative } from '../lib/format';
 import { Stat } from './storage-totals';
 
 const rangeNames: Record<AdminActivityRange, string> = {
@@ -38,6 +38,18 @@ const Route = ({ method, route }: { method: string; route: string }) => (
     ))}
   </>
 );
+const kindNames: Record<string, string> = {
+  UPLOAD_FAILED: 'Upload failed',
+  UPLOAD_PART_RETRY: 'Part retried',
+};
+const stageNames: Record<string, string> = {
+  hash: 'reading the file',
+  create: 'starting the upload',
+  parts: 'signing part URLs',
+  storage: 'sending to storage',
+  complete: 'finishing',
+  other: 'other',
+};
 const tone = (status: number): BadgeTone =>
   status >= 500 ? 'danger' : status === 401 ? 'neutral' : status >= 400 ? 'warning' : 'success';
 
@@ -69,7 +81,7 @@ export function UserActivity({
   return (
     <Card
       title="API activity"
-      description="Requests this account's apps made, from the API request log (kept 30 days; accounts are named from 11 Oct 2026)."
+      description="Requests this account's apps made and problems they reported, from the API request log (kept 30 days; accounts are named from 11 Oct 2026)."
       action={
         <div className="admin-activity-controls">
           <Select
@@ -126,7 +138,100 @@ export function UserActivity({
               value={data.totals.unauthorized.toLocaleString()}
               hint="401: mostly expired sessions"
             />
+            <Stat
+              label="Uploads failed"
+              value={data.totals.appFailures.toLocaleString()}
+              hint="Reported by the apps"
+            />
+            <Stat
+              label="Storage retries"
+              value={data.totals.appRetries.toLocaleString()}
+              hint="Upload parts the apps retried"
+            />
           </div>
+
+          {data.appProblems.length > 0 && (
+            <DataTable label="Problems the apps reported">
+              <thead>
+                <tr>
+                  <th>App reported</th>
+                  <th>Status</th>
+                  <th>Error</th>
+                  <th>Count</th>
+                  <th>Last</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.appProblems.map((p) => (
+                  <tr key={`${p.kind} ${p.stage} ${p.code} ${p.httpStatus}`}>
+                    <td>
+                      {kindNames[p.kind] ?? p.kind}
+                      <div className="admin-muted">{stageNames[p.stage] ?? p.stage}</div>
+                    </td>
+                    <td>
+                      {p.httpStatus == null ? (
+                        '—'
+                      ) : (
+                        <Badge tone={p.httpStatus ? tone(p.httpStatus) : 'warning'}>
+                          {p.httpStatus || 'No response'}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="admin-activity-route">{p.code ?? '—'}</td>
+                    <td>{p.count.toLocaleString()}</td>
+                    <td className="admin-nowrap" title={date(p.lastAt)}>
+                      {relative(p.lastAt)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
+
+          {data.appEvents.length > 0 && (
+            <DataTable label="Latest problems the apps reported">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Problem</th>
+                  <th>Upload</th>
+                  <th>Device</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.appEvents.map((e, i) => (
+                  <tr key={`${e.at} ${i}`}>
+                    <td className="admin-nowrap" title={e.at}>
+                      {date(e.at)}
+                    </td>
+                    <td>
+                      {kindNames[e.kind] ?? e.kind} · {stageNames[e.stage] ?? e.stage}
+                      <div className="admin-muted">
+                        {[
+                          e.code,
+                          e.httpStatus == null ? null : `HTTP ${e.httpStatus || 'none'}`,
+                          e.online === false ? 'offline' : null,
+                          e.message,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    </td>
+                    <td className="admin-nowrap">
+                      {e.sizeBytes == null ? '—' : bytes(e.sizeBytes)}
+                      {e.partNumber != null && (
+                        <div className="admin-muted">
+                          Part {e.partNumber}
+                          {e.attempt != null && `, try ${e.attempt + 1}`}
+                        </div>
+                      )}
+                    </td>
+                    <td>{device(e.deviceId, e.platform, e.appVersion)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </DataTable>
+          )}
 
           {data.problems.length > 0 && (
             <DataTable label="Failures by route">

@@ -3,8 +3,8 @@ import { chmod, open, stat, lstat, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { ApiClient, ApiError } from '@harbor/api-client';
-import type { DriveItem, CompletedPart } from '@harbor/contracts';
+import { ApiClient, ApiError, describeProblem } from '@harbor/api-client';
+import type { DriveItem, CompletedPart, ClientEventStage } from '@harbor/contracts';
 import {
   prepareFolderDownload,
   type FolderDownloadProgress,
@@ -96,6 +96,47 @@ export async function uploadFile(
   beforeComplete?: () => Promise<void>,
   backup?: { rootId: string; runId: string },
 ) {
+  // Where the upload got to, for the problem report if it fails.
+  const at = { stage: 'hash' as ClientEventStage };
+  try {
+    return await upload(
+      api,
+      filename,
+      name,
+      parentId,
+      state,
+      persist,
+      existing,
+      progress,
+      beforeComplete,
+      backup,
+      at,
+    );
+  } catch (error) {
+    api.reportProblem({
+      kind: 'UPLOAD_FAILED',
+      stage: at.stage,
+      uploadId: state.uploadId,
+      sizeBytes: state.size,
+      ...describeProblem(error),
+    });
+    throw error;
+  }
+}
+async function upload(
+  api: ApiClient,
+  filename: string,
+  name: string,
+  parentId: string | null,
+  state: UploadState,
+  persist: () => void,
+  existing: { itemId: string; revision: number } | undefined,
+  progress: ((loaded: number, total: number) => void) | undefined,
+  beforeComplete: (() => Promise<void>) | undefined,
+  backup: { rootId: string; runId: string } | undefined,
+  at: { stage: ClientEventStage },
+): Promise<DriveItem> {
+  at.stage = 'hash';
   const info = await stat(filename);
   if (state.mtime !== undefined && (state.mtime !== info.mtimeMs || state.size !== info.size)) {
     if (state.uploadId) await cancelUpload(api, state.uploadId);
@@ -111,6 +152,7 @@ export async function uploadFile(
   state.size = info.size;
   if (!state.hash) state.hash = await hashFile(filename);
   persist();
+  at.stage = 'create';
   // A freshly created upload has no parts yet; only a resumed one needs its server status.
   let created = false;
   if (!state.uploadId) {
@@ -140,7 +182,7 @@ export async function uploadFile(
     state.uploadId = undefined;
     state.operationId = crypto.randomUUID();
     persist();
-    return uploadFile(
+    return upload(
       api,
       filename,
       name,
@@ -151,6 +193,7 @@ export async function uploadFile(
       progress,
       beforeComplete,
       backup,
+      at,
     );
   }
   const parts: CompletedPart[] =
@@ -165,6 +208,7 @@ export async function uploadFile(
     1,
     Math.min(TRANSFER_CONCURRENCY, Math.floor(UPLOAD_BUFFER_BUDGET / state.partSize!)),
   );
+  at.stage = 'storage';
   const handle = await open(filename, 'r');
   try {
     for (let start = 0; start < missing.length; start += concurrency) {
@@ -199,9 +243,26 @@ export async function uploadFile(
               });
               etag = response.ok ? response.headers.get('etag') : null;
               await response.body?.cancel();
-              if (!etag) throw new Error('Storage upload failed. It will resume automatically.');
+              if (!etag)
+                throw Object.assign(
+                  new Error('Storage upload failed. It will resume automatically.'),
+                  {
+                    code: response.ok ? 'NO_ETAG' : 'STORAGE_REJECTED',
+                    httpStatus: response.status,
+                  },
+                );
               break;
             } catch (error) {
+              api.reportProblem({
+                kind: 'UPLOAD_PART_RETRY',
+                // Signing the URL is an API call; the PUT itself goes to storage.
+                stage: error instanceof ApiError ? 'parts' : 'storage',
+                uploadId: state.uploadId,
+                sizeBytes: info.size,
+                partNumber: n,
+                attempt,
+                ...describeProblem(error),
+              });
               if (attempt === 2) throw error;
             }
           }
@@ -222,6 +283,7 @@ export async function uploadFile(
   if (after.mtimeMs !== state.mtime || after.size !== state.size)
     throw new Error('File changed while uploading. The next attempt will restart safely.');
   await beforeComplete?.();
+  at.stage = 'complete';
   return (
     await api.complete(
       state.uploadId!,

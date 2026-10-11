@@ -77,6 +77,11 @@ const folderBody = z
   .strict();
 const deleteAccountPath = '/v1/users/me/delete';
 const sessionChallengePath = '/v1/auth/session/challenge';
+/** Keeps signed URLs and local paths out of the logs if an app's error message carries one. */
+export const redact = (message: string) =>
+  message
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
+    .replace(/(?:\b[A-Za-z]:)?(?:[\\/][^\\/\s'"]+){2,}/g, '<path>');
 const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
@@ -992,6 +997,31 @@ export function createApp(
     c.mutation.strict(),
     z.object({ item: c.itemSchema }),
     async (ctx, i) => service.restoreVersion(userId(ctx), p(ctx, 'id'), p(ctx, 'versionId'), i),
+  );
+  add(
+    'post',
+    '/v1/client-events',
+    'Report problems the app saw outside the API',
+    c.clientEventsBody,
+    z.object({ accepted: z.number() }),
+    async (ctx, i: z.infer<typeof c.clientEventsBody>) => {
+      const identity = ctx.get('identity');
+      const device = ctx.get('device');
+      // Each event is one log line under the account, like a request, and nothing is stored.
+      for (const event of i.events)
+        console.log(
+          JSON.stringify({
+            event: 'client_error',
+            requestId: ctx.get('requestId'),
+            userId: identity.id,
+            deviceId: identity.deviceId,
+            ...(device ? { platform: device.platform, appVersion: device.appVersion } : {}),
+            ...event,
+            ...(event.message ? { message: redact(event.message) } : {}),
+          }),
+        );
+      return { accepted: i.events.length };
+    },
   );
   add(
     'post',

@@ -262,6 +262,23 @@ export const adminActivityRequestSchema = z.object({
   platform: z.string().nullable(),
   appVersion: z.string().nullable(),
 });
+/** A problem an app reported, e.g. a storage PUT that failed or stalled. */
+export const adminAppEventSchema = z.object({
+  at: z.string(),
+  kind: z.string(),
+  stage: z.string(),
+  code: z.string().nullable(),
+  httpStatus: z.number().nullable(),
+  message: z.string().nullable(),
+  uploadId: z.string().nullable(),
+  sizeBytes: z.number().nullable(),
+  partNumber: z.number().nullable(),
+  attempt: z.number().nullable(),
+  online: z.boolean().nullable(),
+  deviceId: z.string().nullable(),
+  platform: z.string().nullable(),
+  appVersion: z.string().nullable(),
+});
 /**
  * An account's API requests over a range: totals, failures grouped by route and error, and the
  * latest requests. Read from the request log (kept 30 days), which names accounts since
@@ -278,6 +295,10 @@ export const adminActivitySchema = z.object({
     serverErrors: z.number(),
     /** 401s, mostly expired sessions an app renews by itself. */
     unauthorized: z.number(),
+    /** Storage PUTs the apps retried, as they reported them. */
+    appRetries: z.number().default(0),
+    /** Uploads the apps reported as failed. */
+    appFailures: z.number().default(0),
   }),
   problems: z.array(
     z.object({
@@ -292,6 +313,21 @@ export const adminActivitySchema = z.object({
   requests: z.array(adminActivityRequestSchema),
   /** More requests matched than the list holds. */
   truncated: z.boolean(),
+  /** Problems the apps reported (`POST /v1/client-events`), grouped. */
+  appProblems: z
+    .array(
+      z.object({
+        kind: z.string(),
+        stage: z.string(),
+        code: z.string().nullable(),
+        httpStatus: z.number().nullable(),
+        count: z.number(),
+        lastAt: z.string(),
+      }),
+    )
+    .default([]),
+  /** The latest problems the apps reported. */
+  appEvents: z.array(adminAppEventSchema).default([]),
 });
 
 const reason = z.string().trim().min(3).max(500);

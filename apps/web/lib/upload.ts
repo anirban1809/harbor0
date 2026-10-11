@@ -1,5 +1,5 @@
-import { ApiClient, ApiError } from '@harbor/api-client';
-import type { CompletedPart, DriveItem } from '@harbor/contracts';
+import { ApiClient, ApiError, describeProblem } from '@harbor/api-client';
+import type { ClientEventStage, CompletedPart, DriveItem } from '@harbor/contracts';
 /** How a file lands: under its own name, as a new version of an item, or beside a same-named one. */
 export type UploadTarget =
   | { kind: 'new' }
@@ -69,6 +69,12 @@ function hashFile(file: File, signal: AbortSignal): Promise<string> {
     worker.postMessage(file);
   });
 }
+// A storage PUT that sends nothing for this long is given up and retried; without it a
+// dropped connection can leave the browser waiting forever with the upload stuck.
+const STALL_MS = 60_000;
+/** A storage failure with what the problem report needs. */
+const storageError = (message: string, code: string, httpStatus: number) =>
+  Object.assign(new Error(message), { code, httpStatus });
 function put(
   url: string,
   blob: Blob,
@@ -78,23 +84,52 @@ function put(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
+    let stalled = false;
+    const stall = () => {
+      stalled = true;
+      xhr.abort();
+    };
+    let timer = setTimeout(stall, STALL_MS);
     const abort = () => xhr.abort();
-    signal.addEventListener('abort', abort, { once: true });
-    xhr.upload.onprogress = (e) => onProgress(e.loaded);
-    xhr.onload = () => {
+    const settle = () => {
+      clearTimeout(timer);
       signal.removeEventListener('abort', abort);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    xhr.upload.onprogress = (e) => {
+      clearTimeout(timer);
+      timer = setTimeout(stall, STALL_MS);
+      onProgress(e.loaded);
+    };
+    xhr.onload = () => {
+      settle();
       const etag = xhr.getResponseHeader('ETag');
       if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag);
-      else reject(new Error('The storage upload failed. Retry to resume.'));
+      else
+        reject(
+          storageError(
+            'The storage upload failed. Retry to resume.',
+            etag ? 'STORAGE_REJECTED' : 'NO_ETAG',
+            xhr.status,
+          ),
+        );
     };
     xhr.onerror = () => {
-      signal.removeEventListener('abort', abort);
-      reject(new Error('Network interrupted. Retry to resume.'));
+      settle();
+      reject(storageError('Network interrupted. Retry to resume.', 'NETWORK', 0));
     };
-    xhr.onabort = () => reject(new DOMException('Paused', 'AbortError'));
+    xhr.onabort = () => {
+      settle();
+      reject(
+        stalled
+          ? storageError('The upload stalled. Retry to resume.', 'STALLED', 0)
+          : new DOMException('Paused', 'AbortError'),
+      );
+    };
     xhr.send(blob);
   });
 }
+const paused = (e: unknown) => e instanceof DOMException && e.name === 'AbortError';
 export class BrowserUpload {
   controller = new AbortController();
   uploadId?: string;
@@ -119,12 +154,36 @@ export class BrowserUpload {
         if (!(e instanceof ApiError && [404, 409].includes(e.status))) throw e;
       });
   }
+  /** Where the upload got to, for the problem report if it fails. */
+  private stage: ClientEventStage = 'hash';
   async run(
     file: File,
     parentId: string | null,
     progress: (p: UploadProgress) => void,
     target: UploadTarget = { kind: 'new' },
   ): Promise<DriveItem> {
+    try {
+      return await this.attempt(file, parentId, progress, target);
+    } catch (e) {
+      if (!paused(e))
+        this.api.reportProblem({
+          kind: 'UPLOAD_FAILED',
+          stage: this.stage,
+          uploadId: this.uploadId,
+          sizeBytes: file.size,
+          online: navigator.onLine,
+          ...describeProblem(e),
+        });
+      throw e;
+    }
+  }
+  private async attempt(
+    file: File,
+    parentId: string | null,
+    progress: (p: UploadProgress) => void,
+    target: UploadTarget,
+  ): Promise<DriveItem> {
+    this.stage = 'hash';
     this.controller = new AbortController();
     const signal = this.controller.signal;
     progress({ name: file.name, size: file.size, loaded: 0, phase: 'hashing' });
@@ -136,6 +195,7 @@ export class BrowserUpload {
       id: string;
       partSizeBytes: number;
     } | null;
+    this.stage = 'create';
     if (saved) {
       try {
         const status = await this.api.request(`/v1/uploads/${saved.id}`);
@@ -173,6 +233,7 @@ export class BrowserUpload {
     this.uploadId = saved.id;
     this.resumeKey = key;
     const session = saved;
+    this.stage = 'storage';
     const status = await this.api.request(`/v1/uploads/${session.id}`);
     const parts: CompletedPart[] = status.parts ?? [];
     const uploaded = new Set(parts.map((p) => p.partNumber));
@@ -215,6 +276,18 @@ export class BrowserUpload {
             );
             break;
           } catch (e) {
+            if (signal.aborted && paused(e)) throw e;
+            this.api.reportProblem({
+              kind: 'UPLOAD_PART_RETRY',
+              // Signing the URL is an API call; the PUT itself goes to storage.
+              stage: e instanceof ApiError ? 'parts' : 'storage',
+              uploadId: session.id,
+              sizeBytes: file.size,
+              partNumber,
+              attempt,
+              online: navigator.onLine,
+              ...describeProblem(e),
+            });
             if (signal.aborted || attempt === 2) throw e;
             await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
           }
@@ -226,6 +299,7 @@ export class BrowserUpload {
     };
     try {
       await Promise.all([work(), work(), work()]);
+      this.stage = 'complete';
       const { item } = await this.api.complete(
         session.id,
         parts.sort((a, b) => a.partNumber - b.partNumber),

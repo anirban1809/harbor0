@@ -7,6 +7,7 @@ import type {
   CompletedPart,
   SyncChange,
   StorageAuditRow,
+  ClientEvent,
 } from '@harbor/contracts';
 export type { paths } from './generated';
 export { proxyBrowserRequest } from './session-proxy';
@@ -76,8 +77,74 @@ export function createTransport(
     return json;
   };
 }
+/** A problem to report: `at` defaults to now. */
+export type Problem = Omit<ClientEvent, 'at'> & { at?: string };
+/** The code, HTTP status and message of any error, for a problem report. */
+export function describeProblem(
+  error: unknown,
+): Pick<ClientEvent, 'code' | 'httpStatus' | 'message'> {
+  if (error instanceof ApiError)
+    return { code: error.code, httpStatus: error.status, message: error.message.slice(0, 300) };
+  const e = (error ?? {}) as {
+    name?: unknown;
+    code?: unknown;
+    httpStatus?: unknown;
+    message?: unknown;
+    cause?: { code?: unknown };
+  };
+  // Node's fetch hides the network error (ECONNRESET, ENOTFOUND…) in `cause`.
+  const code = [e.code, e.cause?.code, e.name].find((v) => typeof v === 'string') as
+    string | undefined;
+  return {
+    ...(code ? { code: code.slice(0, 64) } : {}),
+    ...(typeof e.httpStatus === 'number' ? { httpStatus: e.httpStatus } : {}),
+    ...(typeof e.message === 'string' ? { message: e.message.slice(0, 300) } : {}),
+  };
+}
+const REPORT_BATCH = 20;
+const REPORT_DELAY_MS = 5_000;
+// The same problem again within this window is dropped, so a stuck retry loop can't flood.
+const REPORT_REPEAT_MS = 60_000;
 export class ApiClient {
+  private problems: ClientEvent[] = [];
+  private reported = new Map<string, number>();
+  private reportTimer?: ReturnType<typeof setTimeout>;
   constructor(public request: Transport) {}
+  /**
+   * Queues a problem the API can't see (a failed storage PUT, an upload that gave up) for the
+   * console. Reports go out in batches a few seconds later; if sending fails they are dropped.
+   */
+  reportProblem(problem: Problem) {
+    const now = Date.now();
+    const key = [
+      problem.kind,
+      problem.stage,
+      problem.code,
+      problem.uploadId,
+      problem.partNumber,
+    ].join('|');
+    if (now - (this.reported.get(key) ?? -Infinity) < REPORT_REPEAT_MS) return;
+    if (this.reported.size > 500) this.reported.clear();
+    this.reported.set(key, now);
+    if (this.problems.length >= 100) return;
+    this.problems.push({ ...problem, at: problem.at ?? new Date(now).toISOString() });
+    if (this.problems.length >= REPORT_BATCH) void this.flushProblems();
+    else if (!this.reportTimer) {
+      this.reportTimer = setTimeout(() => void this.flushProblems(), REPORT_DELAY_MS);
+      // A queued report must not keep a Node process (tests, CLI) alive.
+      (this.reportTimer as { unref?: () => void }).unref?.();
+    }
+  }
+  async flushProblems() {
+    clearTimeout(this.reportTimer);
+    this.reportTimer = undefined;
+    while (this.problems.length) {
+      const events = this.problems.splice(0, REPORT_BATCH);
+      await this.request('/v1/client-events', { method: 'POST', body: { events } }).catch(
+        () => undefined,
+      );
+    }
+  }
   me(): Promise<{ user: User; storage: StorageUsage; flags: FlagStates }> {
     return this.request('/v1/users/me');
   }

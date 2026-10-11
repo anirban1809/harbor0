@@ -277,3 +277,33 @@ it('keeps the original file on checksum failure and handles empty files', async 
   await downloadFile(downloadApi(Buffer.alloc(0)), {}, destination);
   expect((await stat(destination)).size).toBe(0);
 });
+
+it('reports each failed storage PUT and the upload that gave up', async () => {
+  const filename = path.join(directory, 'upload');
+  await writeFile(filename, 'abcd');
+  const { api } = uploadApi();
+  const report = vi.spyOn(api, 'reportProblem').mockImplementation(() => {});
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response('denied', { status: 403 })),
+  );
+  const state: UploadState = { operationId: 'op' };
+  await expect(uploadFile(api, filename, 'upload', null, state, () => {})).rejects.toThrow(
+    'Storage upload failed',
+  );
+  const reports = report.mock.calls.map(([p]) => p);
+  expect(reports.map((p) => [p.kind, p.attempt])).toEqual([
+    ['UPLOAD_PART_RETRY', 0],
+    ['UPLOAD_PART_RETRY', 1],
+    ['UPLOAD_PART_RETRY', 2],
+    ['UPLOAD_FAILED', undefined],
+  ]);
+  expect(reports[0]).toMatchObject({
+    stage: 'storage',
+    uploadId: 'upload',
+    partNumber: 1,
+    httpStatus: 403,
+    code: 'STORAGE_REJECTED',
+  });
+  expect(reports[3]).toMatchObject({ stage: 'storage', sizeBytes: 4, httpStatus: 403 });
+});

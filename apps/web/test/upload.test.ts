@@ -54,6 +54,7 @@ function fakeApi(options: { create?: (input: any) => void; complete?: () => unkn
     }),
     parts: vi.fn(async () => ({ parts: [{ partNumber: 1, uploadUrl: 'https://r2/put' }] })),
     complete: vi.fn(async () => options.complete?.() ?? { item: { id: 'item1' } }),
+    reportProblem: vi.fn(),
   };
   return { api: api as any, calls, created };
 }
@@ -152,5 +153,71 @@ describe('BrowserUpload', () => {
       code: 'NAME_CONFLICT',
     });
     expect(created).toHaveLength(1);
+  });
+  it('reports each failed storage PUT and the upload that gave up', async () => {
+    class RejectingXhr extends FakeXhr {
+      status = 503;
+    }
+    vi.stubGlobal('XMLHttpRequest', RejectingXhr);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { api } = fakeApi({});
+      const run = new BrowserUpload(api, 'u1').run(file, null, () => {});
+      const failed = expect(run).rejects.toThrow(/storage upload failed/);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await failed;
+      const reports = api.reportProblem.mock.calls.map(([p]: any[]) => p);
+      expect(reports.map((p: any) => [p.kind, p.attempt])).toEqual([
+        ['UPLOAD_PART_RETRY', 0],
+        ['UPLOAD_PART_RETRY', 1],
+        ['UPLOAD_PART_RETRY', 2],
+        ['UPLOAD_FAILED', undefined],
+      ]);
+      expect(reports[0]).toMatchObject({
+        stage: 'storage',
+        uploadId: 'up1',
+        partNumber: 1,
+        httpStatus: 503,
+        code: 'STORAGE_REJECTED',
+      });
+      expect(reports[3]).toMatchObject({ stage: 'storage', sizeBytes: file.size });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('gives up on a storage PUT that sends nothing for a minute, then retries it', async () => {
+    let sends = 0;
+    class StalledXhr extends FakeXhr {
+      onabort?: () => void;
+      send() {
+        // The first attempt hangs; the retry goes through.
+        if (++sends > 1) super.send();
+      }
+      abort() {
+        this.onabort?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', StalledXhr);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { api } = fakeApi({});
+      const run = new BrowserUpload(api, 'u1').run(file, null, () => {});
+      await vi.advanceTimersByTimeAsync(61_000);
+      await expect(run).resolves.toMatchObject({ id: 'item1' });
+      expect(sends).toBe(2);
+      expect(api.reportProblem).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'UPLOAD_PART_RETRY', code: 'STALLED', httpStatus: 0 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('does not report a paused upload', async () => {
+    const { api } = fakeApi({});
+    const upload = new BrowserUpload(api, 'u1');
+    const run = upload.run(file, null, () => {});
+    upload.pause();
+    await expect(run).rejects.toThrow('Paused');
+    expect(api.reportProblem).not.toHaveBeenCalled();
   });
 });
