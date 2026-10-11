@@ -241,6 +241,59 @@ export const adminOverviewSchema = z.object({
   recent: z.array(auditEntrySchema),
 });
 
+/** How far back a user's activity lookup reads the API request log. */
+export const adminActivityRanges = ['1h', '24h', '7d', '30d'] as const;
+export const adminActivityQuery = z.object({
+  range: z.enum(adminActivityRanges).default('24h'),
+  /** Only requests that failed (status 400 and up). */
+  failed: z.enum(['0', '1']).default('0'),
+});
+/** One API request an account made, from the request log. */
+export const adminActivityRequestSchema = z.object({
+  at: z.string(),
+  requestId: z.string(),
+  method: z.string(),
+  route: z.string(),
+  status: z.number(),
+  /** The error code a failed request answered with. */
+  code: z.string().nullable(),
+  ms: z.number().nullable(),
+  deviceId: z.string().nullable(),
+  platform: z.string().nullable(),
+  appVersion: z.string().nullable(),
+});
+/**
+ * An account's API requests over a range: totals, failures grouped by route and error, and the
+ * latest requests. Read from the request log (kept 30 days), which names accounts since
+ * 11 Oct 2026.
+ */
+export const adminActivitySchema = z.object({
+  range: z.enum(adminActivityRanges),
+  since: z.string(),
+  totals: z.object({
+    requests: z.number(),
+    /** Status 400 and up, sign-in expiry (401) included. */
+    failed: z.number(),
+    /** Status 500 and up: our faults, not the caller's. */
+    serverErrors: z.number(),
+    /** 401s, mostly expired sessions an app renews by itself. */
+    unauthorized: z.number(),
+  }),
+  problems: z.array(
+    z.object({
+      method: z.string(),
+      route: z.string(),
+      status: z.number(),
+      code: z.string().nullable(),
+      count: z.number(),
+      lastAt: z.string(),
+    }),
+  ),
+  requests: z.array(adminActivityRequestSchema),
+  /** More requests matched than the list holds. */
+  truncated: z.boolean(),
+});
+
 const reason = z.string().trim().min(3).max(500);
 export const adminReasonBody = z.object({ reason }).strict();
 // 1 PB is far above any plan; it only stops a typo adding three zeros too many.
@@ -336,3 +389,5 @@ export type AdminFlagList = z.infer<typeof adminFlagListSchema>;
 export type AdminFlagDetail = z.infer<typeof adminFlagDetailSchema>;
 export type AdminFlagBody = z.infer<typeof adminFlagBody>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;
+export type AdminActivity = z.infer<typeof adminActivitySchema>;
+export type AdminActivityRange = (typeof adminActivityRanges)[number];

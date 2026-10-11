@@ -467,10 +467,21 @@ const adminFunction = new lambda.Function(stack, 'Admin', {
     STAFF_CLIENT_ID: staffClient.ref,
     ADMIN_ORIGIN: adminOrigin,
     WEB_ORIGIN: webOrigin,
+    API_LOG_GROUP: logGroup.logGroupName,
     NODE_ENV: 'production',
   },
   logGroup: adminLogs,
 });
+// Account activity in the console reads the customer API's request log with Logs Insights.
+adminFunction.addToRolePolicy(
+  new iam.PolicyStatement({ actions: ['logs:StartQuery'], resources: [logGroup.logGroupArn] }),
+);
+adminFunction.addToRolePolicy(
+  new iam.PolicyStatement({
+    actions: ['logs:GetQueryResults', 'logs:StopQuery'],
+    resources: ['*'],
+  }),
+);
 table.grantReadWriteData(adminFunction);
 adminFunction.addToRolePolicy(
   new iam.PolicyStatement({

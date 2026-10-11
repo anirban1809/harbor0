@@ -810,3 +810,22 @@ body {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* User page: API activity */
+.admin-activity {
+  display: grid;
+  gap: 16px;
+}
+.admin-activity-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-activity .admin-stats {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.admin-activity-route {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}

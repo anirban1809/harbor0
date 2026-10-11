@@ -35,6 +35,7 @@ import { ReasonDialog } from '../../components/reason-dialog';
 import { PageHeader, Shell, useCan } from '../../components/shell';
 import { StatusBadges } from '../../components/status-badges';
 import { StorageMeter } from '../../components/storage-meter';
+import { UserActivity } from '../../components/user-activity';
 import { UserEmailCard } from '../../components/user-email-card';
 import { api, type UserAction } from '../../lib/api';
 import { bytes, date, GB, relative, TB } from '../../lib/format';
@@ -556,6 +557,8 @@ function Detail({ id }: { id: string }) {
           <p className="admin-empty">{devices.length ? 'No signed-in devices.' : 'No devices.'}</p>
         )}
       </Card>
+
+      <UserActivity userId={id} devices={devices} />
 
       {detail.data.sameDevice.length > 0 && (
         <Card

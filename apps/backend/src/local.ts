@@ -11,6 +11,7 @@ import { ApnsSender, PushDelivery, PushRegistrations } from './push';
 import { R2Storage } from './storage';
 import { StorageService } from './domain';
 import { createAdminApp } from './admin/api';
+import { cloudWatchActivity } from './admin/activity';
 import { DevelopmentDirectory } from './admin/directory';
 import { DevelopmentStaffAuth } from './admin/staff-auth';
 import { EmailLinks } from './email-preferences';
@@ -137,6 +138,10 @@ if (auth instanceof DevelopmentAuth) {
       secureCookies: false,
       inviteRequired: process.env.HARBOR_INVITE_ONLY === 'true',
       webOrigin: 'http://localhost:3000',
+      // Point at a cloud API log group to try account activity locally.
+      activity: process.env.API_LOG_GROUP
+        ? cloudWatchActivity(process.env.API_LOG_GROUP)
+        : undefined,
     },
   );
   serve({ fetch: adminApp.fetch, hostname: '127.0.0.1', port: adminPort }, () =>

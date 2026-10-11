@@ -18,6 +18,7 @@ import { Realtime, type RealtimeGateway } from './realtime';
 import { LazyApnsSender, PushDelivery, PushRegistrations } from './push';
 import { proxyBrowserRequest } from '@harbor/api-client';
 import { createAdminApp } from './admin/api';
+import { cloudWatchActivity } from './admin/activity';
 import { CognitoDirectory } from './admin/directory';
 import { CognitoStaffAuth } from './admin/staff-auth';
 import type { ObjectStorage } from './storage';
@@ -208,6 +209,7 @@ export function adminRuntime() {
       STAFF_CLIENT_ID: z.string().min(1),
       ADMIN_ORIGIN: z.union([z.url(), z.literal('')]).default(''),
       WEB_ORIGIN: z.union([z.url(), z.literal('')]).default(''),
+      API_LOG_GROUP: z.string().default(''),
     })
     .parse(process.env);
   const noStorage = new Proxy({} as ObjectStorage, {
@@ -223,6 +225,7 @@ export function adminRuntime() {
       secureCookies: true,
       inviteRequired: BETA,
       webOrigin: c.WEB_ORIGIN,
+      activity: c.API_LOG_GROUP ? cloudWatchActivity(c.API_LOG_GROUP) : undefined,
     },
   ).app;
   return adminInstance;

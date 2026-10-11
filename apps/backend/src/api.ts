@@ -47,6 +47,8 @@ type Env = {
     timing?: Record<string, number>;
     /** The calling app's device, once the session is registered. */
     device?: c.Device;
+    /** The error code a failed request answered with. */
+    errorCode?: string;
   };
 };
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
@@ -117,9 +119,12 @@ export function createApp(
     ctx.header('Cache-Control', 'no-store');
     const started = performance.now();
     await next();
-    // One line per request for the operations dashboard. The route is the matched
-    // pattern, never the concrete path, so no resource ids reach the logs.
+    // One line per request for the operations dashboard and the console's per-account
+    // activity. The route is the matched pattern, never the concrete path, so no file or
+    // folder ids reach the logs; the account and device are the caller's own ids.
     const matched = routePath(ctx, -1);
+    const identity = ctx.get('identity');
+    const device = ctx.get('device');
     console.log(
       JSON.stringify({
         event: 'request',
@@ -128,6 +133,10 @@ export function createApp(
         route: matched === '/*' ? '(no route)' : matched,
         status: ctx.res.status,
         ms: Math.round(performance.now() - started),
+        ...(identity ? { userId: identity.id } : {}),
+        ...(identity?.deviceId ? { deviceId: identity.deviceId } : {}),
+        ...(device ? { platform: device.platform, appVersion: device.appVersion } : {}),
+        ...(ctx.get('errorCode') ? { code: ctx.get('errorCode') } : {}),
         // Milliseconds spent on each sign-in check before the route itself runs.
         ...(ctx.get('timing') ? { timing: ctx.get('timing') } : {}),
       }),
@@ -204,9 +213,11 @@ export function createApp(
             event: 'request_failed',
             requestId: ctx.get('requestId'),
             errorType: name,
+            ...(ctx.get('identity') ? { userId: ctx.get('identity').id } : {}),
           }),
         );
     }
+    ctx.set('errorCode', e.code);
     return ctx.json(
       {
         error: {

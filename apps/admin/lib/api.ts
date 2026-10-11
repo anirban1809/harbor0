@@ -1,4 +1,6 @@
 import type {
+  AdminActivity,
+  AdminActivityRange,
   AdminBeta,
   AdminTestInvite,
   AdminFlag,
@@ -117,6 +119,8 @@ export const api = {
       })}`,
     ),
   user: (id: string) => request<AdminUserDetail>('GET', user(id)),
+  activity: (id: string, range: AdminActivityRange, failed: boolean) =>
+    request<AdminActivity>('GET', `${user(id)}/activity?range=${range}&failed=${failed ? 1 : 0}`),
   setQuota: (id: string, quotaBytes: number, reason: string) =>
     request('PUT', `${user(id)}/quota`, { quotaBytes, reason }),
   action: (id: string, action: UserAction, reason: string, extra?: { notify?: boolean }) =>
