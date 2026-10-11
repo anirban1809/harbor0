@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 const root = process.cwd();
 const stage = path.join(root, '.cloud/web-export');
 await rm(stage, { recursive: true, force: true });
@@ -12,6 +13,8 @@ for (const dir of ['app', 'components', 'lib', 'workers']) {
     filter: (file) => file !== path.join(root, 'apps/web/app/api'),
   });
 }
+await import(pathToFileURL(path.join(root, 'apps/web/scripts/copy-pdfjs.mjs')).href);
+await cp(path.join(root, 'apps/web/public'), path.join(stage, 'public'), { recursive: true });
 await cp('apps/web/package.json', path.join(stage, 'package.json'));
 const tsconfig = JSON.parse(await readFile('apps/web/tsconfig.json', 'utf8'));
 tsconfig.compilerOptions.paths = {

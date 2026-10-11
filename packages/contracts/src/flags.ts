@@ -19,6 +19,10 @@ export const featureFlags = {
       APP_UNSUPPORTED: 'Blocked: app has no two-step support',
     },
   },
+  'pdf-preview': {
+    description:
+      'PDF preview on the web: opening a PDF shows its pages in the preview tray instead of “No preview available”. The desktop and mobile apps are unaffected.',
+  },
 } as const satisfies Record<string, FlagDefinition>;
 type FlagDefinition = {
   /** What staff see for it in the console. */

@@ -38,6 +38,7 @@ import { BrandLogo } from '../components/brand-logo';
 import { AuthPage } from './auth-page';
 import { FilePreview } from '../components/lazy-file-preview';
 import { previewKind, type PreviewLoader } from '../lib/file-preview';
+import { useFeatureFlag } from '../lib/feature-flags';
 import { fetchTextPreview } from '../../../packages/api-client/src/preview';
 import { Input, InputGroup } from '../components/ui/input';
 import { Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
@@ -215,6 +216,7 @@ function FileGlyph({ item }: { item: Pick<DriveItem, 'type' | 'mimeType'> }) {
 }
 function Workspace() {
   const cache = useQueryClient();
+  const pdfPreview = useFeatureFlag('pdf-preview');
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -2031,6 +2033,7 @@ function Workspace() {
       />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
+          pdf={pdfPreview}
           cacheScope={user?.id ?? 'anonymous'}
           item={modal.item}
           load={loadPreview}

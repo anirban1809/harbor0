@@ -6,17 +6,21 @@ import { previewKind, type PreviewContent, type PreviewLoader } from '../lib/fil
 import { Drawer } from './ui/dialog';
 import { previewCache, previewCacheKey } from '../lib/preview-cache';
 import { Button } from './ui/button';
+import { PdfPreview } from './pdf-preview';
 
 export function FilePreview({
   item,
   cacheScope,
   load,
+  pdf = false,
   onDownload,
   onClose,
 }: {
   item: FileEntry;
   cacheScope: string;
   load: PreviewLoader;
+  /** Show PDFs with pdf.js; off in the desktop app, whose renderer cannot fetch the file. */
+  pdf?: boolean;
   onDownload: () => void;
   onClose: () => void;
 }) {
@@ -53,6 +57,7 @@ export function FilePreview({
         item={item}
         cacheScope={cacheScope}
         load={load}
+        pdf={pdf}
       />
       <section className="file-preview-info" aria-label="File information">
         <h3>File information</h3>
@@ -78,14 +83,17 @@ function PreviewBody({
   item,
   load,
   cacheScope,
+  pdf,
 }: {
   item: FileEntry;
   load: PreviewLoader;
   cacheScope: string;
+  pdf: boolean;
 }) {
   const cache = previewCache(load);
   const key = previewCacheKey(cacheScope, item);
-  const kind = previewKind(item);
+  const detected = previewKind(item);
+  const kind = detected === 'pdf' && !pdf ? null : detected;
   const [content, setContent] = useState<PreviewContent | undefined>(() => cache.get(key));
   const [error, setError] = useState('');
   const [ready, setReady] = useState(() => {
@@ -189,6 +197,14 @@ function PreviewBody({
               aria-label={`Video preview: ${item.name}`}
               onLoadedMetadata={() => setReady(true)}
               onError={mediaError}
+            />
+          )}
+          {content && 'url' in content && kind === 'pdf' && (
+            <PdfPreview
+              url={content.url}
+              name={item.name}
+              onReady={() => setReady(true)}
+              onError={(message) => (message ? setError(message) : mediaError())}
             />
           )}
           {content && 'url' in content && kind === 'audio' && (

@@ -17,3 +17,5 @@ test-results/
 .DS_Store
 .cloud/
 apps/desktop/.dev-runtime/
+# pdf.js runtime assets, copied from node_modules by apps/web/scripts/copy-pdfjs.mjs
+apps/web/public/pdfjs/

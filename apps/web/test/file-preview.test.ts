@@ -16,8 +16,10 @@ it.each([
   ['recording', 'audio/ogg', 'audio'],
   ['movie', 'video/mp4', 'video'],
   ['archive.zip', 'application/zip', null],
-  ['document.pdf', 'application/pdf', null],
-  ['misleading.txt', 'application/pdf', null],
+  ['document.pdf', 'application/pdf', 'pdf'],
+  ['scan.PDF', 'application/octet-stream', 'pdf'],
+  ['misleading.txt', 'application/pdf', 'pdf'],
+  ['misleading.pdf', 'application/zip', null],
   ['unknown', 'application/octet-stream', null],
 ])('classifies %s (%s) as %s', (name, mimeType, kind) => {
   expect(previewKind({ ...file, name, mimeType })).toBe(kind);
