@@ -249,6 +249,7 @@ it('removes a sync folder account-wide without file deletion and rejects stale d
     expect(await service.setSyncFolders('alice', device, [folder.id])).toEqual({
       ok: true,
       removedFolderIds: [folder.id],
+      addedFolderIds: [],
     });
   }
   await expect(service.metadata('alice', item.id)).rejects.toMatchObject({ code: 'SYNC_REMOVED' });
@@ -299,6 +300,7 @@ it('also retires nested mappings when an ancestor sync folder is removed', async
   expect(await service.setSyncFolders('alice', 'pc', [nested.id])).toEqual({
     ok: true,
     removedFolderIds: [nested.id],
+    addedFolderIds: [],
   });
   expect((await service.syncFolders('alice')).items).toEqual([]);
 });

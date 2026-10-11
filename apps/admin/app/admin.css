@@ -861,3 +861,118 @@ body {
 .admin-activity-controls > * {
   flex: none;
 }
+
+/* Account usage page */
+.admin-usage-stats {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+:root {
+  --usage-up: #4353d9;
+  --usage-down: #0e9384;
+}
+.dark {
+  --usage-up: #7380f0;
+  --usage-down: #2aa898;
+}
+.admin-usage-chart {
+  display: grid;
+  gap: 10px;
+}
+.admin-usage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  font-size: var(--text-sm);
+}
+.admin-usage-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.admin-usage-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.admin-usage-readout {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+[data-series='up'] {
+  background: var(--usage-up);
+}
+[data-series='down'] {
+  background: var(--usage-down);
+}
+.admin-usage-plot {
+  display: flex;
+  align-items: stretch;
+  height: 180px;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+}
+.admin-usage-slot {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 10px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 0;
+  padding: 0 2px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.admin-usage-slot[data-active] {
+  background: var(--fill-2);
+}
+.admin-usage-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  min-height: 0;
+}
+.admin-usage-bars > span {
+  flex: 1;
+  max-width: 14px;
+  min-height: 0;
+  border-radius: 4px 4px 0 0;
+}
+.admin-usage-plot .admin-usage-tick {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 2px;
+  white-space: nowrap;
+}
+.admin-usage-tick {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.admin-usage-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.admin-usage-heat {
+  display: grid;
+  grid-template-columns: 32px repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  align-items: center;
+}
+.admin-usage-heat-row {
+  display: contents;
+}
+.admin-usage-cell {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  background: var(--usage-up);
+}
+.admin-usage-cell[data-empty] {
+  background: var(--fill-2);
+}
+.admin-activity-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}

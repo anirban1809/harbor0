@@ -32,6 +32,9 @@ export const requestLogHref = (
   range: AdminActivityRange,
   origin: AdminActivityOrigin = 'manual',
 ) => `/user/requests?id=${encodeURIComponent(userId)}&range=${range}&origin=${origin}`;
+/** Where the usage page opens for this account. */
+export const usageHref = (userId: string, range: AdminActivityRange) =>
+  `/user/usage?id=${encodeURIComponent(userId)}&range=${range}`;
 
 /**
  * The account's activity from the request log: how many requests it made and by whom, which
@@ -243,7 +246,11 @@ export function UserActivity({
             </DataTable>
           )}
 
-          <div>
+          <div className="admin-activity-links">
+            <Link className="admin-activity-link" href={usageHref(userId, range)}>
+              Open usage: uploads, downloads, sync and backups
+              <ArrowRight size={14} aria-hidden="true" />
+            </Link>
             <Link className="admin-activity-link" href={requestLogHref(userId, range)}>
               Open the request log
               <ArrowRight size={14} aria-hidden="true" />

@@ -434,6 +434,143 @@ export const adminActivitySchema = z.object({
   appEvents: z.array(adminAppEventSchema).default([]),
 });
 
+/**
+ * What an account did, named by the request that did it. Successful requests to these routes
+ * are the account's usage; since 11 Oct 2026 their request lines also carry a `usage` object
+ * with the sizes and counts below (never names or item ids).
+ */
+export const USAGE_ACTIONS = {
+  'POST /v1/uploads/:id/complete': 'UPLOADED',
+  'POST /v1/downloads': 'DOWNLOADED',
+  'POST /v1/folder-downloads': 'FOLDER_ZIPPED',
+  'POST /v1/drive/folders': 'FOLDER_CREATED',
+  'PATCH /v1/drive/items/:id': 'RENAMED',
+  'POST /v1/drive/items/:id/move': 'MOVED',
+  'DELETE /v1/drive/items/:id': 'TRASHED',
+  'POST /v1/drive/items/:id/restore': 'UNTRASHED',
+  'DELETE /v1/drive/items/:id/permanent': 'DELETED',
+  'POST /v1/drive/trash/empty': 'TRASH_EMPTIED',
+  'POST /v1/drive/items/:id/versions/:versionId/restore': 'VERSION_RESTORED',
+  'POST /v1/transfers': 'TRANSFER_SENT',
+  'POST /v1/transfers/:id/save': 'TRANSFER_SAVED',
+  'POST /v1/shares': 'SHARED',
+  'POST /v1/sync/shares': 'SYNC_SHARED',
+  'PUT /v1/sync/folders': 'SYNC_FOLDERS_CHANGED',
+  'DELETE /v1/sync/folders/:id': 'SYNC_FOLDER_REMOVED',
+  'POST /v1/backups': 'BACKUP_ADDED',
+  'POST /v1/backups/:id/runs': 'BACKUP_STARTED',
+  'POST /v1/backups/:id/runs/:runId/complete': 'BACKUP_FINISHED',
+  'DELETE /v1/backups/:id': 'BACKUP_DISCONNECTED',
+  'POST /v1/backups/:id/archive': 'BACKUP_ARCHIVED',
+  'POST /v1/backups/:id/unarchive': 'BACKUP_RESUMED',
+  'POST /v1/backups/:id/restores': 'BACKUP_RESTORED',
+} as const;
+export type UsageAction = (typeof USAGE_ACTIONS)[keyof typeof USAGE_ACTIONS];
+/** The usage action of a request, e.g. "POST /v1/downloads" → DOWNLOADED. */
+export const usageAction = (method: string, route: string): UsageAction | null =>
+  (USAGE_ACTIONS as Record<string, UsageAction>)[`${method} ${route}`] ?? null;
+export const usageGroups = ['all', 'transfers', 'files', 'sync', 'sharing'] as const;
+export type UsageGroup = (typeof usageGroups)[number];
+export const USAGE_GROUP_ACTIONS: Record<Exclude<UsageGroup, 'all'>, readonly UsageAction[]> = {
+  transfers: ['UPLOADED', 'DOWNLOADED', 'FOLDER_ZIPPED'],
+  files: [
+    'FOLDER_CREATED',
+    'RENAMED',
+    'MOVED',
+    'TRASHED',
+    'UNTRASHED',
+    'DELETED',
+    'TRASH_EMPTIED',
+    'VERSION_RESTORED',
+  ],
+  sync: [
+    'SYNC_FOLDERS_CHANGED',
+    'SYNC_FOLDER_REMOVED',
+    'BACKUP_ADDED',
+    'BACKUP_STARTED',
+    'BACKUP_FINISHED',
+    'BACKUP_DISCONNECTED',
+    'BACKUP_ARCHIVED',
+    'BACKUP_RESUMED',
+    'BACKUP_RESTORED',
+  ],
+  sharing: ['TRANSFER_SENT', 'TRANSFER_SAVED', 'SHARED', 'SYNC_SHARED'],
+};
+/** The sizes and counts a usage request line carries in its `usage` object. */
+export const usageDetailsSchema = z.object({
+  sizeBytes: z.number().nullable(),
+  /** A file's type, e.g. "image/jpeg". */
+  mimeType: z.string().nullable(),
+  /** FILE or FOLDER, for trash and delete. */
+  itemType: z.string().nullable(),
+  /** An upload into a backup folder. */
+  backup: z.boolean().nullable(),
+  /** What a download fetched: FILE, VERSION, TRANSFER or ZIP. */
+  source: z.string().nullable(),
+  files: z.number().nullable(),
+  /** Sync folders this device started or stopped syncing. */
+  added: z.number().nullable(),
+  removed: z.number().nullable(),
+  /** AUTOMATIC or MANUAL backup runs. */
+  trigger: z.string().nullable(),
+  /** How a backup run ended. */
+  state: z.string().nullable(),
+  permission: z.string().nullable(),
+});
+export type UsageDetails = z.infer<typeof usageDetailsSchema>;
+export const USAGE_DETAIL_FIELDS = Object.keys(usageDetailsSchema.shape) as (keyof UsageDetails)[];
+export const adminUsageQuery = z.object({ range: z.enum(adminActivityRanges).default('7d') });
+export const adminUsageEventsQuery = z.object({
+  range: z.enum(adminActivityRanges).default('7d'),
+  group: z.enum(usageGroups).default('all'),
+  cursor: z.string().max(4096).optional(),
+});
+const usageCount = { count: z.number(), bytes: z.number() };
+/** An account's usage over a range, totalled, by hour and by device. */
+export const adminUsageSchema = z.object({
+  range: z.enum(adminActivityRanges),
+  since: z.string(),
+  totals: z.array(z.object({ action: z.string(), ...usageCount })),
+  /** Each hour with any usage (UTC hour start), by action. */
+  hours: z.array(z.object({ at: z.string(), action: z.string(), ...usageCount })),
+  devices: z.array(
+    z.object({
+      deviceId: z.string().nullable(),
+      platform: z.string().nullable(),
+      uploads: z.object(usageCount),
+      downloads: z.object(usageCount),
+      other: z.number(),
+      lastAt: z.string(),
+    }),
+  ),
+  /** Backups the account set up, ever, from the database rather than the log. */
+  backups: z.array(
+    z.object({
+      id: z.string(),
+      deviceName: z.string().nullable(),
+      state: z.string(),
+      createdAt: z.string(),
+    }),
+  ),
+});
+export const adminUsageEventSchema = z.object({
+  at: z.string(),
+  requestId: z.string(),
+  action: z.string(),
+  automated: z.boolean(),
+  deviceId: z.string().nullable(),
+  platform: z.string().nullable(),
+  appVersion: z.string().nullable(),
+  details: usageDetailsSchema,
+});
+export const adminUsageEventsSchema = z.object({
+  events: z.array(adminUsageEventSchema),
+  nextCursor: z.string().nullable(),
+});
+export type AdminUsage = z.infer<typeof adminUsageSchema>;
+export type AdminUsageEvent = z.infer<typeof adminUsageEventSchema>;
+export type AdminUsageEvents = z.infer<typeof adminUsageEventsSchema>;
+
 const reason = z.string().trim().min(3).max(500);
 export const adminReasonBody = z.object({ reason }).strict();
 // 1 PB is far above any plan; it only stops a typo adding three zeros too many.

@@ -13,6 +13,14 @@ import {
   type AdminActivityOrigin,
   type AdminActivityRange,
   type AdminRequestLog,
+  type AdminUsage,
+  type AdminUsageEvents,
+  USAGE_ACTIONS,
+  USAGE_DETAIL_FIELDS,
+  USAGE_GROUP_ACTIONS,
+  usageAction,
+  type UsageAction,
+  type UsageGroup,
 } from '../../../../packages/contracts/src/admin';
 import { DomainError } from '../errors';
 
@@ -198,38 +206,186 @@ export async function requestLog(
     start,
     end,
   );
+  const { page, nextCursor } = paged(rows, after, pageSize);
+  return {
+    requests: page.map((r) => {
+      const method = r.method ?? '';
+      const route = r.route ?? '';
+      const platform = r.platform ?? null;
+      return {
+        automated: isAutomatedRequest(method, route, platform),
+        at: iso(r['@timestamp']),
+        requestId: r.requestId ?? '',
+        method,
+        route,
+        status: Number(r.status),
+        code: r.code ?? null,
+        ms: num(r.ms),
+        deviceId: r.deviceId ?? null,
+        platform,
+        appVersion: r.appVersion ?? null,
+      };
+    }),
+    nextCursor,
+  };
+}
+
+/** The page of newest-first rows after a cursor, and the cursor of the page after it. */
+function paged(rows: ActivityRows, after: Cursor | undefined, pageSize: number) {
+  const at = (r: Record<string, string>) => Date.parse(iso(r['@timestamp']));
   const fresh = rows.filter(
-    (r) =>
-      !after ||
-      Date.parse(iso(r['@timestamp'])) < after.t ||
-      !after.ids.includes(r.requestId ?? ''),
+    (r) => !after || at(r) < after.t || !after.ids.includes(r.requestId ?? ''),
   );
   const page = fresh.slice(0, pageSize);
-  const requests = page.map((r) => {
-    const method = r.method ?? '';
-    const route = r.route ?? '';
-    const platform = r.platform ?? null;
-    return {
-      automated: isAutomatedRequest(method, route, platform),
-      at: iso(r['@timestamp']),
-      requestId: r.requestId ?? '',
-      method,
-      route,
-      status: Number(r.status),
-      code: r.code ?? null,
-      ms: num(r.ms),
-      deviceId: r.deviceId ?? null,
-      platform,
-      appVersion: r.appVersion ?? null,
-    };
-  });
-  const last = requests.at(-1);
-  if (fresh.length <= pageSize || !last) return { requests, nextCursor: null };
-  const t = Date.parse(last.at);
-  const ids = requests.filter((r) => Date.parse(r.at) === t).map((r) => r.requestId);
-  // Requests at that millisecond shown on earlier pages are still behind the cursor.
+  const last = page.at(-1);
+  if (fresh.length <= pageSize || !last) return { page, nextCursor: null };
+  const t = at(last);
+  const ids = page.filter((r) => at(r) === t).map((r) => r.requestId ?? '');
+  // Rows at that millisecond shown on earlier pages are still behind the cursor.
   if (after?.t === t) ids.push(...after.ids);
-  return { requests, nextCursor: encodeCursor({ t, ids }) };
+  return { page, nextCursor: encodeCursor({ t, ids }) };
+}
+
+const usageKeys = (actions?: readonly UsageAction[]) =>
+  Object.entries(USAGE_ACTIONS)
+    .filter(([, action]) => !actions || actions.includes(action))
+    .map(([key]) => JSON.stringify(key));
+/**
+ * The account's successful usage requests. A desktop app re-sends its sync folder list on
+ * every start, so that one only counts when its line says folders were added or removed.
+ */
+const usageFilter = (userId: string, actions?: readonly UsageAction[]) =>
+  `${mine(userId)} and event = "request" and status < 400` +
+  ` and concat(method, " ", route) in [${usageKeys(actions).join(', ')}]` +
+  ' and (concat(method, " ", route) != "PUT /v1/sync/folders" or ispresent(usage.added))';
+const UPLOADED_KEY = 'POST /v1/uploads/:id/complete';
+const DOWNLOADED_KEY = 'POST /v1/downloads';
+
+/**
+ * What an account uploaded, downloaded and set up over a range, by hour and by device, read
+ * from the request log. Sizes are on lines since 11 Oct 2026; earlier lines count but weigh 0.
+ */
+export async function userUsage(
+  source: ActivitySource,
+  userId: string,
+  range: AdminActivityRange,
+  backups: AdminUsage['backups'],
+  now = Date.now(),
+): Promise<AdminUsage> {
+  const { start, end } = bounds(range, now);
+  const rows = await source(
+    `${usageFilter(userId)}` +
+      ' | stats count(*) as n, sum(usage.sizeBytes) as b, max(@timestamp) as lastAt' +
+      ' by bin(1h), method, route, deviceId, platform',
+    start,
+    end,
+  );
+  const totals = new Map<string, { action: string; count: number; bytes: number }>();
+  const hours = new Map<string, { at: string; action: string; count: number; bytes: number }>();
+  const devices = new Map<string, AdminUsage['devices'][number]>();
+  for (const r of rows) {
+    const action = usageAction(r.method ?? '', r.route ?? '');
+    if (!action) continue;
+    const count = Number(r.n) || 0;
+    const size = Number(r.b) || 0;
+    const add = <T extends { count: number; bytes: number }>(
+      map: Map<string, T>,
+      key: string,
+      fresh: T,
+    ) => {
+      const seen = map.get(key) ?? map.set(key, fresh).get(key)!;
+      seen.count += count;
+      seen.bytes += size;
+    };
+    add(totals, action, { action, count: 0, bytes: 0 });
+    const at = iso(r['bin(1h)']);
+    add(hours, `${at} ${action}`, { at, action, count: 0, bytes: 0 });
+    const deviceKey = `${r.deviceId ?? ''} ${r.platform ?? ''}`;
+    const device =
+      devices.get(deviceKey) ??
+      devices
+        .set(deviceKey, {
+          deviceId: r.deviceId || null,
+          platform: r.platform || null,
+          uploads: { count: 0, bytes: 0 },
+          downloads: { count: 0, bytes: 0 },
+          other: 0,
+          lastAt: '',
+        })
+        .get(deviceKey)!;
+    const key = `${r.method} ${r.route}`;
+    const bucket =
+      key === UPLOADED_KEY ? device.uploads : key === DOWNLOADED_KEY ? device.downloads : null;
+    if (bucket) {
+      bucket.count += count;
+      bucket.bytes += size;
+    } else device.other += count;
+    const lastAt = iso(r.lastAt);
+    if (lastAt > device.lastAt) device.lastAt = lastAt;
+  }
+  return {
+    range,
+    since: new Date(start * 1000).toISOString(),
+    totals: [...totals.values()].sort((a, b) => b.count - a.count),
+    hours: [...hours.values()].sort((a, b) => a.at.localeCompare(b.at)),
+    devices: [...devices.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)),
+    backups,
+  };
+}
+
+/** A page of an account's usage, newest first, with each action's sizes and counts. */
+export async function usageLog(
+  source: ActivitySource,
+  userId: string,
+  options: { range: AdminActivityRange; group: UsageGroup; cursor?: string; pageSize?: number },
+  now = Date.now(),
+): Promise<AdminUsageEvents> {
+  const { start, end } = bounds(options.range, now);
+  const pageSize = options.pageSize ?? ADMIN_REQUEST_PAGE;
+  const after = options.cursor ? decodeCursor(options.cursor) : undefined;
+  const actions = options.group === 'all' ? undefined : USAGE_GROUP_ACTIONS[options.group];
+  const rows = await source(
+    usageFilter(userId, actions) +
+      (after ? ` and @timestamp <= ${after.t}` : '') +
+      ' | fields @timestamp, requestId, method, route, deviceId, platform, appVersion, ' +
+      USAGE_DETAIL_FIELDS.map((f) => `usage.${f}`).join(', ') +
+      ` | sort @timestamp desc | limit ${pageSize + (after?.ids.length ?? 0) + 1}`,
+    start,
+    end,
+  );
+  const { page, nextCursor } = paged(rows, after, pageSize);
+  return {
+    events: page.map((r) => {
+      const method = r.method ?? '';
+      const route = r.route ?? '';
+      const platform = r.platform ?? null;
+      const text = (f: string) => r[`usage.${f}`] || null;
+      const flag = (f: string) => (text(f) === null ? null : text(f) === 'true' || text(f) === '1');
+      return {
+        at: iso(r['@timestamp']),
+        requestId: r.requestId ?? '',
+        action: usageAction(method, route) ?? `${method} ${route}`,
+        automated: isAutomatedRequest(method, route, platform),
+        deviceId: r.deviceId ?? null,
+        platform,
+        appVersion: r.appVersion ?? null,
+        details: {
+          sizeBytes: num(r['usage.sizeBytes']),
+          mimeType: text('mimeType'),
+          itemType: text('itemType'),
+          backup: flag('backup'),
+          source: text('source'),
+          files: num(r['usage.files']),
+          added: num(r['usage.added']),
+          removed: num(r['usage.removed']),
+          trigger: text('trigger'),
+          state: text('state'),
+          permission: text('permission'),
+        },
+      };
+    }),
+    nextCursor,
+  };
 }
 /** Logs Insights over the API log group, polled until the query finishes. */
 export function cloudWatchActivity(logGroupName: string): ActivitySource {

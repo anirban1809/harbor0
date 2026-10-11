@@ -6,6 +6,10 @@ import { z } from 'zod';
 import * as c from '@harbor/contracts';
 import {
     adminActivityQuery,
+    adminUsageEventsQuery,
+    adminUsageEventsSchema,
+    adminUsageQuery,
+    adminUsageSchema,
     adminActivitySchema,
     adminRequestLogQuery,
     adminRequestLogSchema,
@@ -43,7 +47,13 @@ import { AdminService } from './service';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
 import { AdminForms } from './forms';
-import { requestLog, userActivity, type ActivitySource } from './activity';
+import {
+    requestLog,
+    usageLog,
+    userActivity,
+    userUsage,
+    type ActivitySource,
+} from './activity';
 import {
     formAcceptingBody,
     formBody,
@@ -372,6 +382,17 @@ export function createAdminApp(
             cursor,
         });
         return ctx.json(adminRequestLogSchema.parse(page));
+    });
+    v1.get('/users/:id/usage', guard('read'), async (ctx) => {
+        const { range } = adminUsageQuery.parse(ctx.req.query());
+        const source = activitySource();
+        const usage = await userUsage(source, userId(ctx), range, await admin.backups(userId(ctx)));
+        return ctx.json(adminUsageSchema.parse(usage));
+    });
+    v1.get('/users/:id/usage/events', guard('read'), async (ctx) => {
+        const { range, group, cursor } = adminUsageEventsQuery.parse(ctx.req.query());
+        const page = await usageLog(activitySource(), userId(ctx), { range, group, cursor });
+        return ctx.json(adminUsageEventsSchema.parse(page));
     });
     v1.put('/users/:id/quota', guard('quota'), async (ctx) => {
         const i = await body(ctx, adminQuotaBody);

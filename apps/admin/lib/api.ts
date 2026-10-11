@@ -2,6 +2,9 @@ import type {
   AdminActivity,
   AdminActivityOrigin,
   AdminActivityRange,
+  AdminUsage,
+  AdminUsageEvents,
+  UsageGroup,
   AdminRequestLog,
   AdminBeta,
   AdminTestInvite,
@@ -136,6 +139,17 @@ export const api = {
         ...(q.cursor ? { cursor: q.cursor } : {}),
       })}`,
     ),
+  usage: (id: string, range: AdminActivityRange) =>
+    request<AdminUsage>('GET', `${user(id)}/usage?range=${range}`),
+  usageEvents: (id: string, q: { range: AdminActivityRange; group: UsageGroup; cursor?: string }) =>
+    request<AdminUsageEvents>(
+      'GET',
+      `${user(id)}/usage/events?${new URLSearchParams({
+        range: q.range,
+        group: q.group,
+        ...(q.cursor ? { cursor: q.cursor } : {}),
+      })}`,
+    ),
   setQuota: (id: string, quotaBytes: number, reason: string) =>
     request('PUT', `${user(id)}/quota`, { quotaBytes, reason }),
   action: (id: string, action: UserAction, reason: string, extra?: { notify?: boolean }) =>
@@ -242,7 +256,8 @@ export const api = {
     request<Form>('PUT', `/forms/${encodeURIComponent(id)}`, body),
   setFormAccepting: (id: string, accepting: boolean) =>
     request<Form>('POST', `/forms/${encodeURIComponent(id)}/accepting`, { accepting }),
-  deleteForm: (id: string) => request<{ deleted: boolean }>('DELETE', `/forms/${encodeURIComponent(id)}`),
+  deleteForm: (id: string) =>
+    request<{ deleted: boolean }>('DELETE', `/forms/${encodeURIComponent(id)}`),
   formResponses: (id: string) =>
     request<FormResponses>('GET', `/forms/${encodeURIComponent(id)}/responses`),
   recipients: (id: string, status?: RecipientStatus, cursor?: string) =>

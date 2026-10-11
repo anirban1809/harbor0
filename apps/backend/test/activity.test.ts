@@ -5,7 +5,14 @@ import { DevelopmentAuth } from '../src/auth';
 import { StorageService } from '../src/domain';
 import { MemoryRepository } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
-import { requestLog, userActivity, type ActivitySource } from '../src/admin/activity';
+import {
+  requestLog,
+  usageLog,
+  userActivity,
+  userUsage,
+  type ActivitySource,
+} from '../src/admin/activity';
+import { usageDetails } from '../src/usage-events';
 import { isAutomatedRequest } from '../../../packages/contracts/src/admin';
 
 afterEach(() => vi.restoreAllMocks());
@@ -354,5 +361,153 @@ describe('request log pages', () => {
         now,
       ),
     ).rejects.toThrow('cursor');
+  });
+});
+
+describe('usage on request lines', () => {
+  it('logs sizes and counts of usage requests, never names', async () => {
+    const service = new StorageService(new MemoryRepository(), new MemoryStorage());
+    const auth = new DevelopmentAuth();
+    const app = createApp(service, auth).app;
+    const alice = [...auth.users.values()].find((u) => u.id === 'alice')!;
+    await service.ensureUser(alice);
+    await service.registerDevice('alice', { name: 'Mac', platform: 'MACOS' }, alice.deviceId);
+    const lines: Record<string, unknown>[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(JSON.parse(line));
+    });
+    const send = (method: string, path: string, body: unknown) =>
+      app.request(path, {
+        method,
+        headers: { Authorization: 'Bearer dev-alice', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const created = await send('POST', '/v1/drive/folders', {
+      operationId: crypto.randomUUID(),
+      name: 'Private plans',
+    });
+    const { item } = (await created.json()) as { item: { id: string; revision: number } };
+    expect((await send('PUT', '/v1/sync/folders', { folderIds: [item.id] })).status).toBe(200);
+    // The desktop app re-sends the same list on every start: not usage.
+    expect((await send('PUT', '/v1/sync/folders', { folderIds: [item.id] })).status).toBe(200);
+    expect(
+      (
+        await send('DELETE', `/v1/drive/items/${item.id}`, {
+          operationId: crypto.randomUUID(),
+          baseRevision: item.revision,
+        })
+      ).status,
+    ).toBe(200);
+
+    const requests = lines.filter((l) => l.event === 'request');
+    expect(requests.map((l) => l.usage)).toEqual([
+      {},
+      { added: 1, removed: 0 },
+      undefined,
+      { itemType: 'FOLDER' },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('Private plans');
+  });
+
+  it('reads sizes from uploads, downloads and backup runs', () => {
+    expect(
+      usageDetails(
+        'POST',
+        '/v1/uploads/:id/complete',
+        {},
+        { item: { sizeBytes: 5, mimeType: 'image/png', backupRootId: 'b1', name: 'x.png' } },
+      ),
+    ).toEqual({ sizeBytes: 5, mimeType: 'image/png', backup: true });
+    expect(usageDetails('POST', '/v1/downloads', { transferId: 't1' }, { sizeBytes: 9 })).toEqual({
+      sizeBytes: 9,
+      source: 'TRANSFER',
+    });
+    expect(
+      usageDetails(
+        'POST',
+        '/v1/backups/:id/runs/:runId/complete',
+        {},
+        { run: { state: 'COMPLETED', fileCount: 3, sizeBytes: 30 } },
+      ),
+    ).toEqual({ state: 'COMPLETED', files: 3, sizeBytes: 30 });
+    expect(usageDetails('GET', '/v1/drive/items/:id', {}, {})).toBeUndefined();
+  });
+});
+
+describe('account usage', () => {
+  const now = Date.parse('2026-10-11T06:00:00Z');
+
+  it('totals usage by action, hour and device', async () => {
+    const queries: string[] = [];
+    const run: ActivitySource = async (query) => {
+      queries.push(query);
+      const row = (method: string, route: string, n: string, b: string, deviceId = 'd1') => ({
+        'bin(1h)': '2026-10-11 04:00:00.000',
+        method,
+        route,
+        deviceId,
+        platform: 'WEB',
+        n,
+        b,
+        lastAt: '2026-10-11 04:30:00.000',
+      });
+      return [
+        row('POST', '/v1/uploads/:id/complete', '3', '300'),
+        row('POST', '/v1/downloads', '2', '50'),
+        row('POST', '/v1/drive/folders', '1', ''),
+        row('POST', '/v1/backups/:id/runs', '1', '', 'd2'),
+      ];
+    };
+    const usage = await userUsage(run, 'user-1', '24h', [], now);
+    expect(usage.totals).toEqual([
+      { action: 'UPLOADED', count: 3, bytes: 300 },
+      { action: 'DOWNLOADED', count: 2, bytes: 50 },
+      { action: 'FOLDER_CREATED', count: 1, bytes: 0 },
+      { action: 'BACKUP_STARTED', count: 1, bytes: 0 },
+    ]);
+    expect(usage.hours[0]).toEqual({
+      at: '2026-10-11T04:00:00.000Z',
+      action: 'UPLOADED',
+      count: 3,
+      bytes: 300,
+    });
+    expect(usage.devices.find((d) => d.deviceId === 'd1')).toEqual(
+      expect.objectContaining({
+        uploads: { count: 3, bytes: 300 },
+        downloads: { count: 2, bytes: 50 },
+        other: 1,
+      }),
+    );
+    expect(queries[0]).toContain('filter userId = "user-1"');
+    expect(queries[0]).toContain('ispresent(usage.added)');
+  });
+
+  it('lists usage newest first with its details, filtered by group', async () => {
+    const queries: string[] = [];
+    const run: ActivitySource = async (query) => {
+      queries.push(query);
+      return [
+        {
+          '@timestamp': '2026-10-11 05:00:00.000',
+          requestId: 'r1',
+          method: 'POST',
+          route: '/v1/uploads/:id/complete',
+          platform: 'MACOS',
+          'usage.sizeBytes': '1200',
+          'usage.mimeType': 'video/mp4',
+          'usage.backup': 'true',
+        },
+      ];
+    };
+    const page = await usageLog(run, 'user-1', { range: '7d', group: 'transfers' }, now);
+    expect(page.events[0]).toEqual(
+      expect.objectContaining({
+        action: 'UPLOADED',
+        automated: true,
+        details: expect.objectContaining({ sizeBytes: 1200, mimeType: 'video/mp4', backup: true }),
+      }),
+    );
+    expect(queries[0]).toContain('"POST /v1/downloads"');
+    expect(queries[0]).not.toContain('"POST /v1/drive/folders"');
   });
 });

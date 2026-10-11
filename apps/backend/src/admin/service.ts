@@ -352,6 +352,18 @@ export class AdminService {
             sameDevice: account ? await this.sameDevice(userId) : [],
         };
     }
+    /** Every backup the account set up, newest first, removed ones included. */
+    async backups(userId: string) {
+        const roots = await new Transaction(this.repo).list<BackupRoot>(userPK(userId), 'BACKUP#');
+        return roots
+            .map((r) => ({
+                id: r.id,
+                deviceName: r.deviceName ?? null,
+                state: r.state,
+                createdAt: r.createdAt,
+            }))
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
     /** Other accounts that signed in with any device key this account has proved. */
     private async sameDevice(userId: string) {
         const keys = await new Transaction(this.repo).list<{ fingerprint: string }>(

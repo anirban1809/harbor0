@@ -2640,7 +2640,9 @@ export class StorageService {
                 shareIds,
             });
             await syncMembershipChanged(tx, userId);
-            return { ok: true, removedFolderIds };
+            // Not part of the response: the request log counts the folders a device started syncing.
+            const addedFolderIds = ids.filter((id) => !previous?.folderIds.includes(id));
+            return { ok: true, removedFolderIds, addedFolderIds };
         });
     }
     async removeSyncFolder(userId: string, folderId: string) {

@@ -40,6 +40,7 @@ import {
   unsubscribeSubject,
   type EmailLinks,
 } from './email-preferences';
+import { usageDetails } from './usage-events';
 type Env = {
   Variables: {
     identity: c.Identity;
@@ -49,6 +50,8 @@ type Env = {
     device?: c.Device;
     /** The error code a failed request answered with. */
     errorCode?: string;
+    /** Sizes and counts of a usage request (an upload, a download, a backup run). */
+    usage?: Record<string, unknown>;
   };
 };
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
@@ -142,6 +145,7 @@ export function createApp(
         ...(identity?.deviceId ? { deviceId: identity.deviceId } : {}),
         ...(device ? { platform: device.platform, appVersion: device.appVersion } : {}),
         ...(ctx.get('errorCode') ? { code: ctx.get('errorCode') } : {}),
+        ...(ctx.get('usage') ? { usage: ctx.get('usage') } : {}),
         // Milliseconds spent on each sign-in check before the route itself runs.
         ...(ctx.get('timing') ? { timing: ctx.get('timing') } : {}),
       }),
@@ -313,6 +317,8 @@ export function createApp(
       const validated = d.response.safeParse(result);
       if (!validated.success)
         throw new DomainError('INTERNAL_ERROR', 'The server response could not be validated.', 500);
+      const usage = usageDetails(d.method.toUpperCase(), d.path, input, result);
+      if (usage) ctx.set('usage', usage);
       return ctx.json(validated.data as object);
     });
   }
