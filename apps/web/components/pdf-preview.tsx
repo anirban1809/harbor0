@@ -10,8 +10,16 @@ const zoomSteps = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 // Browsers fail to draw very large canvases; cap each page's backing store.
 const maxCanvasPixels = 16_000_000;
 // Smaller files load in one request; larger ones are read in ranges as pages are needed.
-const wholeFileBytes = 2_000_000;
+const wholeFileBytes = 2 * 1024 * 1024;
 const rangeChunkBytes = 256 * 1024;
+// The header and first page usually sit at the start and the cross-reference table at the
+// end, so both are requested together as soon as the link is known.
+const tailBytes = 2 * rangeChunkBytes;
+// Up to this size, a file that needs more than its start and end is fetched whole: some
+// files make pdf.js read most of them a chunk at a time, one round trip each.
+const fetchRestBytes = 16 * 1024 * 1024;
+// Larger files read further ahead each time pdf.js reads on from where it stopped.
+const maxReadAheadBytes = 4 * 1024 * 1024;
 
 let worker: PDFWorker | undefined;
 async function pdfjs() {
@@ -26,15 +34,20 @@ async function pdfjs() {
   return { ...module, worker };
 }
 
+/** Loads pdf.js and starts its worker ahead of time, so opening a PDF starts at once. */
+export function preloadPdfViewer() {
+  void pdfjs().catch(() => {});
+}
+
 /**
  * Reads byte ranges of the file. pdf.js only asks for ranges itself when it can read
  * `Accept-Ranges`, which the storage CORS rules do not expose, so ranges are fetched here.
  * Download links expire after a few minutes; an expired link is renewed once and retried.
  */
-function rangeReader(initialUrl: string, renew: () => Promise<string>) {
+function rangeReader(initialUrl: string, size: number, renew: () => Promise<string>) {
   let url = initialUrl;
   let renewing: Promise<string> | undefined;
-  const read = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
+  const fetchRange = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
     const used = url;
     const response = await fetch(used, {
       headers: { Range: `bytes=${begin}-${end - 1}` },
@@ -46,14 +59,42 @@ function rangeReader(initialUrl: string, renew: () => Promise<string>) {
         url = await (renewing ??= renew().finally(() => {
           renewing = undefined;
         }));
-      return read(begin, end, false);
+      return fetchRange(begin, end, false);
     }
     if (!response.ok) throw new Error(`Range request failed with ${response.status}`);
     const data = new Uint8Array(await response.arrayBuffer());
     // A server that ignores Range sends the whole file.
     return response.status === 206 ? data : data.subarray(begin, end);
   };
-  return read;
+  // Ranges fetched before or beyond what pdf.js asked for; reused when one covers a request.
+  const ahead: { begin: number; end: number; data: Promise<Uint8Array> }[] = [];
+  const prefetch = (begin: number, end: number) => {
+    const range = { begin, end, data: fetchRange(begin, end) };
+    range.data.catch(() => {});
+    ahead.push(range);
+    return range;
+  };
+  let lastEnd = -1;
+  let streak = 0;
+  return {
+    prefetch,
+    async read(begin: number, end: number) {
+      const sequential = begin === lastEnd;
+      lastEnd = end;
+      let hit = ahead.find((range) => range.begin <= begin && end <= range.end);
+      if (!hit && size <= fetchRestBytes) hit = prefetch(0, size);
+      else if (!hit) {
+        streak = sequential ? streak + 1 : 0;
+        const until = Math.min(
+          size,
+          Math.max(end, begin + Math.min(maxReadAheadBytes, rangeChunkBytes * 2 ** streak)),
+        );
+        hit = prefetch(begin, until);
+      }
+      const data = await hit.data.catch(() => undefined);
+      return data ? data.subarray(begin - hit.begin, end - hit.begin) : fetchRange(begin, end);
+    },
+  };
 }
 
 export function PdfPreview({
@@ -64,7 +105,8 @@ export function PdfPreview({
   onReady,
   onError,
 }: {
-  url: string;
+  /** Undefined while the download link is still being fetched. */
+  url: string | undefined;
   size: number;
   /** A fresh download link for the same file, once `url` has expired. */
   renew: () => Promise<string>;
@@ -78,25 +120,42 @@ export function PdfPreview({
   const [width, setWidth] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (!url) return;
     let cancelled = false;
     let destroy = () => {};
+    // Start downloading before pdf.js has loaded, in case it was not preloaded.
+    const ranges = size > wholeFileBytes ? rangeReader(url, size, renew) : undefined;
+    const whole = ranges
+      ? undefined
+      : fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' }).then((response) => {
+          if (!response.ok) throw new Error(`Download failed with ${response.status}`);
+          return response.arrayBuffer();
+        });
+    whole?.catch(() => {});
+    if (ranges) {
+      const tail = Math.floor((size - tailBytes) / rangeChunkBytes) * rangeChunkBytes;
+      ranges.prefetch(0, rangeChunkBytes);
+      ranges.prefetch(tail, size);
+    }
     void pdfjs()
       .then(async ({ getDocument, PasswordException, PDFDataRangeTransport, worker }) => {
-        let range: InstanceType<typeof PDFDataRangeTransport> | undefined;
-        if (size > wholeFileBytes) {
-          const read = rangeReader(url, renew);
+        let source;
+        if (ranges) {
           const transport = new PDFDataRangeTransport(size, null);
           transport.requestDataRange = (begin, end) =>
-            void read(begin, end).then(
+            void ranges.read(begin, end).then(
               (chunk) => transport.onDataRange(begin, chunk),
               () => {
                 if (!cancelled) onError();
               },
             );
-          range = transport;
+          source = { range: transport };
+        } else {
+          source = { data: new Uint8Array(await whole!) };
         }
+        if (cancelled) return;
         const task = getDocument({
-          ...(range ? { range } : { url }),
+          ...source,
           rangeChunkSize: rangeChunkBytes,
           // Fetch only what the visible pages need instead of the rest in the background.
           disableAutoFetch: true,
@@ -151,7 +210,17 @@ export function PdfPreview({
     observer.observe(element);
     return () => observer.disconnect();
   }, [doc]);
-  if (!doc) return null;
+  if (!doc)
+    return (
+      <div className="file-preview-pdf" role="status" aria-label="Loading preview">
+        <div className="file-preview-pdf-toolbar">
+          <span>Loading…</span>
+        </div>
+        <div className="file-preview-pdf-pages">
+          <div className="file-preview-pdf-page file-preview-pdf-placeholder" />
+        </div>
+      </div>
+    );
   const pageWidth = Math.floor(width * zoomSteps[zoom]);
   return (
     <div className="file-preview-pdf">

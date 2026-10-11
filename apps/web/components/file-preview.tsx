@@ -155,7 +155,7 @@ function PreviewBody({
         </div>
       ) : (
         <>
-          {!ready && (
+          {!ready && kind !== 'pdf' && (
             <div className="file-preview-loading" role="status">
               <LoaderCircle className="spin" size={18} />
               Loading preview…
@@ -199,9 +199,10 @@ function PreviewBody({
               onError={mediaError}
             />
           )}
-          {content && 'url' in content && kind === 'pdf' && (
+          {kind === 'pdf' && (
+            // Shown at once as a blank page, then filled in once the link arrives.
             <PdfPreview
-              url={content.url}
+              url={content && 'url' in content ? content.url : undefined}
               size={item.sizeBytes}
               renew={async () => {
                 const fresh = await load(item, new AbortController().signal);

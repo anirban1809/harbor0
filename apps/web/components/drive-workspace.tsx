@@ -44,6 +44,7 @@ import {
 import { EmptyState } from './empty-state';
 import type { ActivityUpdate } from './activity-notifications';
 import { Button } from './ui/button';
+import { usePdfPreload } from './lazy-file-preview';
 import { Input } from './ui/input';
 import { Dialog, DialogActions, Drawer } from './ui/dialog';
 import { Alert } from './ui/alert';
@@ -117,6 +118,8 @@ type Props = {
   pinned?: PinnedEntry[];
   /** Show the storage folders use, e.g. inside Synced Folders, Backups and Archives. */
   showFolderUsage?: boolean;
+  /** Load the PDF viewer ahead of time when a PDF is listed; only where PDFs can be previewed. */
+  preloadPdf?: boolean;
   /** The page heading, e.g. Sync when a synced folder is open. */
   title?: string;
   /** Shown under the breadcrumbs, e.g. the status and controls of an open backup folder. */
@@ -166,6 +169,7 @@ export function DriveWorkspace({
   syncedFolderIds = [],
   pinned = noPinned,
   showFolderUsage = false,
+  preloadPdf = false,
   onOpen,
   canOpenDeviceCopy = false,
   onUpload,
@@ -212,6 +216,7 @@ export function DriveWorkspace({
     id: string;
   } | null>(null);
   const [items, setItems] = useState<Item[]>([]);
+  usePdfPreload(preloadPdf, items);
   const [syncedFolders, setSyncedFolders] = useState<Item[]>([]);
   const separateFolders = !parentId && !query;
   const [loading, setLoading] = useState(true);

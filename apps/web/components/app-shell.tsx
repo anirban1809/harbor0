@@ -36,7 +36,7 @@ import { downloadFolderZip } from '../lib/folder-download';
 import { ZipDownloadStatusPanel, type ZipDownloadStatus } from './zip-download-status';
 import { BrandLogo } from '../components/brand-logo';
 import { AuthPage } from './auth-page';
-import { FilePreview } from '../components/lazy-file-preview';
+import { FilePreview, usePdfPreload } from '../components/lazy-file-preview';
 import { previewKind, type PreviewLoader } from '../lib/file-preview';
 import { fetchTextPreview } from '../../../packages/api-client/src/preview';
 import { Input, InputGroup } from '../components/ui/input';
@@ -512,6 +512,8 @@ function Workspace() {
     },
   );
   const files = trashChanges.items;
+  const pdfPreview = me.data?.flags?.['pdf-preview'] === true;
+  usePdfPreload(pdfPreview, files);
   useEffect(() => {
     const update = () => setOnline(navigator.onLine);
     update();
@@ -1278,6 +1280,7 @@ function Workspace() {
                     )
               }
               showFolderUsage={!!place}
+              preloadPdf={pdfPreview}
               header={
                 backupFolder ? (
                   <BackupFolderPanel
@@ -2031,7 +2034,7 @@ function Workspace() {
       />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
-          pdf={me.data?.flags?.['pdf-preview'] === true}
+          pdf={pdfPreview}
           cacheScope={user?.id ?? 'anonymous'}
           item={modal.item}
           load={loadPreview}

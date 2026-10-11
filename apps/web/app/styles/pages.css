@@ -1521,6 +1521,11 @@
   background: #fff;
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.15);
 }
+.file-preview-pdf-placeholder {
+  width: 100%;
+  aspect-ratio: 1 / 1.4142;
+  animation: pulse 1.8s ease-in-out infinite;
+}
 .file-preview-pdf-page canvas {
   display: block;
   width: 100%;
