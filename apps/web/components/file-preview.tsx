@@ -202,6 +202,12 @@ function PreviewBody({
           {content && 'url' in content && kind === 'pdf' && (
             <PdfPreview
               url={content.url}
+              size={item.sizeBytes}
+              renew={async () => {
+                const fresh = await load(item, new AbortController().signal);
+                if (!('url' in fresh)) throw new Error('Expected a download link.');
+                return fresh.url;
+              }}
               name={item.name}
               onReady={() => setReady(true)}
               onError={(message) => (message ? setError(message) : mediaError())}

@@ -9,6 +9,9 @@ const assets = '/pdfjs/';
 const zoomSteps = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 // Browsers fail to draw very large canvases; cap each page's backing store.
 const maxCanvasPixels = 16_000_000;
+// Smaller files load in one request; larger ones are read in ranges as pages are needed.
+const wholeFileBytes = 2_000_000;
+const rangeChunkBytes = 256 * 1024;
 
 let worker: PDFWorker | undefined;
 async function pdfjs() {
@@ -23,13 +26,48 @@ async function pdfjs() {
   return { ...module, worker };
 }
 
+/**
+ * Reads byte ranges of the file. pdf.js only asks for ranges itself when it can read
+ * `Accept-Ranges`, which the storage CORS rules do not expose, so ranges are fetched here.
+ * Download links expire after a few minutes; an expired link is renewed once and retried.
+ */
+function rangeReader(initialUrl: string, renew: () => Promise<string>) {
+  let url = initialUrl;
+  let renewing: Promise<string> | undefined;
+  const read = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
+    const used = url;
+    const response = await fetch(used, {
+      headers: { Range: `bytes=${begin}-${end - 1}` },
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    });
+    if (response.status === 403 && retry) {
+      if (url === used)
+        url = await (renewing ??= renew().finally(() => {
+          renewing = undefined;
+        }));
+      return read(begin, end, false);
+    }
+    if (!response.ok) throw new Error(`Range request failed with ${response.status}`);
+    const data = new Uint8Array(await response.arrayBuffer());
+    // A server that ignores Range sends the whole file.
+    return response.status === 206 ? data : data.subarray(begin, end);
+  };
+  return read;
+}
+
 export function PdfPreview({
   url,
+  size,
+  renew,
   name,
   onReady,
   onError,
 }: {
   url: string;
+  size: number;
+  /** A fresh download link for the same file, once `url` has expired. */
+  renew: () => Promise<string>;
   name: string;
   onReady: () => void;
   onError: (message?: string) => void;
@@ -43,9 +81,26 @@ export function PdfPreview({
     let cancelled = false;
     let destroy = () => {};
     void pdfjs()
-      .then(async ({ getDocument, PasswordException, worker }) => {
+      .then(async ({ getDocument, PasswordException, PDFDataRangeTransport, worker }) => {
+        let range: InstanceType<typeof PDFDataRangeTransport> | undefined;
+        if (size > wholeFileBytes) {
+          const read = rangeReader(url, renew);
+          const transport = new PDFDataRangeTransport(size, null);
+          transport.requestDataRange = (begin, end) =>
+            void read(begin, end).then(
+              (chunk) => transport.onDataRange(begin, chunk),
+              () => {
+                if (!cancelled) onError();
+              },
+            );
+          range = transport;
+        }
         const task = getDocument({
-          url,
+          ...(range ? { range } : { url }),
+          rangeChunkSize: rangeChunkBytes,
+          // Fetch only what the visible pages need instead of the rest in the background.
+          disableAutoFetch: true,
+          disableStream: true,
           worker,
           cMapUrl: `${assets}cmaps/`,
           cMapPacked: true,
