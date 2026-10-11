@@ -5,7 +5,8 @@ import { DevelopmentAuth } from '../src/auth';
 import { StorageService } from '../src/domain';
 import { MemoryRepository } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
-import { userActivity, type ActivitySource } from '../src/admin/activity';
+import { requestLog, userActivity, type ActivitySource } from '../src/admin/activity';
+import { isAutomatedRequest } from '../../../packages/contracts/src/admin';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -158,98 +159,96 @@ describe('app problem reports', () => {
 
 describe('account activity', () => {
   const now = Date.parse('2026-10-11T06:00:00Z');
-  const source = (
-    groups: Record<string, string>[],
-    rows: Record<string, string>[],
-    events: Record<string, string>[] = [],
-  ) => {
+  const source = (groups: Record<string, string>[], events: Record<string, string>[] = []) => {
     const queries: string[] = [];
     const run: ActivitySource = async (query) => {
       queries.push(query);
-      if (query.includes('stats')) return groups;
-      return query.includes('"client_error" |') ? events : rows;
+      return query.includes('stats') ? groups : events;
     };
     return { run, queries };
   };
 
-  it('totals requests, groups failures with server errors first, and lists the latest', async () => {
-    const { run, queries } = source(
-      [
-        {
-          method: 'GET',
-          route: '/v1/users/me',
-          status: '200',
-          n: '40',
-          lastAt: '2026-10-11 05:00:00.000',
-        },
-        {
-          method: 'GET',
-          route: '/v1/users/me',
-          status: '401',
-          code: 'AUTH_INVALID',
-          n: '9',
-          lastAt: '2026-10-11 05:10:00.000',
-        },
-        {
-          method: 'GET',
-          route: '/v1/uploads/:id',
-          status: '500',
-          code: 'INTERNAL_ERROR',
-          n: '1',
-          lastAt: '2026-10-11 04:42:22.088',
-        },
-      ],
-      [
-        {
-          '@timestamp': '2026-10-11 04:42:22.088',
-          requestId: 'r1',
-          method: 'GET',
-          route: '/v1/uploads/:id',
-          status: '500',
-          code: 'INTERNAL_ERROR',
-          ms: '772',
-          deviceId: 'd1',
-          platform: 'WEB',
-        },
-      ],
-    );
-    const activity = await userActivity(run, 'user-1', '24h', true, now);
+  it('tells requests people made from ones the apps make by themselves', () => {
+    expect(isAutomatedRequest('GET', '/v1/sync/status', 'WEB')).toBe(true);
+    expect(isAutomatedRequest('POST', '/v1/uploads', 'WEB')).toBe(false);
+    expect(isAutomatedRequest('POST', '/v1/uploads', 'ANDROID')).toBe(true);
+    // Desktop apps have no file browser; their sync engine renames and moves.
+    expect(isAutomatedRequest('PATCH', '/v1/drive/items/:id', 'MACOS')).toBe(true);
+    expect(isAutomatedRequest('PATCH', '/v1/drive/items/:id', 'IOS')).toBe(false);
+    expect(isAutomatedRequest('POST', '/v1/drive/trash/empty', 'WINDOWS')).toBe(false);
+  });
+
+  it('totals requests by who made them and groups failures with server errors first', async () => {
+    const { run, queries } = source([
+      {
+        event: 'request',
+        method: 'GET',
+        route: '/v1/users/me',
+        status: '200',
+        platform: 'WEB',
+        n: '40',
+        lastAt: '2026-10-11 05:00:00.000',
+      },
+      {
+        event: 'request',
+        method: 'POST',
+        route: '/v1/uploads',
+        status: '200',
+        platform: 'WEB',
+        n: '5',
+        lastAt: '2026-10-11 05:00:00.000',
+      },
+      {
+        event: 'request',
+        method: 'GET',
+        route: '/v1/users/me',
+        status: '401',
+        code: 'AUTH_INVALID',
+        platform: 'WEB',
+        n: '6',
+        lastAt: '2026-10-11 05:10:00.000',
+      },
+      {
+        event: 'request',
+        method: 'GET',
+        route: '/v1/users/me',
+        status: '401',
+        code: 'AUTH_INVALID',
+        platform: 'MACOS',
+        n: '3',
+        lastAt: '2026-10-11 05:20:00.000',
+      },
+      {
+        event: 'request',
+        method: 'GET',
+        route: '/v1/uploads/:id',
+        status: '500',
+        code: 'INTERNAL_ERROR',
+        platform: 'WEB',
+        n: '1',
+        lastAt: '2026-10-11 04:42:22.088',
+      },
+    ]);
+    const activity = await userActivity(run, 'user-1', '24h', now);
     expect(queries[0]).toContain('userId = "user-1"');
-    expect(queries[1]).toContain('status >= 400');
-    expect(queries[2]).toContain('event = "client_error"');
     expect(activity.since).toBe('2026-10-10T06:00:00.000Z');
     expect(activity.totals).toEqual({
-      requests: 50,
+      requests: 55,
       failed: 10,
       serverErrors: 1,
       unauthorized: 9,
       appRetries: 0,
       appFailures: 0,
+      manual: 5,
+      automated: 50,
     });
-    expect(activity.problems.map((p) => p.status)).toEqual([500, 401]);
-    expect(activity.problems[0].lastAt).toBe('2026-10-11T04:42:22.088Z');
-    expect(activity.requests).toEqual([
-      {
-        at: '2026-10-11T04:42:22.088Z',
-        requestId: 'r1',
-        method: 'GET',
-        route: '/v1/uploads/:id',
-        status: 500,
-        code: 'INTERNAL_ERROR',
-        ms: 772,
-        deviceId: 'd1',
-        platform: 'WEB',
-        appVersion: null,
-      },
+    // The 401s from two platforms are one row.
+    expect(activity.problems).toEqual([
+      expect.objectContaining({ status: 500, count: 1, automated: true }),
+      expect.objectContaining({ status: 401, count: 9, lastAt: '2026-10-11T05:20:00.000Z' }),
     ]);
-    // 10 failures matched but only one came back.
-    expect(activity.truncated).toBe(true);
   });
 
-  it('refuses ids that could change the query', async () => {
-    const { run } = source([], []);
-    await expect(userActivity(run, 'x" or userId != "', '1h', false, now)).rejects.toThrow();
-  });
   it('counts and lists the problems the apps reported', async () => {
     const { run } = source(
       [
@@ -272,7 +271,6 @@ describe('account activity', () => {
           lastAt: '2026-10-11 03:01:00.000',
         },
       ],
-      [],
       [
         {
           '@timestamp': '2026-10-11 03:01:00.000',
@@ -280,23 +278,81 @@ describe('account activity', () => {
           stage: 'storage',
           code: 'STALLED',
           httpStatus: '0',
-          uploadId: 'up1',
           sizeBytes: '2465790883',
           online: 'true',
-          deviceId: 'd1',
-          platform: 'WEB',
         },
       ],
     );
-    const activity = await userActivity(run, 'user-1', '24h', false, now);
+    const activity = await userActivity(run, 'user-1', '24h', now);
     expect(activity.totals).toMatchObject({ requests: 0, appRetries: 6, appFailures: 2 });
     expect(activity.appProblems.map((p) => p.kind)).toEqual(['UPLOAD_FAILED', 'UPLOAD_PART_RETRY']);
     expect(activity.appEvents[0]).toMatchObject({
-      at: '2026-10-11T03:01:00.000Z',
       httpStatus: 0,
       sizeBytes: 2465790883,
       online: true,
-      partNumber: null,
     });
+  });
+
+  it('refuses ids that could change the query', async () => {
+    const { run } = source([]);
+    await expect(userActivity(run, 'x" or userId != "', '1h', now)).rejects.toThrow();
+  });
+});
+
+describe('request log pages', () => {
+  const now = Date.parse('2026-10-11T06:00:00Z');
+  // A fake log: the newest first, honouring the cursor's time and the limit like Insights.
+  const log = Array.from({ length: 7 }, (_, i) => ({
+    '@timestamp': `2026-10-11 05:00:0${i < 4 ? 0 : i}.000`,
+    requestId: `r${i}`,
+    method: 'GET',
+    route: '/v1/drive/folders/:id/children',
+    status: '200',
+    platform: 'WEB',
+  })).reverse();
+  const queries: string[] = [];
+  const run: ActivitySource = async (query) => {
+    queries.push(query);
+    const t = query.match(/@timestamp <= (\d+)/)?.[1];
+    const limit = Number(query.match(/limit (\d+)/)![1]);
+    return log
+      .filter((r) => !t || Date.parse(r['@timestamp'].replace(' ', 'T') + 'Z') <= Number(t))
+      .slice(0, limit);
+  };
+
+  it('pages newest first without losing or repeating requests that share a millisecond', async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await requestLog(
+        run,
+        'user-1',
+        { range: '24h', origin: 'manual', failedOnly: false, cursor, pageSize: 2 },
+        now,
+      );
+      seen.push(...page.requests.map((r) => r.requestId));
+      expect(page.requests.every((r) => !r.automated)).toBe(true);
+      cursor = page.nextCursor ?? undefined;
+      pages++;
+    } while (cursor && pages < 10);
+    expect(seen.sort()).toEqual(['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6']);
+    expect(pages).toBe(4);
+    expect(queries[0]).toContain('and not (');
+  });
+
+  it('filters by origin and failures, and refuses a forged cursor', async () => {
+    await requestLog(run, 'user-1', { range: '1h', origin: 'automated', failedOnly: true }, now);
+    expect(queries.at(-1)).toMatch(
+      /and \(concat\(method, " ", route\) in \[.*\]\)\) and status >= 400/,
+    );
+    await expect(
+      requestLog(
+        run,
+        'user-1',
+        { range: '1h', origin: 'all', failedOnly: false, cursor: 'nope' },
+        now,
+      ),
+    ).rejects.toThrow('cursor');
   });
 });

@@ -817,6 +817,7 @@ body {
   gap: 16px;
 }
 .admin-activity-controls {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -828,4 +829,35 @@ body {
 .admin-activity-route {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+}
+.admin-activity-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.admin-request-log {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.admin-request-log > p {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.admin-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.admin-request-log th:nth-child(2) {
+  width: 36%;
+}
+.admin-request-log th:nth-child(1) {
+  width: 20%;
+}
+.admin-activity-controls > * {
+  flex: none;
 }

@@ -241,15 +241,112 @@ export const adminOverviewSchema = z.object({
   recent: z.array(auditEntrySchema),
 });
 
+/**
+ * Requests an app makes by itself, without anyone clicking: polling, session upkeep, sync
+ * bookkeeping. Written as "METHOD route" with the route pattern the request log records.
+ */
+export const BACKGROUND_REQUESTS = [
+  'GET /v1/users/me',
+  'GET /v1/sync/status',
+  'GET /v1/sync/changes',
+  'GET /v1/sync/folders',
+  'GET /v1/sync/shares',
+  'GET /v1/sync/shares/:id/status',
+  'GET /v1/notifications',
+  'GET /v1/backups',
+  'GET /v1/backups/:id',
+  'GET /v1/backups/:id/pending-restores',
+  'GET /v1/transfers/received',
+  'GET /v1/drive/usage',
+  'GET /v1/billing/subscription',
+  'GET /v1/uploads/:id',
+  'GET /v1/folder-downloads/:id',
+  'POST /v1/realtime/tickets',
+  'POST /v1/auth/session',
+  'POST /v1/auth/session/challenge',
+  'POST /v1/auth/refresh',
+  'POST /v1/sync/devices/register',
+  'POST /v1/sync/checkpoints',
+  'POST /v1/sync/items/:id/acknowledge',
+  'POST /v1/client-events',
+  'PUT /v1/devices/current/push',
+] as const;
+/** What the mobile apps' on-device sync and backup send by themselves. */
+const ENGINE_REQUESTS = [
+  'POST /v1/uploads',
+  'POST /v1/uploads/:id/parts',
+  'POST /v1/uploads/:id/complete',
+  'DELETE /v1/uploads/:id',
+  'POST /v1/downloads',
+  'POST /v1/sync/operations',
+  'POST /v1/sync/items/:id/request-content',
+  'POST /v1/backups/:id/runs',
+  'POST /v1/backups/:id/runs/:runId/folders',
+  'POST /v1/backups/:id/runs/:runId/uploads',
+  'GET /v1/backups/:id/runs/:runId/files',
+  'POST /v1/backups/:id/runs/:runId/files',
+  'POST /v1/backups/:id/runs/:runId/complete',
+  'POST /v1/backups/:id/checked',
+  'POST /v1/backups/:id/restores/:restoreId/complete',
+];
+/**
+ * The desktop apps have no file browser: their sync engine also reads, creates, renames, moves
+ * and deletes items, and re-registers its sync folders.
+ */
+export const DESKTOP_ENGINE_REQUESTS = [
+  ...ENGINE_REQUESTS,
+  'GET /v1/drive/items/:id',
+  'GET /v1/drive/folders/:id/children',
+  'POST /v1/drive/folders',
+  'PATCH /v1/drive/items/:id',
+  'POST /v1/drive/items/:id/move',
+  'DELETE /v1/drive/items/:id',
+  'PUT /v1/sync/folders',
+] as const;
+export const MOBILE_ENGINE_REQUESTS = ENGINE_REQUESTS;
+const DESKTOP_PLATFORMS = ['MACOS', 'WINDOWS', 'LINUX'];
+const MOBILE_PLATFORMS = ['IOS', 'ANDROID'];
+/**
+ * Whether the app made a request by itself rather than for a person's click, judged from the
+ * route and the platform. A best guess: a desktop rename the person made in Finder or Explorer
+ * also counts as automatic, since the sync engine sends it.
+ */
+export function isAutomatedRequest(method: string, route: string, platform: string | null) {
+  const key = `${method} ${route}`;
+  if ((BACKGROUND_REQUESTS as readonly string[]).includes(key)) return true;
+  if (platform && DESKTOP_PLATFORMS.includes(platform))
+    return (DESKTOP_ENGINE_REQUESTS as readonly string[]).includes(key);
+  if (platform && MOBILE_PLATFORMS.includes(platform)) return MOBILE_ENGINE_REQUESTS.includes(key);
+  return false;
+}
+/** The same test as `isAutomatedRequest`, as a Logs Insights expression over a request line. */
+export function automatedRequestQuery() {
+  const list = (items: readonly string[]) => `[${items.map((i) => JSON.stringify(i)).join(', ')}]`;
+  const key = 'concat(method, " ", route)';
+  return (
+    `(${key} in ${list(BACKGROUND_REQUESTS)}` +
+    ` or (platform in ${list(DESKTOP_PLATFORMS)} and ${key} in ${list(DESKTOP_ENGINE_REQUESTS)})` +
+    ` or (platform in ${list(MOBILE_PLATFORMS)} and ${key} in ${list(MOBILE_ENGINE_REQUESTS)}))`
+  );
+}
+export const adminActivityOrigins = ['manual', 'automated', 'all'] as const;
+export type AdminActivityOrigin = (typeof adminActivityOrigins)[number];
+export const ADMIN_REQUEST_PAGE = 50;
 /** How far back a user's activity lookup reads the API request log. */
 export const adminActivityRanges = ['1h', '24h', '7d', '30d'] as const;
 export const adminActivityQuery = z.object({
   range: z.enum(adminActivityRanges).default('24h'),
+});
+export const adminRequestLogQuery = z.object({
+  range: z.enum(adminActivityRanges).default('24h'),
+  origin: z.enum(adminActivityOrigins).default('manual'),
   /** Only requests that failed (status 400 and up). */
   failed: z.enum(['0', '1']).default('0'),
+  cursor: z.string().max(4096).optional(),
 });
 /** One API request an account made, from the request log. */
 export const adminActivityRequestSchema = z.object({
+  automated: z.boolean(),
   at: z.string(),
   requestId: z.string(),
   method: z.string(),
@@ -284,6 +381,11 @@ export const adminAppEventSchema = z.object({
  * latest requests. Read from the request log (kept 30 days), which names accounts since
  * 11 Oct 2026.
  */
+/** A page of an account's requests, newest first. */
+export const adminRequestLogSchema = z.object({
+  requests: z.array(adminActivityRequestSchema),
+  nextCursor: z.string().nullable(),
+});
 export const adminActivitySchema = z.object({
   range: z.enum(adminActivityRanges),
   since: z.string(),
@@ -299,6 +401,10 @@ export const adminActivitySchema = z.object({
     appRetries: z.number().default(0),
     /** Uploads the apps reported as failed. */
     appFailures: z.number().default(0),
+    /** Requests a person made, by `isAutomatedRequest`. */
+    manual: z.number().default(0),
+    /** Requests the apps made by themselves. */
+    automated: z.number().default(0),
   }),
   problems: z.array(
     z.object({
@@ -308,11 +414,9 @@ export const adminActivitySchema = z.object({
       code: z.string().nullable(),
       count: z.number(),
       lastAt: z.string(),
+      automated: z.boolean().default(false),
     }),
   ),
-  requests: z.array(adminActivityRequestSchema),
-  /** More requests matched than the list holds. */
-  truncated: z.boolean(),
   /** Problems the apps reported (`POST /v1/client-events`), grouped. */
   appProblems: z
     .array(
@@ -427,3 +531,5 @@ export type AdminFlagBody = z.infer<typeof adminFlagBody>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;
 export type AdminActivity = z.infer<typeof adminActivitySchema>;
 export type AdminActivityRange = (typeof adminActivityRanges)[number];
+export type AdminRequestLog = z.infer<typeof adminRequestLogSchema>;
+export type AdminActivityRequest = z.infer<typeof adminActivityRequestSchema>;

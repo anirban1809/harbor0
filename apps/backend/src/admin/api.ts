@@ -7,6 +7,8 @@ import * as c from '@harbor/contracts';
 import {
     adminActivityQuery,
     adminActivitySchema,
+    adminRequestLogQuery,
+    adminRequestLogSchema,
     adminBetaSchema,
     adminDeleteBody,
     adminFlagBody,
@@ -41,7 +43,7 @@ import { AdminService } from './service';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
 import { AdminForms } from './forms';
-import { userActivity, type ActivitySource } from './activity';
+import { requestLog, userActivity, type ActivitySource } from './activity';
 import {
     formAcceptingBody,
     formBody,
@@ -347,16 +349,29 @@ export function createAdminApp(
         ]);
         return ctx.json(adminUserDetailSchema.parse({ ...detail, flags: userFlags, email }));
     });
-    v1.get('/users/:id/activity', guard('read'), async (ctx) => {
-        const { range, failed } = adminActivityQuery.parse(ctx.req.query());
+    const activitySource = () => {
         assert(
             options.activity,
             'UNAVAILABLE',
             'The request log is not connected here. Set API_LOG_GROUP to read it.',
             503,
         );
-        const activity = await userActivity(options.activity, userId(ctx), range, failed === '1');
+        return options.activity;
+    };
+    v1.get('/users/:id/activity', guard('read'), async (ctx) => {
+        const { range } = adminActivityQuery.parse(ctx.req.query());
+        const activity = await userActivity(activitySource(), userId(ctx), range);
         return ctx.json(adminActivitySchema.parse(activity));
+    });
+    v1.get('/users/:id/activity/requests', guard('read'), async (ctx) => {
+        const { range, origin, failed, cursor } = adminRequestLogQuery.parse(ctx.req.query());
+        const page = await requestLog(activitySource(), userId(ctx), {
+            range,
+            origin,
+            failedOnly: failed === '1',
+            cursor,
+        });
+        return ctx.json(adminRequestLogSchema.parse(page));
     });
     v1.put('/users/:id/quota', guard('quota'), async (ctx) => {
         const i = await body(ctx, adminQuotaBody);
