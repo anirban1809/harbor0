@@ -212,6 +212,41 @@ describe('end-to-end encryption', () => {
     const after = (await (await call('GET', '/v1/users/me', web)).json()).storage.usedBytes;
     expect(before - after).toBe('plain text'.length);
   });
+  it('lets a full account re-encrypt a file, but not grow', async () => {
+    await flagOn();
+    const web = await signIn();
+    const first = (await (await upload(web, 'notes.txt', 'plain text')).json()).item;
+    await transact(service.repo, async (tx) => {
+      const account = (await tx.get<{ storageQuotaBytes: number }>(userPK('alice'), 'PROFILE'))!;
+      await tx.put(userPK('alice'), 'PROFILE', {
+        ...account,
+        storageQuotaBytes: 'plain text'.length,
+      });
+    });
+    await call('POST', '/v1/e2ee/enroll', web, enrollBody());
+    const replace = (sizeBytes: number) =>
+      call('POST', '/v1/uploads', web, {
+        operationId: randomUUID(),
+        parentId: null,
+        name: 'ignored',
+        sizeBytes,
+        driveItemId: first.id,
+        baseRevision: first.revision,
+        encrypted: true,
+      });
+    const overhead = 80 + 16;
+    const bigger = await replace(10 + overhead + 1);
+    expect((await bigger.json()).error.code).toBe('STORAGE_QUOTA_EXCEEDED');
+    expect((await replace(10 + overhead)).status).toBe(200);
+    const fresh = await call('POST', '/v1/uploads', web, {
+      operationId: randomUUID(),
+      parentId: null,
+      name: token('new.txt'),
+      sizeBytes: 1,
+      encrypted: true,
+    });
+    expect((await fresh.json()).error.code).toBe('STORAGE_QUOTA_EXCEEDED');
+  });
   it('turns off only once everything is decrypted, then removes the keys', async () => {
     await flagOn();
     const web = await signIn();

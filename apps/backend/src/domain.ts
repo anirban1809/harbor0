@@ -51,7 +51,7 @@ import {
     releaseInboxClaim,
 } from './signup-guard';
 import { joinTrackedSignup } from './signup-tracking';
-import { assertNameFor, encryptedAccount, encryptsNew } from './e2ee';
+import { assertNameFor, conversionAllowance, encryptedAccount, encryptsNew } from './e2ee';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -909,7 +909,14 @@ export class StorageService {
                     );
                     if (!prior) assertNameFor(account, input.name);
                 }
-                this.assertRoom(account, userId, input.sizeBytes, shared?.item);
+                this.assertRoom(
+                    account,
+                    userId,
+                    input.sizeBytes,
+                    shared?.item,
+                    undefined,
+                    conversionAllowance(account, prior, !!input.encrypted, owner === userId),
+                );
                 account.storageReservedBytes += input.sizeBytes;
                 await tx.put(userPK(owner), 'PROFILE', account);
                 const objectId = uid();
@@ -1455,8 +1462,11 @@ export class StorageService {
         bytes: number,
         target?: DriveItem,
         message = 'There is not enough available storage.',
+        /** Room beyond the quota, for a file whose old copy is about to be purged. */
+        allowanceBytes = 0,
     ) {
-        const available = storageUsage(account).availableBytes;
+        const { quotaBytes, usedBytes, reservedBytes } = storageUsage(account);
+        const available = Math.max(0, quotaBytes + allowanceBytes - usedBytes - reservedBytes);
         if (bytes <= available) return;
         if (account.id !== actor)
             throw new OwnerStorageFull(account.id, {

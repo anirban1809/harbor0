@@ -61,6 +61,25 @@ export const decryptingAccount = (account?: Pick<Account, 'e2ee'>) =>
 /** Whether new names and uploads for this account must be encrypted. */
 export const encryptsNew = (account?: Pick<Account, 'e2ee'>) =>
   encryptedAccount(account) && !decryptingAccount(account);
+/**
+ * Extra room for an upload that re-encrypts (or, while turning off, decrypts) one of the
+ * owner's own files. The old copy is purged right after, so the account may briefly go over
+ * its quota by at most that file's size plus the H0E1 overhead (an 80-byte header and a
+ * 16-byte tag per 4 MiB chunk): never more than its largest file.
+ */
+export function conversionAllowance(
+  account: Pick<Account, 'e2ee'>,
+  prior: Pick<DriveItem, 'sizeBytes' | 'encrypted' | 'cloudState'> | undefined,
+  encrypted: boolean,
+  byOwner: boolean,
+) {
+  if (!prior || !byOwner || prior.cloudState === 'RELEASED') return 0;
+  const converting = encryptsNew(account)
+    ? encrypted && !prior.encrypted
+    : decryptingAccount(account) && !encrypted && !!prior.encrypted;
+  if (!converting) return 0;
+  return prior.sizeBytes + 80 + 16 * Math.max(1, Math.ceil(prior.sizeBytes / 4194304));
+}
 /** Refuses a plaintext name for an item an encrypted account owns. */
 export function assertNameFor(account: Pick<Account, 'e2ee'>, name: string) {
   assert(
