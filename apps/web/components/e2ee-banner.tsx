@@ -17,12 +17,15 @@ export function E2eeMigrationBanner({ onDetails }: { onDetails: () => void }) {
   const m = useMigrationProgress();
   if (!m || m.complete || !m.totalFiles) return null;
   const percent = Math.floor((m.doneFiles / m.totalFiles) * 100);
+  const decrypting = m.direction === 'decrypt';
   return (
     <section className="e2ee-migration" aria-label="Encryption progress">
       <div className="e2ee-migration-head">
         <strong>
           <Lock aria-hidden="true" />
-          Encrypting your existing files
+          {decrypting
+            ? 'Decrypting your files to turn off encryption'
+            : 'Encrypting your existing files'}
         </strong>
         <span className="muted">
           {m.doneFiles.toLocaleString()} of {m.totalFiles.toLocaleString()} files · {percent}%
@@ -33,7 +36,7 @@ export function E2eeMigrationBanner({ onDetails }: { onDetails: () => void }) {
         <span className="muted">
           {m.running
             ? m.current
-              ? `Encrypting ${m.current} · keep this tab open to finish sooner`
+              ? `${decrypting ? 'Decrypting' : 'Encrypting'} ${m.current} · keep this tab open to finish sooner`
               : 'Checking your files…'
             : m.error
               ? `Paused: ${m.error} It tries again shortly.`
@@ -138,7 +141,7 @@ export function ProtectionChoice({
                     <li>You set a passphrase and save a recovery key</li>
                     <li>Lose both and your files can’t be recovered</li>
                     <li>Works on the web for now; desktop and mobile apps follow</li>
-                    <li>Can’t be turned off later</li>
+                    <li>Can be turned off later; your files are decrypted first</li>
                   </ul>
                 </span>
               </label>

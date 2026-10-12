@@ -973,6 +973,53 @@ export function createApp(
       return result;
     },
   );
+  add(
+    'post',
+    '/v1/e2ee/items/:id/purge-encrypted',
+    'While turning off: delete the encrypted versions of a file once its decrypted copy is uploaded',
+    undefined,
+    z.object({ removed: z.number(), retained: z.number() }),
+    async (ctx) => {
+      const result = await e2ee.purgeEncrypted(userId(ctx), p(ctx, 'id'));
+      if (result.removed) await wakeWorker();
+      return result;
+    },
+  );
+  // Turning off works whether or not the flag is on, like the account's other key changes.
+  add(
+    'post',
+    '/v1/e2ee/disable',
+    'Start turning off end-to-end encryption; devices then decrypt what is stored',
+    c.e2eeProofInput,
+    e2eeResponse,
+    async (ctx, i) => {
+      const state = await e2ee.startDisable(userId(ctx), i.proof);
+      await e2eeUsage(ctx, 'TURN_OFF_STARTED');
+      return { e2ee: state };
+    },
+  );
+  add(
+    'put',
+    '/v1/e2ee/decryption',
+    'Report progress decrypting files while turning off end-to-end encryption',
+    c.e2eeMigrationInput,
+    e2eeResponse,
+    async (ctx, i) => ({
+      e2ee: (await e2ee.setMigration(userId(ctx), ctx.get('device'), i, 'decryption')).state,
+    }),
+  );
+  add(
+    'post',
+    '/v1/e2ee/disable/finish',
+    'Finish turning off once nothing is encrypted: delete the keys and device copies',
+    c.e2eeProofInput,
+    e2eeResponse,
+    async (ctx, i) => {
+      const state = await e2ee.finishDisable(userId(ctx), i.proof);
+      await e2eeUsage(ctx, 'TURNED_OFF');
+      return { e2ee: state };
+    },
+  );
   /** Refuses features that need the server to read an encrypted account's files. */
   const notEncrypted = async (ctx: Context<Env>, what: string) =>
     assertNotEncrypted((await service.me(userId(ctx))).user, what);

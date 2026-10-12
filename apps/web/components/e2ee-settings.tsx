@@ -13,12 +13,20 @@ import {
   MonitorSmartphone,
   Printer,
   Smartphone,
+  Unlock,
 } from 'lucide-react';
 import type { ApiClient } from '@harbor/api-client';
 import type { E2eeDevice, E2eeState } from '@harbor/contracts';
 import { formatRecoveryKey, newRecoveryKey } from '../../../packages/api-client/src/e2ee';
 import { useFeatureFlag } from '../lib/feature-flags';
-import { changePassphrase, enroll, lock, replaceRecovery, useVault } from '../lib/e2ee-vault';
+import {
+  changePassphrase,
+  enroll,
+  lock,
+  replaceRecovery,
+  startTurningOff,
+  useVault,
+} from '../lib/e2ee-vault';
 import { useMigrationProgress } from '../lib/e2ee-migration';
 import { passphraseStrength, suggestPassphrase } from '../lib/e2ee-passphrase';
 import { Alert } from './ui/alert';
@@ -78,9 +86,9 @@ export function E2eeSettings({
             ? `Your ${count(fileCount)} files are re-encrypted in the background by this browser.`
             : 'Your files are re-encrypted in the background by this browser.'}
         </Row>
-        <Row icon={Lock} title="Permanent">
-          Once it’s on, it can’t be turned off. Lose your passphrase and recovery key and nobody can
-          recover your files.
+        <Row icon={Lock} title="Your keys, your responsibility">
+          Lose your passphrase and recovery key and nobody can recover your files. You can turn it
+          off later; your files are decrypted first.
         </Row>
       </ul>
       {wizard && (
@@ -125,7 +133,7 @@ function E2eeOn({ api }: { api: ApiClient }) {
   const queries = useQueryClient();
   const vault = useVault();
   const live = useMigrationProgress();
-  const [dialog, setDialog] = useState<'passphrase' | 'recovery'>();
+  const [dialog, setDialog] = useState<'passphrase' | 'recovery' | 'off'>();
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState<string>();
@@ -137,7 +145,10 @@ function E2eeOn({ api }: { api: ApiClient }) {
       </Card>
     );
   const s = state.data;
-  const m = live ?? s.migration;
+  const decrypting = !!s.decryptingSince;
+  const m =
+    (live?.direction === (decrypting ? 'decrypt' : 'encrypt') ? live : null) ??
+    (decrypting ? s.decryption : s.migration);
   const percent = m && m.totalFiles ? Math.floor((m.doneFiles / m.totalFiles) * 100) : 100;
   async function remove(device: E2eeDevice) {
     setBusy(device.id);
@@ -161,25 +172,41 @@ function E2eeOn({ api }: { api: ApiClient }) {
         title={
           <>
             End-to-end encryption{' '}
-            <Badge tone="success">
-              <Lock aria-hidden="true" />
-              On
-            </Badge>
+            {decrypting ? (
+              <Badge tone="warning">
+                <Unlock aria-hidden="true" />
+                Turning off
+              </Badge>
+            ) : (
+              <Badge tone="success">
+                <Lock aria-hidden="true" />
+                On
+              </Badge>
+            )}
           </>
         }
-        description={`On since ${day(s.enabledAt!)}. Only your devices can read your files and file names.`}
+        description={
+          decrypting
+            ? `Turning off since ${day(s.decryptingSince!)}. This browser is decrypting your files; keep it open. New uploads are stored unencrypted.`
+            : `On since ${day(s.enabledAt!)}. Only your devices can read your files and file names.`
+        }
       >
         {error && <Alert tone="error">{error}</Alert>}
         {notice && <Alert tone="success">{notice}</Alert>}
         <ul className="two-factor-methods">
-          <Row icon={FolderOpen} title="Existing files">
+          <Row icon={FolderOpen} title={decrypting ? 'Decrypting your files' : 'Existing files'}>
             {!m ? (
               'Checking your files…'
             ) : m.complete ? (
-              'All your files are encrypted.'
+              decrypting ? (
+                'All your files are decrypted.'
+              ) : (
+                'All your files are encrypted.'
+              )
             ) : (
               <>
-                {count(m.doneFiles)} of {count(m.totalFiles)} encrypted
+                {count(m.doneFiles)} of {count(m.totalFiles)}{' '}
+                {decrypting ? 'decrypted' : 'encrypted'}
                 {live?.running
                   ? ' · running in this browser'
                   : s.migration?.deviceName
@@ -214,6 +241,19 @@ function E2eeOn({ api }: { api: ApiClient }) {
           >
             Created {day(s.recoveryCreatedAt!)}. A new key replaces the old one.
           </Row>
+          {!decrypting && (
+            <Row
+              icon={Unlock}
+              title="Turn off end-to-end encryption"
+              action={
+                <Button variant="danger" size="sm" onClick={() => setDialog('off')}>
+                  Turn off…
+                </Button>
+              }
+            >
+              This browser decrypts every file, then your keys are deleted.
+            </Row>
+          )}
         </ul>
       </Card>
       <Card
@@ -273,6 +313,19 @@ function E2eeOn({ api }: { api: ApiClient }) {
             queries.setQueryData(['e2ee'], next);
             setDialog(undefined);
             setNotice('Your passphrase is changed. Use the new one on new devices.');
+          }}
+        />
+      )}
+      {dialog === 'off' && (
+        <TurnOff
+          api={api}
+          state={s}
+          onClose={() => setDialog(undefined)}
+          onDone={(next) => {
+            queries.setQueryData(['e2ee'], next);
+            void queries.invalidateQueries({ queryKey: ['me'] });
+            setDialog(undefined);
+            setNotice('Decrypting your files. Keep this page open until it finishes.');
           }}
         />
       )}
@@ -535,7 +588,7 @@ export function E2eeSetup({
     }
   }
   const titles: Record<number, [string, string]> = {
-    1: ['Before you turn on end-to-end encryption', 'Read this first. You can’t undo it.'],
+    1: ['Before you turn on end-to-end encryption', 'Read this first.'],
     2: [
       'Create an encryption passphrase',
       'You’ll enter this when you sign in on a new device or browser. Make it different from your sign-in password.',
@@ -567,7 +620,7 @@ export function E2eeSetup({
           }}
         >
           <Alert tone="warning">
-            <strong>This is permanent.</strong> If you lose both your passphrase and your recovery
+            <strong>Keep your keys safe.</strong> If you lose both your passphrase and your recovery
             key, nobody can get your files back, including harbor0.
           </Alert>
           <div>
@@ -592,8 +645,9 @@ export function E2eeSetup({
               : 'your files'}{' '}
             in the background, then the unencrypted copies are deleted. Earlier versions of these
             files are deleted too. Backups stay as they are until the desktop app can encrypt.
+            Turning it off later decrypts everything the same way.
           </Alert>
-          <Field label="I understand this can’t be undone" inline>
+          <Field label="I understand harbor0 can’t recover my files without my keys" inline>
             <Checkbox checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />
           </Field>
           <DialogActions>
@@ -805,6 +859,92 @@ function NewRecoveryKey({
           <Button type="submit" disabled={!matches || busy}>
             {busy && <Loader2 className="spin" aria-hidden="true" />}
             Replace recovery key
+          </Button>
+        </DialogActions>
+      </form>
+    </Dialog>
+  );
+}
+
+/** Turning encryption off: what happens, and the passphrase to confirm it's the owner. */
+function TurnOff({
+  api,
+  state,
+  onClose,
+  onDone,
+}: {
+  api: ApiClient;
+  state: E2eeState;
+  onClose: () => void;
+  onDone: (state: E2eeState) => void;
+}) {
+  const [passphrase, setPassphrase] = useState('');
+  const [understood, setUnderstood] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => !open && !busy && onClose()}
+      title="Turn off end-to-end encryption?"
+      description="Your files go back to standard protection: encrypted on our servers, readable by harbor0."
+      className="e2ee-dialog"
+    >
+      <form
+        className="form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!understood) return;
+          setBusy(true);
+          setError('');
+          try {
+            onDone((await startTurningOff(api.request, state, passphrase)).e2ee);
+          } catch (err) {
+            setError(
+              (err as { code?: string }).code === 'WRONG_KEY'
+                ? 'That passphrase isn’t right. Check it and try again.'
+                : (err as Error).message,
+            );
+            setBusy(false);
+          }
+        }}
+      >
+        <div>
+          <div className="e2ee-section-label">What happens</div>
+          <ol className="e2ee-list">
+            <li>
+              This browser downloads, decrypts and uploads again every file, including those in
+              Trash. Keep it open until it finishes.
+            </li>
+            <li>Earlier encrypted versions of your files are deleted.</li>
+            <li>New uploads are stored unencrypted from now on.</li>
+            <li>
+              When everything is decrypted, your passphrase, recovery key and unlocked devices stop
+              working and are deleted. Sharing, ZIP downloads and rclone come back.
+            </li>
+          </ol>
+        </div>
+        <Field label="Encryption passphrase">
+          <PasswordInput
+            aria-label="Encryption passphrase"
+            autoComplete="current-password"
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            autoFocus
+            required
+          />
+        </Field>
+        <Field label="I understand harbor0 will be able to read my files again" inline>
+          <Checkbox checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />
+        </Field>
+        {error && <Alert tone="error">{error}</Alert>}
+        <DialogActions>
+          <Button variant="outline" type="button" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="danger" type="submit" disabled={!understood || !passphrase || busy}>
+            {busy && <Loader2 className="spin" aria-hidden="true" />}
+            Turn off and decrypt
           </Button>
         </DialogActions>
       </form>

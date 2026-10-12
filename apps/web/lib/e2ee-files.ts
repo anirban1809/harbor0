@@ -169,6 +169,8 @@ export type EncryptedUploadInput = {
   /** Saves what resuming after a reload needs; called once the upload exists. */
   onCreated?: (resume: EncryptedResume) => void;
   resume?: EncryptedResume;
+  /** Upload the bytes as they are, unencrypted: decrypting while encryption is turned off. */
+  plain?: boolean;
   /** Stored-byte PUT of one part; returns its ETag. */
   put: (
     url: string,
@@ -186,10 +188,10 @@ export type EncryptedResume = { id: string; partSizeBytes: number; header: strin
  * only to hash them.
  */
 export async function uploadEncrypted(input: EncryptedUploadInput): Promise<DriveItem> {
-  const { api, keys, source, signal } = input;
-  const total = encryptedSize(source.size);
+  const { api, keys, source, signal, plain } = input;
+  const total = plain ? source.size : encryptedSize(source.size);
   let resume = input.resume;
-  let cipher: FileCipher;
+  let cipher: FileCipher | undefined;
   if (resume) {
     try {
       const status = await api.request(`/v1/uploads/${resume.id}`);
@@ -199,16 +201,16 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
       resume = undefined;
     }
   }
-  if (resume) cipher = await FileCipher.open(keys, fromB64url(resume.header));
+  if (resume) cipher = plain ? undefined : await FileCipher.open(keys, fromB64url(resume.header));
   else {
-    cipher = await FileCipher.create(keys);
+    cipher = plain ? undefined : await FileCipher.create(keys);
     const created = await api.createUpload({
       operationId: crypto.randomUUID(),
       parentId: input.parentId,
-      name: isEncryptedName(input.name) ? input.name : await encryptName(keys, input.name),
+      name: plain || isEncryptedName(input.name) ? input.name : await encryptName(keys, input.name),
       sizeBytes: total,
-      mimeType: 'application/octet-stream',
-      encrypted: true,
+      mimeType: plain ? guessMime(input.name) : 'application/octet-stream',
+      encrypted: !plain,
       ...(input.replace
         ? { driveItemId: input.replace.id, baseRevision: input.replace.revision }
         : {}),
@@ -216,7 +218,7 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
     resume = {
       id: created.upload.id,
       partSizeBytes: created.upload.partSizeBytes,
-      header: b64url(cipher.header),
+      header: cipher ? b64url(cipher.header) : '',
     };
     input.onCreated?.(resume);
   }
@@ -242,12 +244,9 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
     signal.throwIfAborted();
     if (failure) throw failure;
     const start = (n - 1) * session.partSizeBytes;
-    const bytes = await cipher.encryptedRange(
-      source.size,
-      start,
-      start + partBytes(n),
-      source.read,
-    );
+    const bytes = cipher
+      ? await cipher.encryptedRange(source.size, start, start + partBytes(n), source.read)
+      : await source.read(start, start + partBytes(n));
     hash.update(bytes);
     if (done.has(n)) continue;
     while (running.size >= 2) await Promise.race(running);

@@ -122,8 +122,8 @@ export const userSchema = z.object({
   storageQuotaBytes: z.number(),
   storageUsedBytes: z.number(),
   storageReservedBytes: z.number(),
-  /** Set once the account turns on end-to-end encryption, which can't be turned off. */
-  e2ee: z.object({ enabledAt: z.string() }).optional(),
+  /** Set while end-to-end encryption is on; `decryptingSince` while it is being turned off. */
+  e2ee: z.object({ enabledAt: z.string(), decryptingSince: z.string().optional() }).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 /**
- * End-to-end encryption is per account and permanent: once on, every file and file name the
- * account stores is encrypted by its devices before upload. The server only ever holds the
+ * End-to-end encryption is per account: while on, every file and file name the account stores
+ * is encrypted by its devices before upload. Turning it off decrypts everything in the browser
+ * first; the keys are deleted only once nothing encrypted is left. The server only ever holds the
  * account's master key wrapped by secrets it never sees (the passphrase, the recovery key and
  * each unlocked device's own secret), so it cannot read files, names or the key.
  */
@@ -89,6 +90,9 @@ export const e2eeStateSchema = z.object({
   passphraseChangedAt: z.string().nullable(),
   devices: z.array(e2eeDeviceSchema),
   migration: e2eeMigrationSchema.nullable(),
+  /** Set while turning off: files are being decrypted, and new ones are stored unencrypted. */
+  decryptingSince: z.string().nullable(),
+  decryption: e2eeMigrationSchema.nullable(),
 });
 export type E2eeState = z.infer<typeof e2eeStateSchema>;
 
@@ -107,6 +111,7 @@ export const e2eeDeviceInput = z
     remember: z.boolean(),
   })
   .strict();
+export const e2eeProofInput = z.object({ proof: keyProof }).strict();
 export const e2eeMigrationInput = z
   .object({
     totalFiles: z.number().int().min(0),

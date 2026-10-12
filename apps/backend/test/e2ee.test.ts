@@ -205,4 +205,76 @@ describe('end-to-end encryption', () => {
     const after = (await (await call('GET', '/v1/users/me', web)).json()).storage.usedBytes;
     expect(before - after).toBe('plain text'.length);
   });
+  it('turns off only once everything is decrypted, then removes the keys', async () => {
+    await flagOn();
+    const web = await signIn();
+    await call('POST', '/v1/e2ee/enroll', web, enrollBody('the-right-proof'));
+    const folder = (
+      await (
+        await call('POST', '/v1/drive/folders', web, {
+          operationId: randomUUID(),
+          parentId: null,
+          name: token('Taxes'),
+        })
+      ).json()
+    ).item;
+    const file = (await (await upload(web, token('a.txt'), 'sealed', { encrypted: true })).json())
+      .item;
+    expect((await call('POST', '/v1/e2ee/disable', web, { proof: 'wrong' })).status).toBe(403);
+    const started = await call('POST', '/v1/e2ee/disable', web, { proof: 'the-right-proof' });
+    expect((await started.json()).e2ee.decryptingSince).toBeTruthy();
+    expect(
+      (await (await call('GET', '/v1/users/me', web)).json()).user.e2ee.decryptingSince,
+    ).toBeTruthy();
+
+    // While decrypting, plaintext is allowed again.
+    const r = await call('POST', '/v1/uploads', web, {
+      operationId: randomUUID(),
+      parentId: null,
+      name: 'ignored',
+      sizeBytes: 5,
+      driveItemId: file.id,
+      baseRevision: file.revision,
+    });
+    const { upload: u } = await r.json();
+    const stored = (await new Transaction(service.repo).get<{ providerUploadId: string }>(
+      userPK('alice'),
+      `UPLOAD#${u.id}`,
+    ))!;
+    storage.uploads.get(stored.providerUploadId)!.parts.set(1, Buffer.from('plain'));
+    const done = await (
+      await call('POST', `/v1/uploads/${u.id}/complete`, web, {
+        parts: [{ partNumber: 1, etag: 'e' }],
+        contentHash: createHash('sha256').update('plain').digest('hex'),
+      })
+    ).json();
+    expect(done.item.encrypted).toBeUndefined();
+    expect(
+      await (await call('POST', `/v1/e2ee/items/${file.id}/purge-encrypted`, web)).json(),
+    ).toEqual({ removed: 1, retained: 0 });
+    const rename = (id: string, revision: number, name: string) =>
+      call('PATCH', `/v1/drive/items/${id}`, web, {
+        operationId: randomUUID(),
+        baseRevision: revision,
+        name,
+      });
+    expect((await rename(file.id, done.item.revision, 'a.txt')).status).toBe(200);
+
+    const early = await call('POST', '/v1/e2ee/disable/finish', web, { proof: 'the-right-proof' });
+    expect((await early.json()).error).toMatchObject({
+      code: 'E2EE_STILL_ENCRYPTED',
+      details: { left: 1 },
+    });
+    expect((await rename(folder.id, folder.revision, 'Taxes')).status).toBe(200);
+    const off = await call('POST', '/v1/e2ee/disable/finish', web, { proof: 'the-right-proof' });
+    expect((await off.json()).e2ee).toMatchObject({ enabled: false, devices: [] });
+    expect((await (await call('GET', '/v1/users/me', web)).json()).user.e2ee).toBeUndefined();
+    const plain = await call('POST', '/v1/drive/folders', web, {
+      operationId: randomUUID(),
+      parentId: null,
+      name: 'Plain again',
+    });
+    expect(plain.status).toBe(200);
+    expect((await call('POST', '/v1/e2ee/enroll', web, enrollBody())).status).toBe(200);
+  });
 });

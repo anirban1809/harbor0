@@ -27,6 +27,8 @@ export type Vault = {
   userId?: string;
   /** The account is encrypted. */
   enabled: boolean;
+  /** Encryption is being turned off: stored files are decrypted and new ones stay unencrypted. */
+  decrypting?: boolean;
   keys?: AccountKeys;
   /** This browser's server record, while unlocked. */
   deviceRecordId?: string;
@@ -79,17 +81,30 @@ function forgetCopy(userId: string) {
 }
 
 /** Called with each /v1/users/me answer; a different account starts locked. */
-export function setAccount(userId: string, enabled: boolean) {
-  if (vault.userId === userId && vault.enabled === enabled) return;
+export function setAccount(userId: string, enabled: boolean, decrypting = false) {
+  if (vault.userId === userId && vault.enabled === enabled && !!vault.decrypting === decrypting)
+    return;
+  if (vault.userId === userId && vault.enabled && !enabled) {
+    // Turned off: this browser's copy opens nothing any more.
+    forgetCopy(userId);
+    return set({
+      enabled,
+      decrypting: false,
+      keys: undefined,
+      deviceRecordId: undefined,
+      restoring: false,
+    });
+  }
   if (vault.userId !== userId)
     set({
       userId,
       enabled,
+      decrypting,
       keys: undefined,
       deviceRecordId: undefined,
       restoring: enabled && !!readCopy(userId),
     });
-  else set({ enabled, restoring: enabled && !vault.keys && !!readCopy(userId) });
+  else set({ enabled, decrypting, restoring: enabled && !vault.keys && !!readCopy(userId) });
 }
 
 /** Opens this browser's saved copy, if it has one the server still recognises. */
@@ -213,4 +228,15 @@ export function requireKeys() {
   if (!vault.keys)
     throw Object.assign(new Error('Unlock your files to continue.'), { code: 'E2EE_LOCKED' });
   return vault.keys;
+}
+
+/** Starts turning encryption off, once the passphrase has shown this person holds the key. */
+export async function startTurningOff(request: Transport, state: E2eeState, passphrase: string) {
+  const keys = requireKeys();
+  const master = await unwrapWithPassphrase(state.passphrase!, passphrase);
+  if (b64url(master) !== b64url(keys.master))
+    throw Object.assign(new Error('That passphrase isn’t right.'), { code: 'WRONG_KEY' });
+  const result = await request('/v1/e2ee/disable', { method: 'POST', body: { proof: keys.proof } });
+  set({ decrypting: true });
+  return result;
 }

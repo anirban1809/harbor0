@@ -51,7 +51,7 @@ import {
     releaseInboxClaim,
 } from './signup-guard';
 import { joinTrackedSignup } from './signup-tracking';
-import { assertNameFor, encryptedAccount } from './e2ee';
+import { assertNameFor, encryptedAccount, encryptsNew } from './e2ee';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -92,6 +92,8 @@ export type Account = User & {
     storageAlertLevel?: StorageAlertLevel | 0;
     /** The `?ref=` of the sign-up link the account came through; see signup-tracking.ts. */
     trackingId?: string;
+    /** When end-to-end encryption was last turned off. */
+    e2eeDisabledAt?: string;
 };
 /** Whether `item` was in the trash when it was last emptied. */
 export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
@@ -898,7 +900,7 @@ export class StorageService {
                     );
                 }
                 const account = await this.account(tx, owner);
-                if (encryptedAccount(account)) {
+                if (encryptsNew(account)) {
                     assert(
                         input.encrypted,
                         'E2EE_REQUIRED',
@@ -1641,7 +1643,7 @@ export class StorageService {
                     ))!;
                     const account = await this.account(tx, owner);
                     assert(
-                        !encryptedAccount(account) || previous.encrypted,
+                        !encryptsNew(account) || previous.encrypted,
                         'E2EE_REQUIRED',
                         'This version was stored before encryption was turned on, so it can’t be restored.',
                         409,

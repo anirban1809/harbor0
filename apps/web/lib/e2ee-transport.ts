@@ -138,12 +138,18 @@ export function e2eeTransport(inner: Transport): Transport {
     if (before.enabled && before.keys) {
       if (/^\/v1\/search\?/.test(path) && /[?&](q|extension|mimeType)=/.test(path))
         return search(path, init, before.keys);
-      const changed = (await outgoing(path, init)) as Parameters<Transport>[1] & { path?: string };
-      if (changed?.path) target = changed.path;
-      init = changed;
-    } else if (before.enabled) await outgoing(path, init);
+      // While turning off, new names go up unencrypted; stored ones are still read here.
+      if (!before.decrypting) {
+        const changed = (await outgoing(path, init)) as Parameters<Transport>[1] & {
+          path?: string;
+        };
+        if (changed?.path) target = changed.path;
+        init = changed;
+      }
+    } else if (before.enabled && !before.decrypting) await outgoing(path, init);
     const result = await inner(target, init);
-    if (path === '/v1/users/me' && result?.user?.id) setAccount(result.user.id, !!result.user.e2ee);
+    if (path === '/v1/users/me' && result?.user?.id)
+      setAccount(result.user.id, !!result.user.e2ee, !!result.user.e2ee?.decryptingSince);
     const now = currentVault();
     return now.enabled && now.keys ? incoming(result, now.keys) : result;
   };

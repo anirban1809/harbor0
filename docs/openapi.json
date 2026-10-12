@@ -6655,6 +6655,9 @@
                           "properties": {
                             "enabledAt": {
                               "type": "string"
+                            },
+                            "decryptingSince": {
+                              "type": "string"
                             }
                           },
                           "required": [
@@ -7341,6 +7344,9 @@
                           "type": "object",
                           "properties": {
                             "enabledAt": {
+                              "type": "string"
+                            },
+                            "decryptingSince": {
                               "type": "string"
                             }
                           },
@@ -12836,6 +12842,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -12846,7 +12920,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -13560,6 +13636,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -13570,7 +13714,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -14244,6 +14390,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -14254,7 +14468,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -14910,6 +15126,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -14920,7 +15204,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -16279,6 +16565,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -16289,7 +16643,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -16932,6 +17288,74 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -16942,7 +17366,9 @@
                         "recoveryCreatedAt",
                         "passphraseChangedAt",
                         "devices",
-                        "migration"
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
                       ]
                     }
                   },
@@ -17318,6 +17744,2491 @@
                   "required": [
                     "removed",
                     "retained"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/e2ee/items/{id}/purge-encrypted": {
+      "post": {
+        "summary": "While turning off: delete the encrypted versions of a file once its decrypted copy is uploaded",
+        "operationId": "post__v1_e2ee_items__id_purge_encrypted",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "removed": {
+                      "type": "number"
+                    },
+                    "retained": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "removed",
+                    "retained"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/e2ee/disable": {
+      "post": {
+        "summary": "Start turning off end-to-end encryption; devices then decrypt what is stored",
+        "operationId": "post__v1_e2ee_disable",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "proof": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  }
+                },
+                "required": [
+                  "proof"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "e2ee": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "enabledAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphrase": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "argon2id"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "memoryKiB": {
+                                  "type": "integer",
+                                  "minimum": 19456,
+                                  "maximum": 1048576
+                                },
+                                "iterations": {
+                                  "type": "integer",
+                                  "minimum": 2,
+                                  "maximum": 20
+                                },
+                                "parallelism": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 8
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "memoryKiB",
+                                "iterations",
+                                "parallelism",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recovery": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "hkdf"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recoveryCreatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphraseChangedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "devices": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "deviceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "platform": {
+                                "type": "string"
+                              },
+                              "remember": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "lastUsedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "deviceId",
+                              "name",
+                              "platform",
+                              "remember",
+                              "createdAt",
+                              "lastUsedAt"
+                            ]
+                          }
+                        },
+                        "migration": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "enabledAt",
+                        "passphrase",
+                        "recovery",
+                        "recoveryCreatedAt",
+                        "passphraseChangedAt",
+                        "devices",
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "e2ee"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/e2ee/decryption": {
+      "put": {
+        "summary": "Report progress decrypting files while turning off end-to-end encryption",
+        "operationId": "put__v1_e2ee_decryption",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "totalFiles": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "doneFiles": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "totalBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "doneBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "skippedFiles": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "totalFiles",
+                  "doneFiles",
+                  "totalBytes",
+                  "doneBytes",
+                  "skippedFiles",
+                  "complete"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "e2ee": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "enabledAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphrase": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "argon2id"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "memoryKiB": {
+                                  "type": "integer",
+                                  "minimum": 19456,
+                                  "maximum": 1048576
+                                },
+                                "iterations": {
+                                  "type": "integer",
+                                  "minimum": 2,
+                                  "maximum": 20
+                                },
+                                "parallelism": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 8
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "memoryKiB",
+                                "iterations",
+                                "parallelism",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recovery": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "hkdf"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recoveryCreatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphraseChangedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "devices": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "deviceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "platform": {
+                                "type": "string"
+                              },
+                              "remember": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "lastUsedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "deviceId",
+                              "name",
+                              "platform",
+                              "remember",
+                              "createdAt",
+                              "lastUsedAt"
+                            ]
+                          }
+                        },
+                        "migration": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "enabledAt",
+                        "passphrase",
+                        "recovery",
+                        "recoveryCreatedAt",
+                        "passphraseChangedAt",
+                        "devices",
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "e2ee"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "details": {}
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/e2ee/disable/finish": {
+      "post": {
+        "summary": "Finish turning off once nothing is encrypted: delete the keys and device copies",
+        "operationId": "post__v1_e2ee_disable_finish",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "proof": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  }
+                },
+                "required": [
+                  "proof"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "e2ee": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        },
+                        "enabledAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphrase": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "argon2id"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "memoryKiB": {
+                                  "type": "integer",
+                                  "minimum": 19456,
+                                  "maximum": 1048576
+                                },
+                                "iterations": {
+                                  "type": "integer",
+                                  "minimum": 2,
+                                  "maximum": 20
+                                },
+                                "parallelism": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 8
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "memoryKiB",
+                                "iterations",
+                                "parallelism",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recovery": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "v": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "kdf": {
+                                  "type": "string",
+                                  "const": "hkdf"
+                                },
+                                "salt": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "iv": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "ciphertext": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 2048,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                }
+                              },
+                              "required": [
+                                "v",
+                                "kdf",
+                                "salt",
+                                "iv",
+                                "ciphertext"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "recoveryCreatedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "passphraseChangedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "devices": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "deviceId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "platform": {
+                                "type": "string"
+                              },
+                              "remember": {
+                                "type": "boolean"
+                              },
+                              "createdAt": {
+                                "type": "string"
+                              },
+                              "lastUsedAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "deviceId",
+                              "name",
+                              "platform",
+                              "remember",
+                              "createdAt",
+                              "lastUsedAt"
+                            ]
+                          }
+                        },
+                        "migration": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "decryptingSince": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "decryption": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "totalFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "totalBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "doneBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "skippedFiles": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "complete": {
+                                  "type": "boolean"
+                                },
+                                "deviceName": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "updatedAt": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "totalFiles",
+                                "doneFiles",
+                                "totalBytes",
+                                "doneBytes",
+                                "skippedFiles",
+                                "complete",
+                                "deviceName",
+                                "updatedAt"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "enabled",
+                        "enabledAt",
+                        "passphrase",
+                        "recovery",
+                        "recoveryCreatedAt",
+                        "passphraseChangedAt",
+                        "devices",
+                        "migration",
+                        "decryptingSince",
+                        "decryption"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "e2ee"
                   ]
                 }
               }

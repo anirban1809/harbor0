@@ -630,6 +630,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/e2ee/items/{id}/purge-encrypted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** While turning off: delete the encrypted versions of a file once its decrypted copy is uploaded */
+        post: operations["post__v1_e2ee_items__id_purge_encrypted"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/e2ee/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start turning off end-to-end encryption; devices then decrypt what is stored */
+        post: operations["post__v1_e2ee_disable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/e2ee/decryption": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Report progress decrypting files while turning off end-to-end encryption */
+        put: operations["put__v1_e2ee_decryption"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/e2ee/disable/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish turning off once nothing is encrypted: delete the keys and device copies */
+        post: operations["post__v1_e2ee_disable_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/users/search": {
         parameters: {
             query?: never;
@@ -4765,6 +4833,7 @@ export interface operations {
                             storageReservedBytes: number;
                             e2ee?: {
                                 enabledAt: string;
+                                decryptingSince?: string;
                             };
                             createdAt: string;
                             updatedAt: string;
@@ -5014,6 +5083,7 @@ export interface operations {
                             storageReservedBytes: number;
                             e2ee?: {
                                 enabledAt: string;
+                                decryptingSince?: string;
                             };
                             createdAt: string;
                             updatedAt: string;
@@ -7349,6 +7419,17 @@ export interface operations {
                                 deviceName: string | null;
                                 updatedAt: string | null;
                             } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
                         };
                     };
                 };
@@ -7587,6 +7668,17 @@ export interface operations {
                                 deviceName: string | null;
                                 updatedAt: string | null;
                             } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
                         };
                     };
                 };
@@ -7816,6 +7908,17 @@ export interface operations {
                                 deviceName: string | null;
                                 updatedAt: string | null;
                             } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
                         };
                     };
                 };
@@ -8033,6 +8136,17 @@ export interface operations {
                                 lastUsedAt: string;
                             }[];
                             migration: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                            decryptingSince: string | null;
+                            decryption: {
                                 totalFiles: number;
                                 doneFiles: number;
                                 totalBytes: number;
@@ -8597,6 +8711,17 @@ export interface operations {
                                 deviceName: string | null;
                                 updatedAt: string | null;
                             } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
                         };
                     };
                 };
@@ -8819,6 +8944,17 @@ export interface operations {
                                 deviceName: string | null;
                                 updatedAt: string | null;
                             } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
                         };
                     };
                 };
@@ -8989,6 +9125,864 @@ export interface operations {
                     "application/json": {
                         removed: number;
                         retained: number;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    post__v1_e2ee_items__id_purge_encrypted: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        removed: number;
+                        retained: number;
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    post__v1_e2ee_disable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    proof: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        e2ee: {
+                            enabled: boolean;
+                            enabledAt: string | null;
+                            passphrase: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "argon2id";
+                                salt: string;
+                                memoryKiB: number;
+                                iterations: number;
+                                parallelism: number;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recovery: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "hkdf";
+                                salt: string;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recoveryCreatedAt: string | null;
+                            passphraseChangedAt: string | null;
+                            devices: {
+                                id: string;
+                                deviceId: string | null;
+                                name: string;
+                                platform: string;
+                                remember: boolean;
+                                createdAt: string;
+                                lastUsedAt: string;
+                            }[];
+                            migration: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    put__v1_e2ee_decryption: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    totalFiles: number;
+                    doneFiles: number;
+                    totalBytes: number;
+                    doneBytes: number;
+                    skippedFiles: number;
+                    complete: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        e2ee: {
+                            enabled: boolean;
+                            enabledAt: string | null;
+                            passphrase: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "argon2id";
+                                salt: string;
+                                memoryKiB: number;
+                                iterations: number;
+                                parallelism: number;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recovery: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "hkdf";
+                                salt: string;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recoveryCreatedAt: string | null;
+                            passphraseChangedAt: string | null;
+                            devices: {
+                                id: string;
+                                deviceId: string | null;
+                                name: string;
+                                platform: string;
+                                remember: boolean;
+                                createdAt: string;
+                                lastUsedAt: string;
+                            }[];
+                            migration: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    post__v1_e2ee_disable_finish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    proof: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        e2ee: {
+                            enabled: boolean;
+                            enabledAt: string | null;
+                            passphrase: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "argon2id";
+                                salt: string;
+                                memoryKiB: number;
+                                iterations: number;
+                                parallelism: number;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recovery: {
+                                /** @constant */
+                                v: 1;
+                                /** @constant */
+                                kdf: "hkdf";
+                                salt: string;
+                                iv: string;
+                                ciphertext: string;
+                            } | null;
+                            recoveryCreatedAt: string | null;
+                            passphraseChangedAt: string | null;
+                            devices: {
+                                id: string;
+                                deviceId: string | null;
+                                name: string;
+                                platform: string;
+                                remember: boolean;
+                                createdAt: string;
+                                lastUsedAt: string;
+                            }[];
+                            migration: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                            decryptingSince: string | null;
+                            decryption: {
+                                totalFiles: number;
+                                doneFiles: number;
+                                totalBytes: number;
+                                doneBytes: number;
+                                skippedFiles: number;
+                                complete: boolean;
+                                deviceName: string | null;
+                                updatedAt: string | null;
+                            } | null;
+                        };
                     };
                 };
             };

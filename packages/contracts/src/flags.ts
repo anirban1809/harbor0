@@ -21,12 +21,14 @@ export const featureFlags = {
   },
   e2ee: {
     description:
-      'End-to-end encryption: Settings → End-to-end encryption on the web, and the protection choice for new accounts. Turning it on is permanent. Accounts that already turned it on keep it, and keep unlocking and encrypting, when the flag is taken off. Only the web app encrypts so far; desktop and mobile apps are blocked on encrypted accounts until they are updated.',
+      'End-to-end encryption: Settings → End-to-end encryption on the web, and the protection choice for new accounts. Turning it off decrypts every file in the browser first. Accounts that already turned it on keep it, and can still turn it off, when the flag is taken off. Only the web app encrypts so far; desktop and mobile apps are blocked on encrypted accounts until they are updated.',
     usage: {
       TURNED_ON: 'Turned on end-to-end encryption',
       PASSPHRASE_CHANGED: 'Changed the encryption passphrase',
       RECOVERY_KEY_CREATED: 'Created a new recovery key',
       MIGRATION_COMPLETE: 'Finished encrypting existing files',
+      TURN_OFF_STARTED: 'Started turning off end-to-end encryption',
+      TURNED_OFF: 'Turned off end-to-end encryption',
       APP_BLOCKED: 'Blocked: app cannot encrypt',
     },
   },

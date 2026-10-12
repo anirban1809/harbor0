@@ -12,7 +12,7 @@ import {
   type RecoveryEnvelope,
 } from '@harbor/contracts';
 import type { Account, StorageService } from './domain';
-import { userPK } from './domain';
+import { emptied, userPK } from './domain';
 import { assert } from './errors';
 import { Transaction, transact } from './repository';
 
@@ -26,6 +26,7 @@ type KeysRecord = {
   /** SHA-256 of the key proof, hex; see `keyProof` in contracts. */
   proofHash: string;
   migration?: E2eeMigration;
+  decryption?: E2eeMigration;
 };
 /** An unlocked device. The secret is only half of its key; the device keeps the other half. */
 type DeviceRecord = E2eeDevice & { serverSecret: string };
@@ -54,10 +55,16 @@ export function encryptingClient(device?: Pick<Device, 'platform' | 'appVersion'
   return true;
 }
 export const encryptedAccount = (account?: Pick<Account, 'e2ee'>) => !!account?.e2ee?.enabledAt;
+/** Being turned off: files are decrypted, so unencrypted names and uploads are allowed again. */
+export const decryptingAccount = (account?: Pick<Account, 'e2ee'>) =>
+  !!account?.e2ee?.decryptingSince;
+/** Whether new names and uploads for this account must be encrypted. */
+export const encryptsNew = (account?: Pick<Account, 'e2ee'>) =>
+  encryptedAccount(account) && !decryptingAccount(account);
 /** Refuses a plaintext name for an item an encrypted account owns. */
 export function assertNameFor(account: Pick<Account, 'e2ee'>, name: string) {
   assert(
-    !encryptedAccount(account) || isEncryptedName(name),
+    !encryptsNew(account) || isEncryptedName(name),
     'E2EE_REQUIRED',
     'This account uses end-to-end encryption. Update the app so it can encrypt file names.',
     409,
@@ -81,6 +88,7 @@ export class E2ee {
   async state(userId: string): Promise<E2eeState> {
     const tx = new Transaction(this.repo);
     const keys = await tx.get<KeysRecord>(userPK(userId), KEYS);
+    const account = await tx.get<Account>(userPK(userId), 'PROFILE');
     const devices = keys ? await tx.list<DeviceRecord>(userPK(userId), 'E2EE_DEVICE#') : [];
     return {
       enabled: !!keys,
@@ -93,6 +101,8 @@ export class E2ee {
         .map(({ serverSecret: _, ...d }) => d)
         .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt)),
       migration: keys?.migration ?? null,
+      decryptingSince: account?.e2ee?.decryptingSince ?? null,
+      decryption: keys?.decryption ?? null,
     };
   }
 
@@ -216,6 +226,78 @@ export class E2ee {
     });
   }
 
+  /**
+   * Starts turning encryption off: from now on names and uploads may be unencrypted, and the
+   * account's devices decrypt what is stored. Nothing is deleted yet; the keys stay until
+   * `finishDisable`, so the account can still be unlocked to read what is left.
+   */
+  async startDisable(userId: string, proof: string) {
+    await transact(this.repo, async (tx) => {
+      await this.keys(tx, userId, proof);
+      const account = await this.service.account(tx, userId);
+      if (account.e2ee?.decryptingSince) return;
+      account.e2ee = { ...account.e2ee!, decryptingSince: now() };
+      account.updatedAt = now();
+      await tx.put(userPK(userId), 'PROFILE', account);
+    });
+    return this.state(userId);
+  }
+
+  /** Encrypted files and names the account still stores, Trash included. */
+  async encryptedLeft(userId: string) {
+    const tx = new Transaction(this.repo);
+    const account = await this.service.account(tx, userId);
+    let count = 0;
+    let cursor: string | undefined;
+    do {
+      const page = await this.repo.query(userPK(userId), 'ITEM#', 500, cursor);
+      for (const row of page.rows) {
+        const item = row.data as DriveItem & { purging?: boolean; stagingId?: string };
+        if (item.purging || emptied(item, account)) continue;
+        if (item.encrypted || isEncryptedName(item.name)) count++;
+      }
+      cursor = page.cursor ?? undefined;
+    } while (cursor);
+    return count;
+  }
+
+  /** Finishes turning off once nothing encrypted is left: the keys and device copies go. */
+  async finishDisable(userId: string, proof: string) {
+    const left = await this.encryptedLeft(userId);
+    assert(
+      left === 0,
+      'E2EE_STILL_ENCRYPTED',
+      `${left.toLocaleString('en')} items are still encrypted. Keep this page open until they are decrypted.`,
+      409,
+      { left },
+    );
+    await transact(this.repo, async (tx) => {
+      await this.keys(tx, userId, proof);
+      const account = await this.service.account(tx, userId);
+      assert(
+        decryptingAccount(account),
+        'E2EE_NOT_DECRYPTING',
+        'Start turning off end-to-end encryption first.',
+        409,
+      );
+      delete account.e2ee;
+      account.e2eeDisabledAt = now();
+      account.updatedAt = now();
+      await tx.put(userPK(userId), 'PROFILE', account);
+      await tx.delete(userPK(userId), KEYS);
+    });
+    // Device copies open nothing once the keys are gone; remove them in small batches.
+    for (;;) {
+      const page = await this.repo.query(userPK(userId), 'E2EE_DEVICE#', 25);
+      if (!page.rows.length) break;
+      await transact(this.repo, async (tx) => {
+        for (const row of page.rows)
+          if (await tx.get(row.pk, row.sk)) await tx.delete(row.pk, row.sk);
+      });
+    }
+    return this.state(userId);
+  }
+
   async removeDevice(userId: string, id: string) {
     await transact(this.repo, async (tx) => {
       if (await tx.get(userPK(userId), deviceKey(id)))
@@ -228,15 +310,17 @@ export class E2ee {
     userId: string,
     device: Device | undefined,
     input: Omit<E2eeMigration, 'deviceName' | 'updatedAt'>,
+    /** Encrypting existing files, or decrypting them while turning off. */
+    field: 'migration' | 'decryption' = 'migration',
   ) {
     let finished = false;
     await transact(this.repo, async (tx) => {
       const keys = await tx.get<KeysRecord>(userPK(userId), KEYS);
       assert(keys, 'E2EE_OFF', 'End-to-end encryption is off.', 409);
-      finished = input.complete && !keys.migration?.complete;
+      finished = input.complete && !keys[field]?.complete;
       await tx.put(userPK(userId), KEYS, {
         ...keys,
-        migration: { ...input, deviceName: device?.name ?? null, updatedAt: now() },
+        [field]: { ...input, deviceName: device?.name ?? null, updatedAt: now() },
       });
     });
     return { finished, state: await this.state(userId) };
@@ -246,23 +330,39 @@ export class E2ee {
    * Deletes a re-encrypted file's unencrypted versions. Only the owner's own files whose current
    * version is encrypted qualify; versions a transfer still holds are kept until it ends.
    */
-  async purgePlaintext(userId: string, itemId: string) {
+  purgePlaintext(userId: string, itemId: string) {
+    return this.purgeVersions(userId, itemId, true);
+  }
+  /** While turning off: deletes a decrypted file's encrypted versions, which nothing could read. */
+  purgeEncrypted(userId: string, itemId: string) {
+    return this.purgeVersions(userId, itemId, false);
+  }
+  /** Deletes the versions of a file not stored the way its current version is. */
+  private async purgeVersions(userId: string, itemId: string, encrypted: boolean) {
     let removed = 0;
     let retained = 0;
     for (;;) {
       const batch = await transact(this.repo, async (tx) => {
         const account = await this.service.account(tx, userId);
         assert(encryptedAccount(account), 'E2EE_OFF', 'End-to-end encryption is off.', 409);
+        assert(
+          encrypted || decryptingAccount(account),
+          'E2EE_NOT_DECRYPTING',
+          'Turn off end-to-end encryption before removing encrypted versions.',
+          409,
+        );
         const item = await tx.get<DriveItem>(userPK(userId), `ITEM#${itemId}`);
         assert(item && item.type === 'FILE', 'ITEM_NOT_FOUND', 'File was not found.', 404);
         assert(
-          item.encrypted,
-          'E2EE_NOT_ENCRYPTED',
-          'Upload the encrypted copy before removing unencrypted versions.',
+          !!item.encrypted === encrypted,
+          encrypted ? 'E2EE_NOT_ENCRYPTED' : 'E2EE_STILL_ENCRYPTED',
+          encrypted
+            ? 'Upload the encrypted copy before removing unencrypted versions.'
+            : 'Upload the decrypted copy before removing encrypted versions.',
           409,
         );
         const versions = (await tx.list<FileVersion>(userPK(userId), `VERSION#${itemId}#`)).filter(
-          (v) => !v.encrypted && v.id !== item.currentVersionId,
+          (v) => !!v.encrypted !== encrypted && v.id !== item.currentVersionId,
         );
         let freed = 0;
         let held = 0;
