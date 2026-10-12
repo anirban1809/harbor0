@@ -2,7 +2,6 @@ import { ApiError, type ApiClient } from '@harbor/api-client';
 import type { CompletedPart, DriveItem } from '@harbor/contracts';
 import {
   CHUNK_SIZE,
-  FileCipher,
   HEADER_SIZE,
   b64url,
   encryptName,
@@ -10,11 +9,11 @@ import {
   isEncryptedName,
   fromB64url,
   plainSize,
-  sha256Stream,
   type AccountKeys,
 } from '../../../packages/api-client/src/e2ee';
 import { TEXT_PREVIEW_BYTES, type TextPreview } from '../../../packages/api-client/src/preview';
 import { requireKeys } from './e2ee-vault';
+import { newCipher, openCipher, plainHasher, type Cipher } from './e2ee-worker';
 import { guessMime } from './e2ee-transport';
 
 /** Plaintext bytes [begin, end) of a stored file. */
@@ -58,7 +57,7 @@ export async function openEncrypted(
     link.downloadUrl,
     async () => (await api.download(input)).downloadUrl,
   );
-  const cipher = await FileCipher.open(keys, await fetchRange(0, HEADER_SIZE));
+  const cipher = await openCipher(keys, await fetchRange(0, HEADER_SIZE));
   const size = plainSize(link.sizeBytes);
   return {
     size,
@@ -191,7 +190,7 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
   const { api, keys, source, signal, plain } = input;
   const total = plain ? source.size : encryptedSize(source.size);
   let resume = input.resume;
-  let cipher: FileCipher | undefined;
+  let cipher: Cipher | undefined;
   if (resume) {
     try {
       const status = await api.request(`/v1/uploads/${resume.id}`);
@@ -203,9 +202,9 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
   }
   // A resumed upload asks which parts storage already has; a new one has none.
   const resumed = !!resume;
-  if (resume) cipher = plain ? undefined : await FileCipher.open(keys, fromB64url(resume.header));
+  if (resume) cipher = plain ? undefined : await openCipher(keys, fromB64url(resume.header));
   else {
-    cipher = plain ? undefined : await FileCipher.create(keys);
+    cipher = plain ? undefined : await newCipher(keys);
     const created = await api.createUpload({
       operationId: crypto.randomUUID(),
       parentId: input.parentId,
@@ -230,7 +229,8 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
     (status.parts ?? []).map((p: CompletedPart) => [p.partNumber, p.etag]),
   );
   const count = Math.max(1, Math.ceil(total / session.partSizeBytes));
-  const hash = await sha256Stream();
+  // Encrypted parts are hashed in the worker as they are sealed; plain ones are sent there.
+  const hasher = cipher ?? (await plainHasher());
   const inflight = new Map<number, number>();
   const partBytes = (n: number) =>
     Math.min(session.partSizeBytes, total - (n - 1) * session.partSizeBytes);
@@ -247,9 +247,8 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
     if (failure) throw failure;
     const start = (n - 1) * session.partSizeBytes;
     const bytes = cipher
-      ? await cipher.encryptedRange(source.size, start, start + partBytes(n), source.read)
-      : await source.read(start, start + partBytes(n));
-    hash.update(bytes);
+      ? await cipher.encryptedRange(source.size, start, start + partBytes(n), source.read, true)
+      : await hasher.hash(await source.read(start, start + partBytes(n)));
     if (done.has(n)) continue;
     while (running.size >= 2) await Promise.race(running);
     if (failure) throw failure;
@@ -286,7 +285,9 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
   const parts = [...done.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([partNumber, etag]) => ({ partNumber, etag }));
-  const { item } = await api.complete(session.id, parts, hash.hex());
+  const contentHash = await hasher.digest();
+  hasher.close();
+  const { item } = await api.complete(session.id, parts, contentHash);
   return item;
 }
 

@@ -243,22 +243,50 @@ export class E2ee {
     return this.state(userId);
   }
 
-  /** Encrypted files and names the account still stores, Trash included. */
-  async encryptedLeft(userId: string) {
+  /**
+   * Files whose stored versions are not all stored the way the current one is: plaintext left
+   * behind by encrypting, or encrypted versions left behind by turning off. A runner that was
+   * interrupted (a closed tab) finds them here and finishes, from any browser.
+   */
+  async leftovers(userId: string, limit = 1000) {
     const tx = new Transaction(this.repo);
     const account = await this.service.account(tx, userId);
-    let count = 0;
+    const items = new Map<string, DriveItem>();
     let cursor: string | undefined;
     do {
       const page = await this.repo.query(userPK(userId), 'ITEM#', 500, cursor);
       for (const row of page.rows) {
-        const item = row.data as DriveItem & { purging?: boolean; stagingId?: string };
-        if (item.purging || emptied(item, account)) continue;
-        if (item.encrypted || isEncryptedName(item.name)) count++;
+        const item = row.data as DriveItem & { purging?: boolean };
+        if (!item.purging && !emptied(item, account)) items.set(item.id, item);
       }
       cursor = page.cursor ?? undefined;
     } while (cursor);
-    return count;
+    const plaintextVersions = new Set<string>();
+    const encryptedVersions = new Set<string>();
+    do {
+      const page = await this.repo.query(userPK(userId), 'VERSION#', 500, cursor);
+      for (const row of page.rows) {
+        const v = row.data as FileVersion;
+        const item = items.get(v.driveItemId);
+        if (!item || v.id === item.currentVersionId || !!v.encrypted === !!item.encrypted) continue;
+        (item.encrypted ? plaintextVersions : encryptedVersions).add(item.id);
+      }
+      cursor = page.cursor ?? undefined;
+    } while (cursor);
+    const encryptedItems = [...items.values()].filter(
+      (i) => i.encrypted || isEncryptedName(i.name),
+    ).length;
+    return {
+      plaintextVersions: [...plaintextVersions].slice(0, limit),
+      encryptedVersions: [...encryptedVersions].slice(0, limit),
+      encryptedItems,
+    };
+  }
+
+  /** Encrypted files, names and versions the account still stores, Trash included. */
+  async encryptedLeft(userId: string) {
+    const left = await this.leftovers(userId);
+    return left.encryptedItems + left.encryptedVersions.length;
   }
 
   /** Finishes turning off once nothing encrypted is left: the keys and device copies go. */

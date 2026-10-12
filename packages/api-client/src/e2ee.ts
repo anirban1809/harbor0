@@ -42,6 +42,7 @@ export class E2eeError extends Error {
     message: string,
   ) {
     super(message);
+    this.name = 'E2eeError';
   }
 }
 
@@ -67,8 +68,9 @@ const concat = (...parts: Uint8Array[]) => {
   }
   return out;
 };
-// WebCrypto wants ArrayBuffer-backed views; copies keep TypeScript and every runtime happy.
-const buf = (b: Uint8Array) => b.slice() as Uint8Array<ArrayBuffer>;
+// WebCrypto wants ArrayBuffer-backed views. Every buffer here is one, so this only tells
+// TypeScript so; copying each 4 MiB chunk would double the work.
+const buf = (b: Uint8Array) => b as Uint8Array<ArrayBuffer>;
 
 async function hkdf(secret: Uint8Array, info: string, length = 32, salt = new Uint8Array()) {
   const base = await subtle().importKey('raw', buf(secret), 'HKDF', false, ['deriveBits']);
@@ -281,7 +283,7 @@ export class FileCipher {
     readonly chunkSize: number,
   ) {}
   /** A new random key for a new version. */
-  static async create(keys: AccountKeys) {
+  static async create(keys: Pick<AccountKeys, 'fileWrap'>) {
     const content = random(32);
     const head = new Uint8Array(HEADER_SIZE);
     head.set(MAGIC, 0);
@@ -295,7 +297,7 @@ export class FileCipher {
     return new FileCipher(head, await aesKey(content), head.slice(12, 20), CHUNK_SIZE);
   }
   /** Reads the key from a stored file's header. */
-  static async open(keys: AccountKeys, header: Uint8Array) {
+  static async open(keys: Pick<AccountKeys, 'fileWrap'>, header: Uint8Array) {
     if (header.length < HEADER_SIZE || MAGIC.some((b, i) => header[i] !== b) || header[4] !== 1)
       throw new E2eeError('CORRUPT', 'This file isn’t encrypted the way harbor0 expects.');
     const head = header.slice(0, HEADER_SIZE);
@@ -359,6 +361,14 @@ export class FileCipher {
     const offset = begin - first * this.chunkSize;
     return plain.subarray(offset, offset + (end - begin));
   }
+  /** The plaintext [begin, end) that stored bytes [start, end) are sealed from, if any. */
+  plainRangeFor(plainTotal: number, start: number, end: number): [number, number] | null {
+    if (end <= HEADER_SIZE) return null;
+    const span = this.chunkSize + TAG;
+    const first = Math.floor((Math.max(start, HEADER_SIZE) - HEADER_SIZE) / span);
+    const last = Math.floor((end - 1 - HEADER_SIZE) / span);
+    return [first * this.chunkSize, Math.min(plainTotal, (last + 1) * this.chunkSize)];
+  }
   /**
    * Stored bytes [start, end) of the encrypted file, reading plaintext through `read`. Only the
    * chunks the range touches are encrypted.
@@ -371,14 +381,13 @@ export class FileCipher {
   ) {
     const out: Uint8Array[] = [];
     if (start < HEADER_SIZE) out.push(this.header.subarray(start, Math.min(end, HEADER_SIZE)));
-    if (end > HEADER_SIZE) {
+    const range = this.plainRangeFor(plainTotal, start, end);
+    if (range) {
       const span = this.chunkSize + TAG;
       const first = Math.floor((Math.max(start, HEADER_SIZE) - HEADER_SIZE) / span);
       const last = Math.floor((end - 1 - HEADER_SIZE) / span);
       const final = chunkCount(plainTotal) - 1;
-      const pBegin = first * this.chunkSize;
-      const pEnd = Math.min(plainTotal, (last + 1) * this.chunkSize);
-      const plain = await read(pBegin, pEnd);
+      const plain = await read(range[0], range[1]);
       for (let i = first; i <= last && i <= final; i++) {
         const from = (i - first) * this.chunkSize;
         const sealed = await seal(

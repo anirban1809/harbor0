@@ -974,6 +974,18 @@ export function createApp(
     },
   );
   add(
+    'get',
+    '/v1/e2ee/leftovers',
+    'Files with versions left from an interrupted encrypt or decrypt, to finish them',
+    undefined,
+    z.object({
+      plaintextVersions: z.array(z.string()),
+      encryptedVersions: z.array(z.string()),
+      encryptedItems: z.number(),
+    }),
+    async (ctx) => e2ee.leftovers(userId(ctx)),
+  );
+  add(
     'post',
     '/v1/e2ee/items/:id/purge-encrypted',
     'While turning off: delete the encrypted versions of a file once its decrypted copy is uploaded',

@@ -8,14 +8,13 @@ import {
   newMasterKey,
   random,
   unwrapForDevice,
-  unwrapWithPassphrase,
   unwrapWithRecovery,
   wrapForDevice,
-  wrapWithPassphrase,
   wrapWithRecovery,
   type AccountKeys,
   type DeviceEnvelope,
 } from '../../../packages/api-client/src/e2ee';
+import { passphraseUnwrap, passphraseWrap } from './e2ee-worker';
 
 /**
  * This tab's end-to-end encryption state: whether the signed-in account is encrypted and, once
@@ -163,7 +162,7 @@ export async function unlockWithPassphrase(
   passphrase: string,
   remember: boolean,
 ) {
-  const master = await unwrapWithPassphrase(state.passphrase!, passphrase);
+  const master = await passphraseUnwrap(state.passphrase!, passphrase);
   await keepCopy(request, await accountKeys(master), remember);
 }
 
@@ -179,7 +178,7 @@ export async function unlockWithRecovery(
   const keys = await accountKeys(master);
   await request('/v1/e2ee/passphrase', {
     method: 'PUT',
-    body: { passphrase: await wrapWithPassphrase(master, passphrase), proof: keys.proof },
+    body: { passphrase: await passphraseWrap(master, passphrase), proof: keys.proof },
   });
   await keepCopy(request, keys, remember);
 }
@@ -191,7 +190,7 @@ export async function enroll(request: Transport, passphrase: string, recovery: U
   await request('/v1/e2ee/enroll', {
     method: 'POST',
     body: {
-      passphrase: await wrapWithPassphrase(master, passphrase),
+      passphrase: await passphraseWrap(master, passphrase),
       recovery: await wrapWithRecovery(master, recovery),
       proof: keys.proof,
     },
@@ -204,7 +203,7 @@ export async function changePassphrase(request: Transport, passphrase: string) {
   const keys = requireKeys();
   return request('/v1/e2ee/passphrase', {
     method: 'PUT',
-    body: { passphrase: await wrapWithPassphrase(keys.master, passphrase), proof: keys.proof },
+    body: { passphrase: await passphraseWrap(keys.master, passphrase), proof: keys.proof },
   });
 }
 export async function replaceRecovery(request: Transport, recovery: Uint8Array) {
@@ -233,7 +232,7 @@ export function requireKeys() {
 /** Starts turning encryption off, once the passphrase has shown this person holds the key. */
 export async function startTurningOff(request: Transport, state: E2eeState, passphrase: string) {
   const keys = requireKeys();
-  const master = await unwrapWithPassphrase(state.passphrase!, passphrase);
+  const master = await passphraseUnwrap(state.passphrase!, passphrase);
   if (b64url(master) !== b64url(keys.master))
     throw Object.assign(new Error('That passphrase isn’t right.'), { code: 'WRONG_KEY' });
   const result = await request('/v1/e2ee/disable', { method: 'POST', body: { proof: keys.proof } });

@@ -196,9 +196,16 @@ describe('end-to-end encryption', () => {
       parts: [{ partNumber: 1, etag: 'e' }],
       contentHash: createHash('sha256').update('encrypted').digest('hex'),
     });
+    // An interrupted runner finds the file again from any browser.
+    expect((await (await call('GET', '/v1/e2ee/leftovers', web)).json()).plaintextVersions).toEqual(
+      [first.id],
+    );
     const before = (await (await call('GET', '/v1/users/me', web)).json()).storage.usedBytes;
     const purged = await call('POST', `/v1/e2ee/items/${first.id}/purge-plaintext`, web);
     expect(await purged.json()).toEqual({ removed: 1, retained: 0 });
+    expect((await (await call('GET', '/v1/e2ee/leftovers', web)).json()).plaintextVersions).toEqual(
+      [],
+    );
     const versions = (await (await call('GET', `/v1/drive/items/${first.id}/versions`, web)).json())
       .items;
     expect(versions).toMatchObject([{ encrypted: true }]);

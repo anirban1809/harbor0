@@ -8,7 +8,13 @@ import {
   plainSize,
   type AccountKeys,
 } from '../../../packages/api-client/src/e2ee';
-import { openEncrypted, rangeFetcher, uploadEncrypted, type PlainReader } from './e2ee-files';
+import {
+  openEncrypted,
+  rangeFetcher,
+  uploadEncrypted,
+  type EncryptedResume,
+  type PlainReader,
+} from './e2ee-files';
 import { isNameConflict, numberedName, put } from './upload';
 
 /**
@@ -76,7 +82,6 @@ async function plainSource(api: ApiClient, item: DriveItem): Promise<PlainReader
 
 const done = (f: Found) =>
   f.item.type === 'FILE' && f.item.encrypted && isEncryptedName(f.item.name);
-const purgeKey = (userId: string) => `harbor0-e2ee-purge:${userId}`;
 
 export async function runMigration(
   direct: Transport,
@@ -105,23 +110,13 @@ export async function runMigration(
     publish({ ...state });
     if (!force && Date.now() - reported < 15_000) return;
     reported = Date.now();
-    const { running: _, current: __, error: ___, ...body } = state;
-    await raw('/v1/e2ee/migration', { method: 'PUT', body }).catch(() => {});
+    await raw('/v1/e2ee/migration', { method: 'PUT', body: reportBody(state) }).catch(() => {});
   };
   await report(true);
-  // Versions left behind if a tab closed between uploading and purging.
-  const pending = new Set<string>(JSON.parse(localStorage.getItem(purgeKey(userId)) ?? '[]'));
-  const savePending = () => localStorage.setItem(purgeKey(userId), JSON.stringify([...pending]));
-  const purge = async (id: string) => {
-    pending.add(id);
-    savePending();
-    await raw(`/v1/e2ee/items/${id}/purge-plaintext`, { method: 'POST' }).catch((e) => {
+  const purge = (id: string) =>
+    raw(`/v1/e2ee/items/${id}/purge-plaintext`, { method: 'POST' }).catch((e) => {
       if (!(e instanceof ApiError && [404, 409].includes(e.status))) throw e;
     });
-    pending.delete(id);
-    savePending();
-  };
-  for (const id of [...pending]) await purge(id).catch(() => {});
 
   let failed = 0;
   // Folders first, so names are hidden even before the slower content step.
@@ -147,6 +142,7 @@ export async function runMigration(
           state.skippedFiles++;
           continue;
         }
+        const saved = resumable(userId, item);
         item = await uploadEncrypted({
           api,
           keys,
@@ -156,8 +152,11 @@ export async function runMigration(
           replace: item,
           signal,
           put,
+          resume: saved.resume,
+          onCreated: saved.save,
           onProgress: () => {},
         });
+        saved.clear();
         await purge(item.id);
       }
       if (!isEncryptedName(item.name)) await rename(api, item, keys);
@@ -170,11 +169,56 @@ export async function runMigration(
       state.error = (e as Error).message;
     }
   }
+  // Versions a closed tab left behind, between uploading a file and deleting its old copies,
+  // possibly in another browser: the server knows which.
+  const left: { plaintextVersions: string[] } = await raw('/v1/e2ee/leftovers', { signal });
+  for (const id of left.plaintextVersions) await purge(id).catch(() => failed++);
   state.current = undefined;
   state.complete = failed === 0;
   state.running = false;
   await report(true);
   return state;
+}
+
+/** What the server keeps of a runner's progress. */
+const reportBody = ({
+  running: _,
+  current: __,
+  error: ___,
+  direction: ____,
+  ...body
+}: MigrationProgress) => body;
+
+/**
+ * An upload interrupted by a closed tab resumes with the same header, so the bytes already
+ * stored stay valid and only the missing parts are sent. Keyed by the file's revision, so a
+ * file changed meanwhile starts afresh.
+ */
+function resumable(userId: string, item: DriveItem) {
+  const key = `harbor0-e2ee-up:${userId}:${item.id}:${item.revision}`;
+  let resume: EncryptedResume | undefined;
+  try {
+    resume = JSON.parse(localStorage.getItem(key) ?? 'null') ?? undefined;
+  } catch {
+    resume = undefined;
+  }
+  return {
+    resume,
+    save: (r: EncryptedResume) => {
+      try {
+        localStorage.setItem(key, JSON.stringify(r));
+      } catch {
+        // Without storage an interrupted file uploads again from the start.
+      }
+    },
+    clear: () => {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // Nothing saved.
+      }
+    },
+  };
 }
 
 async function rename(api: ApiClient, item: DriveItem, keys: AccountKeys) {
@@ -247,6 +291,7 @@ const emptyProgress = (
  */
 export async function runDecryption(
   direct: Transport,
+  userId: string,
   keys: AccountKeys,
   signal: AbortSignal,
 ): Promise<MigrationProgress & { finished: boolean }> {
@@ -279,8 +324,7 @@ export async function runDecryption(
     publish({ ...state });
     if (!force && Date.now() - reported < 15_000) return;
     reported = Date.now();
-    const { running: _, current: __, error: ___, direction: ____, ...body } = state;
-    await raw('/v1/e2ee/decryption', { method: 'PUT', body }).catch(() => {});
+    await raw('/v1/e2ee/decryption', { method: 'PUT', body: reportBody(state) }).catch(() => {});
   };
   await report(true);
   let failed = 0;
@@ -305,6 +349,7 @@ export async function runDecryption(
     publish({ ...state });
     let current = item;
     if (item.encrypted) {
+      const saved = resumable(userId, item);
       current = await uploadEncrypted({
         api,
         keys,
@@ -315,8 +360,11 @@ export async function runDecryption(
         signal,
         put,
         plain: true,
+        resume: saved.resume,
+        onCreated: saved.save,
         onProgress: () => {},
       });
+      saved.clear();
       await raw(`/v1/e2ee/items/${item.id}/purge-encrypted`, { method: 'POST' });
     }
     if (isEncryptedName(current.name)) await plainRename(api, current, keys);
@@ -356,6 +404,9 @@ export async function runDecryption(
     if (ok) state.doneFiles++;
     await report();
   }
+  const left: { encryptedVersions: string[] } = await raw('/v1/e2ee/leftovers', { signal });
+  for (const id of left.encryptedVersions)
+    await attempt(() => raw(`/v1/e2ee/items/${id}/purge-encrypted`, { method: 'POST' }));
   state.current = undefined;
   state.running = false;
   let finished = false;
@@ -435,7 +486,7 @@ export function startDecryption(
   const run = async () => {
     for (let pass = 0; !controller.signal.aborted; pass++) {
       try {
-        const result = await runDecryption(raw, keys, controller.signal);
+        const result = await runDecryption(raw, userId, keys, controller.signal);
         if (result.finished) {
           publish(null);
           return onFinished();
