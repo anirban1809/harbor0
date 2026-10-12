@@ -955,12 +955,13 @@ function Workspace() {
     void Promise.all(pending).catch((e: Error) => setError(e.message));
   }
   const uploadsRunning = progress.some((u) => ['queued', 'hashing', 'uploading'].includes(u.phase));
+  // Closing the tab pauses encrypting or decrypting existing files until the app is opened again.
   useEffect(() => {
-    if (!uploadsRunning) return;
+    if (!uploadsRunning && !migrating) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [uploadsRunning]);
+  }, [uploadsRunning, migrating]);
   useEffect(() => {
     // Leaving the page abandons unfinished uploads; release their storage instead of holding it a day.
     const release = (e: PageTransitionEvent) => {
