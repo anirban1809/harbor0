@@ -370,6 +370,17 @@ function Detail({ id }: { id: string }) {
             </dd>
             <dt>Signed up</dt>
             <dd>{date(account.createdAt ?? profile?.createdAt)}</dd>
+            <dt>Came from</dt>
+            <dd>
+              {detail.data.signup ? (
+                <Link href={`/tracking?id=${encodeURIComponent(detail.data.signup.trackingId)}`}>
+                  {detail.data.signup.source ?? 'Unnamed tracking link'}{' '}
+                  <code>({detail.data.signup.trackingId})</code>
+                </Link>
+              ) : (
+                <span className="admin-muted">No tracking link</span>
+              )}
+            </dd>
             {profile && (
               <>
                 <dt>Last change</dt>

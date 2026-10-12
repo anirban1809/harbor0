@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { deviceSchema, platform, storageSchema } from './index';
+import { deviceSchema, platform, storageSchema, trackingId } from './index';
 import { flagReason, flagRuleSchema } from './flags';
 
 /**
@@ -30,6 +30,7 @@ export const staffPermissions = {
     'flags',
     'campaigns',
     'forms',
+    'tracking',
   ],
 } as const satisfies Record<z.infer<typeof staffRole>, readonly string[]>;
 export type StaffPermission = (typeof staffPermissions)['ADMIN'][number];
@@ -103,6 +104,10 @@ export const adminUserDetailSchema = z.object({
   /** Each feature flag for this account, ignoring app versions (those vary by device). */
   flags: z.array(z.object({ key: z.string(), enabled: z.boolean(), reason: flagReason })),
   email: adminUserEmailSchema,
+  /** The sign-up link's tracking id and the source staff mapped it to; null without one. */
+  signup: z
+    .object({ trackingId: z.string(), source: z.string().nullable(), at: z.string() })
+    .nullable(),
   /** Other accounts whose apps signed in with one of this account's device keys. */
   sameDevice: z.array(
     z.object({
@@ -599,6 +604,55 @@ export type AdminUsageEvent = z.infer<typeof adminUsageEventSchema>;
 export type AdminUsageEvents = z.infer<typeof adminUsageEventsSchema>;
 
 const reason = z.string().trim().min(3).max(500);
+/**
+ * A tracking id and where its links were shared. Sign-ups through an id staff haven't named
+ * yet are listed too, with a null `source`, so they can be named afterwards.
+ */
+export const adminTrackerSchema = z.object({
+  id: z.string(),
+  source: z.string().nullable(),
+  notes: z.string(),
+  createdAt: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+  updatedBy: z.string().nullable(),
+  /** Emails that asked for a beta sign-up link through it. */
+  requests: z.number(),
+  /** Emails that created a sign-in account through it. */
+  signups: z.number(),
+  /** Accounts that verified their email and signed in, so exist in full. */
+  accounts: z.number(),
+  /** The latest of those, or null when nobody has used it yet. */
+  lastAt: z.string().nullable(),
+});
+/** `signupUrl` is the web app's sign-up page; a tracking link adds `?ref=<id>` to it. */
+export const adminTrackerListSchema = z.object({
+  items: z.array(adminTrackerSchema),
+  signupUrl: z.string(),
+});
+export const adminTrackerDetailSchema = z.object({
+  tracker: adminTrackerSchema,
+  signupUrl: z.string(),
+  /** Everyone who came through it, newest first. */
+  people: z.array(
+    z.object({
+      email: z.string(),
+      userId: z.string().nullable(),
+      at: z.string(),
+      requestedAt: z.string().nullable(),
+      signedUpAt: z.string().nullable(),
+      joinedAt: z.string().nullable(),
+    }),
+  ),
+});
+export const adminTrackerBody = z
+  .object({
+    source: z.string().trim().min(1).max(120),
+    notes: z.string().trim().max(1000).default(''),
+    /** The `updatedAt` the editor loaded (null for a new one); refused if it changed since. */
+    expectedUpdatedAt: z.string().nullable(),
+  })
+  .strict();
+export const adminTrackerId = trackingId;
 export const adminReasonBody = z.object({ reason }).strict();
 // 1 PB is far above any plan; it only stops a typo adding three zeros too many.
 export const MAX_ADMIN_QUOTA = 1_000_000_000_000_000;
@@ -692,6 +746,10 @@ export type AdminFlag = z.infer<typeof adminFlagSchema>;
 export type AdminFlagList = z.infer<typeof adminFlagListSchema>;
 export type AdminFlagDetail = z.infer<typeof adminFlagDetailSchema>;
 export type AdminFlagBody = z.infer<typeof adminFlagBody>;
+export type AdminTracker = z.infer<typeof adminTrackerSchema>;
+export type AdminTrackerList = z.infer<typeof adminTrackerListSchema>;
+export type AdminTrackerDetail = z.infer<typeof adminTrackerDetailSchema>;
+export type AdminTrackerBody = z.input<typeof adminTrackerBody>;
 export type StorageTotals = z.infer<typeof storageTotalsSchema>;
 export type AdminActivity = z.infer<typeof adminActivitySchema>;
 export type AdminActivityRange = (typeof adminActivityRanges)[number];

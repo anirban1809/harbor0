@@ -27,6 +27,7 @@ import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
 import { transact } from './repository';
 import { assertDeviceMayRegister, assertInboxFree } from './signup-guard';
+import { trackSignup } from './signup-tracking';
 import { needsSecondStep, type AuthProvider, type Tokens } from './auth';
 import type { Realtime } from './realtime';
 import { PushRegistrations } from './push';
@@ -367,17 +368,23 @@ export function createApp(
           .string()
           .regex(/^[A-Za-z0-9_-]{40,400}$/)
           .optional(),
+        // The `?ref=` of the sign-up link this person came through.
+        trackingId: c.signupTrackingId,
       })
       .strict(),
     anyObject,
-    async (_, { deviceKey, ...input }) => {
+    async (_, { deviceKey, trackingId, ...input }) => {
       const existing = await service.lookup(input.username);
       assert(existing.users.length === 0, 'USERNAME_TAKEN', 'This username is taken.', 409);
       await transact(service.repo, (tx) => assertInboxFree(tx, input.email));
       if (deviceKey) await assertDeviceMayRegister(service.repo, deviceKey);
       // Cognito's sign-up trigger takes the seat too, for sign-ups that skip this API.
       await beta.claim(input.email, input.inviteCode);
-      return auth.signup(input);
+      const result = await auth.signup(input);
+      await transact(service.repo, (tx) =>
+        trackSignup(tx, input.email, trackingId, 'signedUpAt'),
+      );
+      return result;
     },
     true,
   );
@@ -385,10 +392,14 @@ export function createApp(
     'post',
     '/v1/auth/request-access',
     'Email a beta sign-up link, or join the waitlist when the current wave is full',
-    z.object({ email }).strict(),
+    z.object({ email, trackingId: c.signupTrackingId }).strict(),
     c.accessRequestResultSchema,
     async (_, i) => {
       const result = await beta.request(i.email);
+      if (result.status !== 'REGISTERED')
+        await transact(service.repo, (tx) =>
+          trackSignup(tx, i.email, i.trackingId, 'requestedAt'),
+        );
       if (result.status === 'INVITED') await wakeWorker();
       return result;
     },

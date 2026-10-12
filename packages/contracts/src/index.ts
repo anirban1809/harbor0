@@ -346,6 +346,14 @@ export function canonicalEmail(v: string) {
   }
   return `${local || email.slice(0, at)}@${domain}`;
 }
+/**
+ * The `?ref=` on a sign-up link, naming where the person came from (a post, an ad, a
+ * newsletter). Staff map each one to a source in the console. Case doesn't matter.
+ */
+export const TRACKING_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+export const trackingId = z.string().trim().toLowerCase().regex(TRACKING_ID_PATTERN);
+/** A tracking id in a sign-up request; a malformed one is dropped rather than failing sign-up. */
+export const signupTrackingId = trackingId.optional().catch(undefined);
 /** New accounts one browser may create in `SIGNUP_DEVICE_WINDOW_MS` before sign-up is refused. */
 export const SIGNUP_DEVICE_LIMIT = 2;
 export const SIGNUP_DEVICE_WINDOW_MS = 7 * 86400_000;

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { SignupRef } from './signup-ref';
 
 const title = 'harbor0 — 50 GB of free storage for beta members.';
 const description =
@@ -20,7 +21,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <SignupRef />
+        {children}
+      </body>
     </html>
   );
 }

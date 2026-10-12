@@ -27,6 +27,10 @@ import {
     adminReasonBody,
     adminSuspendBody,
     adminTestInviteSchema,
+    adminTrackerBody,
+    adminTrackerDetailSchema,
+    adminTrackerId,
+    adminTrackerListSchema,
     adminUserDetailSchema,
     adminUserPageSchema,
     adminUserFiltersSchema,
@@ -47,6 +51,7 @@ import { AdminService } from './service';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
 import { AdminForms } from './forms';
+import { AdminTracking } from './tracking';
 import {
     requestLog,
     usageLog,
@@ -151,6 +156,7 @@ export function createAdminApp(
     const flags = new AdminFlags(admin);
     const campaigns = new AdminCampaigns(admin, options.webOrigin ?? '');
     const forms = new AdminForms(admin, options.webOrigin ?? '');
+    const tracking = new AdminTracking(admin, options.webOrigin ?? '');
     const app = new Hono<Env>();
     const cookie = (ctx: Context<Env>, name: string, value: string, maxAge: number) =>
         setCookie(ctx, name, value, {
@@ -357,7 +363,12 @@ export function createAdminApp(
             flags.forUser(userId(ctx)),
             campaigns.forUser(userId(ctx)),
         ]);
-        return ctx.json(adminUserDetailSchema.parse({ ...detail, flags: userFlags, email }));
+        const signup = detail.signup
+            ? { ...detail.signup, source: await tracking.source(detail.signup.trackingId) }
+            : null;
+        return ctx.json(
+            adminUserDetailSchema.parse({ ...detail, signup, flags: userFlags, email }),
+        );
     });
     const activitySource = () => {
         assert(
@@ -492,6 +503,23 @@ export function createAdminApp(
         const flag = await flags.removeUser(ctx.get('staff'), flagKey(ctx), userId(ctx), reason);
         return ctx.json(adminFlagSchema.parse(flag));
     });
+    // Sign-up tracking ids and the sources staff named them with.
+    const deletedSchema = z.object({ deleted: z.boolean() });
+    const trackerId = (ctx: Context<Env>) => adminTrackerId.parse(ctx.req.param('id'));
+    v1.get('/trackers', guard('read'), async (ctx) =>
+        ctx.json(adminTrackerListSchema.parse(await tracking.list())),
+    );
+    v1.get('/trackers/:id', guard('read'), async (ctx) =>
+        ctx.json(adminTrackerDetailSchema.parse(await tracking.detail(trackerId(ctx)))),
+    );
+    v1.put('/trackers/:id', guard('tracking'), async (ctx) => {
+        const i = await body(ctx, adminTrackerBody);
+        const detail = await tracking.save(ctx.get('staff'), trackerId(ctx), i);
+        return ctx.json(adminTrackerDetailSchema.parse(detail));
+    });
+    v1.delete('/trackers/:id', guard('tracking'), async (ctx) =>
+        ctx.json(deletedSchema.parse(await tracking.remove(ctx.get('staff'), trackerId(ctx)))),
+    );
     // Email campaigns: templates, groups of accounts, and scheduled sends.
     const itemId = (ctx: Context<Env>) => c.id.parse(ctx.req.param('id'));
     const deleted = z.object({ deleted: z.boolean() });

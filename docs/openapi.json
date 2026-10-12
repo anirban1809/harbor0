@@ -408,6 +408,10 @@
                   "deviceKey": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]{40,400}$"
+                  },
+                  "trackingId": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
                   }
                 },
                 "required": [
@@ -787,6 +791,10 @@
                     "maxLength": 254,
                     "format": "email",
                     "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                  },
+                  "trackingId": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
                   }
                 },
                 "required": [

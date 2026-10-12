@@ -50,6 +50,7 @@ import {
     recordDeviceAccount,
     releaseInboxClaim,
 } from './signup-guard';
+import { joinTrackedSignup } from './signup-tracking';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -88,6 +89,8 @@ export type Account = User & {
     suspendedReason?: string;
     /** Highest storage threshold the account was last emailed about, or 0 below them all. */
     storageAlertLevel?: StorageAlertLevel | 0;
+    /** The `?ref=` of the sign-up link the account came through; see signup-tracking.ts. */
+    trackingId?: string;
 };
 /** Whether `item` was in the trash when it was last emptied. */
 export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
@@ -271,6 +274,7 @@ export class StorageService {
             // One account per inbox, however the address is spelled.
             const inbox = await inboxClaim(tx, email);
             if (inbox?.userId && inbox.userId !== identity.id) throw inboxTaken();
+            const trackingId = await joinTrackedSignup(tx, email, identity.id);
             const user: Account = {
                 id: identity.id,
                 email,
@@ -286,6 +290,7 @@ export class StorageService {
                 updatedAt: now(),
                 sequence: 0,
                 minCursor: 0,
+                ...(trackingId ? { trackingId } : {}),
             };
             await tx.put(userPK(user.id), 'PROFILE', user);
             await tx.put('USERNAME', normalized, { userId: user.id });

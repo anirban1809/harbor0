@@ -8,6 +8,9 @@ import type {
   AdminRequestLog,
   AdminBeta,
   AdminTestInvite,
+  AdminTrackerBody,
+  AdminTrackerDetail,
+  AdminTrackerList,
   AdminFlag,
   AdminFlagBody,
   AdminFlagDetail,
@@ -85,6 +88,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 const user = (id: string) => `/users/${encodeURIComponent(id)}`;
+const tracker = (id: string) => `/trackers/${encodeURIComponent(id)}`;
 const flag = (key: string) => `/flags/${encodeURIComponent(key)}`;
 const email = (kind: 'templates' | 'groups' | 'campaigns', id: string) =>
   `/email/${kind}/${encodeURIComponent(id)}`;
@@ -184,6 +188,12 @@ export const api = {
     request<AdminFlag>('POST', `${flag(key)}/users/${encodeURIComponent(userId)}/remove`, {
       reason,
     }),
+  // Sign-up tracking
+  trackers: () => request<AdminTrackerList>('GET', '/trackers'),
+  tracker: (id: string) => request<AdminTrackerDetail>('GET', tracker(id)),
+  saveTracker: (id: string, body: AdminTrackerBody) =>
+    request<AdminTrackerDetail>('PUT', tracker(id), body),
+  deleteTracker: (id: string) => request<{ deleted: boolean }>('DELETE', tracker(id)),
   // Email campaigns
   templates: () => request<{ items: EmailTemplate[] }>('GET', '/email/templates'),
   template: (id: string) => request<EmailTemplateDetail>('GET', email('templates', id)),

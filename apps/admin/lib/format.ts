@@ -89,6 +89,9 @@ export const actionLabels: Record<string, string> = {
   CAMPAIGN_SENT_NOW: 'Sent a campaign',
   CAMPAIGN_CANCELLED: 'Cancelled a scheduled campaign',
   CAMPAIGN_STOPPED: 'Stopped a campaign',
+  TRACKER_CREATED: 'Named a tracking link',
+  TRACKER_CHANGED: 'Changed a tracking link',
+  TRACKER_DELETED: 'Removed a tracking link',
 };
 export const campaignStateLabels = {
   DRAFT: 'Draft',

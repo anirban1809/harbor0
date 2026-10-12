@@ -19,6 +19,7 @@ import { assert } from '../errors';
 import { transact, Transaction } from '../repository';
 import type { UserDirectory } from './directory';
 import { accountsOnDevice, type DeviceAccount } from '../signup-guard';
+import { signupTracking } from '../signup-tracking';
 import { platformCosts } from '../platform-costs';
 import { recentUsage, type ActivitySource, type RecentUsage } from './activity';
 import { indexAccounts, matchUsers, PLATFORMS, type IndexedUser, type Platform } from '../user-filters';
@@ -394,7 +395,13 @@ export class AdminService {
         };
     }
     /** The account as staff see it; `null` when it exists in neither the directory nor the table. */
-    async detail(userId: string): Promise<Omit<AdminUserDetail, 'flags' | 'email'>> {
+    async detail(
+        userId: string,
+    ): Promise<
+        Omit<AdminUserDetail, 'flags' | 'email' | 'signup'> & {
+            signup: { trackingId: string; at: string } | null;
+        }
+    > {
         const [directoryUser, account] = await Promise.all([
             this.directory.get(userId),
             this.profile(userId),
@@ -414,7 +421,15 @@ export class AdminService {
             backupCount: backups.filter((b) => b.state !== 'REMOVED').length,
             activity: activity.rows.map((r) => r.data as AuditEntry),
             sameDevice: account ? await this.sameDevice(userId) : [],
+            signup: await this.signupTracking(directoryUser?.email ?? account!.email, account),
         };
+    }
+    /** The tracking id of the link the account signed up through, once known. */
+    private async signupTracking(email: string, account: Account | undefined) {
+        const row = await signupTracking(new Transaction(this.repo), email);
+        const trackingId = account?.trackingId ?? row?.trackingId;
+        if (!trackingId) return null;
+        return { trackingId, at: row?.at ?? account?.createdAt ?? '' };
     }
     /** Every backup the account set up, newest first, removed ones included. */
     async backups(userId: string) {

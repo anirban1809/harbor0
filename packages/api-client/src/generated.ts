@@ -1892,6 +1892,7 @@ export interface operations {
                     displayName: string;
                     inviteCode?: string;
                     deviceKey?: string;
+                    trackingId?: string;
                 };
             };
         };
@@ -2065,6 +2066,7 @@ export interface operations {
                 "application/json": {
                     /** Format: email */
                     email: string;
+                    trackingId?: string;
                 };
             };
         };

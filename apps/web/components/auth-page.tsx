@@ -12,6 +12,7 @@ import type {
 } from '@harbor/contracts';
 import { authRoutes, loginDestination, privacyUrl, termsUrl, type AuthMode } from '../lib/routes';
 import { browserKey } from '../lib/device-key';
+import { rememberSignupRef, signupRef } from '../lib/signup-ref';
 import { BrandLogo } from './brand-logo';
 import { ThemeToggle } from './theme-toggle';
 import { Alert } from './ui/alert';
@@ -114,6 +115,10 @@ export function AuthPage({
   const [cooldown, setCooldown] = useState(0);
   const formRef = useRef<HTMLFormElement>(null);
   const inviteCode = mode === 'signup' ? searchParams.get('invite') : null;
+  // A tracking link's `?ref=`, sent with the access request and sign-up (see signup-ref.ts).
+  const urlRef = searchParams.get('ref');
+  useEffect(() => rememberSignupRef(urlRef), [urlRef]);
+  const trackingId = () => signupRef() ?? (urlRef?.trim().toLowerCase() || undefined);
   // Both stay undefined while loading; `invite` is null when there is no usable link.
   const [beta, setBeta] = useState<BetaStatus>();
   // A test link from staff has no email until it is used, and then works for any.
@@ -204,8 +209,8 @@ export function AuthPage({
         const device =
           mode === 'signup'
             ? await browserKey().then(
-                (k) => ({ deviceKey: k.publicKey }),
-                () => ({}),
+                (k) => ({ deviceKey: k.publicKey, trackingId: trackingId() }),
+                () => ({ trackingId: trackingId() }),
               )
             : {};
         await api.request(`/v1/auth/${mode}`, { method: 'POST', body: { ...values, ...device } });
@@ -313,7 +318,7 @@ export function AuthPage({
     try {
       const result: AccessRequestResult = await api.request('/v1/auth/request-access', {
         method: 'POST',
-        body: { email },
+        body: { email, trackingId: trackingId() },
       });
       setRequested({ email, status: result.status });
     } catch (e) {
