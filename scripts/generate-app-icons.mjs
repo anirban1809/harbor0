@@ -15,22 +15,6 @@ async function save(file, content) {
 async function png(size) {
   return sharp(source).resize(size, size).png().toBuffer();
 }
-// App launchers mask or round the canvas, so the mark needs a wider margin there.
-async function padded(size) {
-  const inner = Math.round(size * 0.72);
-  const margin = Math.floor((size - inner) / 2);
-  return sharp(await png(inner))
-    .extend({
-      top: margin,
-      left: margin,
-      bottom: size - inner - margin,
-      right: size - inner - margin,
-      background: '#00000000',
-    })
-    .png()
-    .toBuffer();
-}
-
 // Desktop docks and taskbars show icons unmasked, so the mark sits on its own tile,
 // sized to the macOS icon grid (824px rounded square on a 1024px canvas).
 async function tiled(size) {
@@ -59,27 +43,6 @@ async function tiled(size) {
 await save('apps/desktop/assets/icon.png', await tiled(1024));
 await save('apps/web/app/icon.png', await png(512));
 await save('apps/web/app/apple-icon.png', await png(180));
-// The legacy iOS App Store icon must be opaque; in-app branding retains alpha.
-await save(
-  'apps/ios/Harbor0/Assets.xcassets/AppIcon.appiconset/AppIcon.png',
-  await sharp(await padded(1024))
-    .flatten({ background: '#ffffff' })
-    .png()
-    .toBuffer(),
-);
-await save('apps/ios/Harbor0/Assets.xcassets/BrandIcon.imageset/BrandIcon.png', await png(192));
-await save(
-  'apps/ios/Harbor0/Assets.xcassets/BrandIcon.imageset/Contents.json',
-  JSON.stringify(
-    {
-      images: [{ filename: 'BrandIcon.png', idiom: 'universal' }],
-      info: { author: 'xcode', version: 1 },
-    },
-    null,
-    2,
-  ) + '\n',
-);
-
 // An inline image also works in Electron's file:// renderer, without URL routing.
 const inlineIcon = (await png(128)).toString('base64');
 await save(
@@ -111,22 +74,6 @@ images.forEach((buffer, index) => {
   offset += buffer.length;
 });
 await save('apps/web/app/favicon.ico', Buffer.concat([header, ...images]));
-
-const android = 'apps/android/app/src/main/res';
-await save(`${android}/drawable-nodpi/ic_harbor.png`, await padded(512));
-for (const [density, size] of Object.entries({
-  mdpi: 48,
-  hdpi: 72,
-  xhdpi: 96,
-  xxhdpi: 144,
-  xxxhdpi: 192,
-})) {
-  await save(`${android}/mipmap-${density}/ic_launcher.png`, await png(size));
-}
-await save(
-  `${android}/mipmap-anydpi-v26/ic_launcher.xml`,
-  '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@android:color/transparent" />\n    <foreground android:drawable="@drawable/ic_harbor" />\n</adaptive-icon>\n',
-);
 
 // macOS template icons require a monochrome alpha mask for light/dark menu bars.
 const { data, info } = await sharp(source)
@@ -162,4 +109,4 @@ for (const [file, size] of [
     .toBuffer();
   await save(`apps/desktop/assets/${file}`, output);
 }
-console.log('Updated web, desktop, iOS, and Android icons from assets/branding/logo.svg.');
+console.log('Updated web and desktop icons from assets/branding/logo.svg.');

@@ -2,7 +2,7 @@
 
 A working cloud drive, authenticated file-transfer service, web client, and Electron desktop client built from the four supplied specifications.
 
-**iOS starter:** A native SwiftUI client now lives in [`apps/ios`](apps/ios/README.md), with sign-in, folder browsing, uploads, and verified downloads. Open `apps/ios/Harbor0.xcodeproj` to run it in Xcode. See the iOS README for local tests and current limitations.
+**Mobile apps:** The native iOS and Android apps live on the `mobile` branch, outside `main`.
 
 **Production stack:** DynamoDB for metadata, Cognito for accounts and authentication, API Gateway + Lambda for the backend, and private Cloudflare R2 for file bytes. The requested stack replaces the documents’ PostgreSQL/Prisma/Redis/NestJS suggestions. Source specifications are preserved in `docs/specs/`; implementation decisions and remaining work are in [the status document](docs/STATUS.md).
 
@@ -111,9 +111,3 @@ Transfers expire after 30 days, including accepted transfers. Saving to Drive cr
 | `infra`               | AWS CDK stack                                                           |
 | `scripts`             | Local setup, builds, R2 provisioning, verification                      |
 | `docs`                | API contract, architecture, deployment, implementation status           |
-
-## Android app
-
-The native Kotlin/Jetpack Compose Android app mirrors the iOS workspace with Drive, Sync, Backups, Trash and Settings. It connects to the existing deployed API and supports secure sign-in, multipart uploads, verified downloads, system file opening/sharing/saving, backup history and account appearance preferences.
-
-Open `apps/android` in Android Studio, or run `apps/android/gradlew -p apps/android :app:assembleDebug` with JDK 17 and the Android SDK installed. See [Android setup, tests and limitations](apps/android/README.md).
