@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ENCRYPTED_NAME_MAX, isEncryptedName } from './e2ee';
 /** Storage on the free plan for accounts created after the beta. */
 export const FREE_QUOTA = 25_000_000_000;
 /** Storage for accounts created during the beta; they keep it after launch. */
@@ -19,9 +20,14 @@ export const operationId = z.string().uuid();
 export const filename = z
   .string()
   .min(1)
-  .max(240)
+  .max(ENCRYPTED_NAME_MAX)
   .refine(
-    (v) => !/[\\/\u0000-\u001f\u007f]/.test(v) && !['.', '..'].includes(v) && v.trim().length > 0,
+    (v) =>
+      isEncryptedName(v) ||
+      (v.length <= 240 &&
+        !/[\\/\u0000-\u001f\u007f]/.test(v) &&
+        !['.', '..'].includes(v) &&
+        v.trim().length > 0),
     'Use a filename without path separators or control characters.',
   );
 export const username = z
@@ -116,6 +122,8 @@ export const userSchema = z.object({
   storageQuotaBytes: z.number(),
   storageUsedBytes: z.number(),
   storageReservedBytes: z.number(),
+  /** Set once the account turns on end-to-end encryption, which can't be turned off. */
+  e2ee: z.object({ enabledAt: z.string() }).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -159,6 +167,8 @@ export const itemSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
+  /** The current version was encrypted on the uploading device; `sizeBytes` is its stored size. */
+  encrypted: z.boolean().optional(),
 });
 export const syncFolderSchema = itemSchema.extend({
   syncDevices: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -174,6 +184,7 @@ export const versionSchema = z.object({
   contentHash: hash,
   contentHashAlgorithm: z.literal('SHA256'),
   sourceDeviceId: z.string().nullable(),
+  encrypted: z.boolean().optional(),
   createdAt: z.string(),
 });
 export const deviceSchema = z.object({
@@ -302,6 +313,8 @@ export const uploadInput = z
     contentHash: hash.nullable().optional(),
     driveItemId: id.optional(),
     baseRevision: z.number().int().positive().optional(),
+    /** The bytes are encrypted by this device; required on end-to-end encrypted accounts. */
+    encrypted: z.boolean().optional(),
   })
   .strict();
 export const completedPart = z
@@ -426,3 +439,4 @@ export const folderDownloadSchema = z.object({
 export type FolderDownload = z.infer<typeof folderDownloadSchema>;
 export * from './flags';
 export * from './client-events';
+export * from './e2ee';

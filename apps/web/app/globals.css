@@ -7,4 +7,5 @@
 @import './styles/components.css';
 @import './styles/layout.css';
 @import './styles/pages.css';
+@import './styles/e2ee.css';
 @import './styles/mobile.css';

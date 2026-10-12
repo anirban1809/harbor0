@@ -42,6 +42,7 @@ import {
   type EmailLinks,
 } from './email-preferences';
 import { usageDetails } from './usage-events';
+import { E2ee, assertNotEncrypted, encryptedAccount, encryptingClient } from './e2ee';
 type Env = {
   Variables: {
     identity: c.Identity;
@@ -86,6 +87,11 @@ export const redact = (message: string) =>
   message
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
     .replace(/(?:\b[A-Za-z]:)?(?:[\\/][^\\/\s'"]+){2,}/g, '<path>');
+/** Routes that read or write files; apps that can't encrypt are kept off encrypted accounts. */
+const fileRoute = (path: string) =>
+  /^\/v1\/(drive|uploads|downloads|folder-downloads|sync|backups|search|transfers|shares|storage)(\/|$)/.test(
+    path,
+  );
 const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
@@ -283,6 +289,19 @@ export function createApp(
         ]);
         for (const check of checks) if (check.status === 'rejected') throw check.reason;
         if (checks[1].status === 'fulfilled' && checks[1].value) ctx.set('device', checks[1].value);
+        // An app that can't encrypt would upload plaintext or save ciphertext as the file.
+        if (
+          !registering &&
+          fileRoute(d.path) &&
+          checks[0].status === 'fulfilled' &&
+          encryptedAccount(checks[0].value) &&
+          !encryptingClient(ctx.get('device'))
+        )
+          throw new DomainError(
+            'E2EE_UPDATE_REQUIRED',
+            'Your account now uses end-to-end encryption. Update harbor0 to keep syncing; nothing was uploaded unencrypted.',
+            426,
+          );
       }
       let input: unknown = {};
       if (d.body) {
@@ -848,6 +867,115 @@ export function createApp(
       return twoFactorChanged(ctx, i.method, false, before);
     },
   );
+  // End-to-end encryption. Turning it on is rolled out behind a flag; an account that has it
+  // keeps unlocking, changing its keys and finishing its migration if the flag is taken off.
+  const e2ee = new E2ee(service);
+  const e2eeUsage = (ctx: Context<Env>, event: c.FlagUsageEvent<'e2ee'>) =>
+    recordFlagUsage(service.repo, 'e2ee', event, {
+      userId: ctx.get('identity').id,
+      email: ctx.get('identity').email,
+    });
+  const e2eeResponse = z.object({ e2ee: c.e2eeStateSchema });
+  add(
+    'get',
+    '/v1/e2ee',
+    'End-to-end encryption: whether it is on, the wrapped keys and unlocked devices',
+    undefined,
+    e2eeResponse,
+    async (ctx) => ({ e2ee: await e2ee.state(userId(ctx)) }),
+  );
+  add(
+    'post',
+    '/v1/e2ee/enroll',
+    'Turn on end-to-end encryption for good with the wrapped master key',
+    c.e2eeEnrollInput,
+    e2eeResponse,
+    flagged(flags, 'e2ee', async (ctx, i) => {
+      const state = await e2ee.enroll(userId(ctx), i);
+      await e2eeUsage(ctx, 'TURNED_ON');
+      return { e2ee: state };
+    }),
+  );
+  add(
+    'put',
+    '/v1/e2ee/passphrase',
+    'Replace the passphrase-wrapped key; files are not re-encrypted',
+    z.object({ passphrase: c.passphraseEnvelopeSchema, proof: c.keyProof }).strict(),
+    e2eeResponse,
+    async (ctx, i) => {
+      const state = await e2ee.setPassphrase(userId(ctx), i);
+      await e2eeUsage(ctx, 'PASSPHRASE_CHANGED');
+      return { e2ee: state };
+    },
+  );
+  add(
+    'put',
+    '/v1/e2ee/recovery',
+    'Replace the recovery key; the old one stops working',
+    z.object({ recovery: c.recoveryEnvelopeSchema, proof: c.keyProof }).strict(),
+    e2eeResponse,
+    async (ctx, i) => {
+      const state = await e2ee.setRecovery(userId(ctx), i);
+      await e2eeUsage(ctx, 'RECOVERY_KEY_CREATED');
+      return { e2ee: state };
+    },
+  );
+  add(
+    'post',
+    '/v1/e2ee/devices',
+    'Keep a wrapped copy of the key on this device',
+    c.e2eeDeviceInput,
+    z.object({ id: z.string() }),
+    async (ctx, i) => e2ee.addDevice(userId(ctx), ctx.get('device'), i),
+  );
+  add(
+    'post',
+    '/v1/e2ee/devices/:id/secret',
+    "The server's half of an unlocked device's key",
+    undefined,
+    z.object({ serverSecret: z.string() }),
+    async (ctx) => {
+      await rateLimit(`e2ee-secret:${userId(ctx)}`, 60);
+      return e2ee.deviceSecret(userId(ctx), z.string().uuid().parse(ctx.req.param('id')));
+    },
+  );
+  add(
+    'delete',
+    '/v1/e2ee/devices/:id',
+    'Remove an unlocked device; it needs the passphrase again',
+    undefined,
+    e2eeResponse,
+    async (ctx) => ({
+      e2ee: await e2ee.removeDevice(userId(ctx), z.string().uuid().parse(ctx.req.param('id'))),
+    }),
+  );
+  add(
+    'put',
+    '/v1/e2ee/migration',
+    'Report progress re-encrypting files stored before encryption was on',
+    c.e2eeMigrationInput,
+    e2eeResponse,
+    async (ctx, i) => {
+      const { finished, state } = await e2ee.setMigration(userId(ctx), ctx.get('device'), i);
+      if (finished) await e2eeUsage(ctx, 'MIGRATION_COMPLETE');
+      return { e2ee: state };
+    },
+  );
+  add(
+    'post',
+    '/v1/e2ee/items/:id/purge-plaintext',
+    'Delete the unencrypted versions of a file once its encrypted copy is uploaded',
+    undefined,
+    z.object({ removed: z.number(), retained: z.number() }),
+    async (ctx) => {
+      const result = await e2ee.purgePlaintext(userId(ctx), p(ctx, 'id'));
+      if (result.removed) await wakeWorker();
+      return result;
+    },
+  );
+  /** Refuses features that need the server to read an encrypted account's files. */
+  const notEncrypted = async (ctx: Context<Env>, what: string) =>
+    assertNotEncrypted((await service.me(userId(ctx))).user, what);
   const publicUser = z.object({
     id: z.string(),
     username: z.string(),
@@ -1083,6 +1211,7 @@ export function createApp(
     z.object({ operationId: c.operationId, driveItemId: c.id }).strict(),
     c.folderDownloadSchema,
     async (ctx, input) => {
+      await notEncrypted(ctx, 'Downloading folders as a ZIP from the server');
       const result = await archives.create(
         userId(ctx),
         ctx.get('identity').deviceId!,
@@ -1146,7 +1275,10 @@ export function createApp(
       })
       .strict(),
     z.object({ transfer: c.transferSchema }),
-    async (ctx, i) => service.createTransfer(userId(ctx), i),
+    async (ctx, i) => {
+      await notEncrypted(ctx, 'Sending files');
+      return service.createTransfer(userId(ctx), i);
+    },
   );
   for (const direction of ['received', 'sent'] as const)
     add(
@@ -1193,7 +1325,10 @@ export function createApp(
       jobId: z.string().optional(),
       state: z.string().optional(),
     }),
-    async (ctx, i) => service.saveTransfer(userId(ctx), p(ctx, 'id'), i),
+    async (ctx, i) => {
+      await notEncrypted(ctx, 'Saving received files to My Drive');
+      return service.saveTransfer(userId(ctx), p(ctx, 'id'), i);
+    },
   );
   add(
     'post',
@@ -1208,7 +1343,10 @@ export function createApp(
       })
       .strict(),
     z.object({ share: c.shareSchema }),
-    async (ctx, i) => service.createShare(userId(ctx), i),
+    async (ctx, i) => {
+      await notEncrypted(ctx, 'Sharing folders');
+      return service.createShare(userId(ctx), i);
+    },
   );
   add(
     'delete',
@@ -1301,7 +1439,10 @@ export function createApp(
     'Invite another account to two-way folder sync',
     z.object({ operationId: c.operationId, driveItemId: c.id, recipient: c.recipient }).strict(),
     z.object({ share: c.shareSchema }),
-    async (ctx, input) => syncSharing.invite(userId(ctx), input),
+    async (ctx, input) => {
+      await notEncrypted(ctx, 'Shared sync');
+      return syncSharing.invite(userId(ctx), input);
+    },
   );
   add(
     'get',

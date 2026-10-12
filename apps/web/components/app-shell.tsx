@@ -122,8 +122,29 @@ import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { onLive, useLiveUpdates } from '../lib/live-updates';
 import { registerBrowser } from '../lib/device-key';
 import { guardTransport, setSignedIn, useSessionEnd } from '../lib/session-guard';
-const api = new ApiClient(guardTransport(createTransport('/api')));
+import { e2eeTransport } from '../lib/e2ee-transport';
+import { currentVault, lock, restore as restoreVault, useVault } from '../lib/e2ee-vault';
+import { encryptedPreview, isEncrypted, saveEncrypted } from '../lib/e2ee-files';
+import { startMigration } from '../lib/e2ee-migration';
+import { E2eeError } from '../../../packages/api-client/src/e2ee';
+import { E2eeSettings, e2eeQuery } from './e2ee-settings';
+import { E2eeUnlock } from './e2ee-unlock';
+import { E2eeMigrationBanner, ProtectionChoice, shouldOfferProtection } from './e2ee-banner';
+// The plain transport is for the encryption migration, which needs to see stored names as
+// they are; everything else goes through the encrypting one.
+const rawTransport = guardTransport(createTransport('/api'));
+const api = new ApiClient(e2eeTransport(rawTransport));
+/** Whether files uploaded into `id` (a folder, or the file a version replaces) are encrypted. */
+async function encryptsInto(id: string | null | undefined) {
+  const { enabled, keys, userId } = currentVault();
+  if (!enabled || !keys) return undefined;
+  if (!id) return keys;
+  const { item } = await api.request(`/v1/drive/items/${id}`);
+  return item.ownerUserId === userId ? keys : undefined;
+}
 const loadPreview: PreviewLoader = async (item, signal) => {
+  if (isEncrypted(item as DriveItem))
+    return encryptedPreview(api, item as DriveItem, previewKind(item) === 'text');
   const result = await api.download({ driveItemId: item.id });
   signal.throwIfAborted();
   return previewKind(item) === 'text'
@@ -315,6 +336,24 @@ function Workspace() {
   useEffect(() => {
     if (user) void registerBrowser(api.request, user.id).catch(() => {});
   }, [user?.id]);
+  const vault = useVault();
+  const e2eeAllowed = me.data?.flags?.e2ee === true;
+  const [protectionOffered, setProtectionOffered] = useState(false);
+  // A browser that kept its key unlocks by itself; others ask for the passphrase.
+  useEffect(() => {
+    if (vault.restoring) void restoreVault(api.request);
+  }, [vault.userId, vault.restoring]);
+  // Answers fetched while locked carry encrypted names; read them again with the key.
+  useEffect(() => {
+    if (vault.keys)
+      void cache.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'me' });
+  }, [vault.keys]);
+  const e2eeState = useQuery({ ...e2eeQuery(api), enabled: !!user?.e2ee && !!vault.keys });
+  const migrationDone = e2eeState.data ? !!e2eeState.data.migration?.complete : undefined;
+  useEffect(() => {
+    if (!user?.e2ee || !vault.keys || migrationDone !== false) return;
+    return startMigration(rawTransport, user.id, vault.keys);
+  }, [user?.id, !!user?.e2ee, vault.keys, migrationDone]);
   const activity = useActivityFeed(user?.id);
   useEffect(() => {
     if (!user) clearBrowserCaches();
@@ -645,6 +684,15 @@ function Workspace() {
     entryId?: string;
   }) {
     await act(async () => {
+      // Encrypted files are decrypted here; a file stored before encryption downloads as is.
+      if (currentVault().enabled && data.driveItemId) {
+        const { item } = await api.request(`/v1/drive/items/${data.driveItemId}`);
+        try {
+          if (await saveEncrypted(api, item, data.versionId)) return;
+        } catch (e) {
+          if (!(e instanceof E2eeError && e.code === 'CORRUPT')) throw e;
+        }
+      }
       const r = await api.download(data);
       const a = document.createElement('a');
       a.href = r.downloadUrl;
@@ -709,7 +757,11 @@ function Workspace() {
     job.running = true;
     try {
       job.parent ??= await uploadParent(job);
-      const upload = new BrowserUpload(api, user.id);
+      const upload = new BrowserUpload(
+        api,
+        user.id,
+        await encryptsInto(job.target?.kind === 'replace' ? job.target.item.id : job.parent),
+      );
       job.upload = upload;
       const item = await upload.run(
         job.file,
@@ -1100,6 +1152,25 @@ function Workspace() {
     );
   }
   if (authMode || pathname === '/') return <WorkspaceSkeleton />;
+  const signOut = () =>
+    void act(async () => {
+      setSignedIn(false);
+      await lock(api.request);
+      await api.request('/v1/auth/logout', { method: 'POST', body: {} });
+      cache.clear();
+      clearBrowserCaches();
+      window.location.reload();
+    });
+  if (user.e2ee && !vault.keys)
+    return vault.restoring ? (
+      <WorkspaceSkeleton />
+    ) : (
+      <E2eeUnlock api={api} email={user.email} onSignOut={signOut} />
+    );
+  if (e2eeAllowed && !protectionOffered && shouldOfferProtection(user))
+    return (
+      <ProtectionChoice api={api} userId={user.id} onDone={() => setProtectionOffered(true)} />
+    );
   const usage = me.data!.storage;
   const pageError =
     error ||
@@ -1193,15 +1264,7 @@ function Workspace() {
               user={user}
               storage={usage}
               onNavigate={navigate}
-              onSignOut={() =>
-                void act(async () => {
-                  setSignedIn(false);
-                  await api.request('/v1/auth/logout', { method: 'POST', body: {} });
-                  cache.clear();
-                  clearBrowserCaches();
-                  window.location.reload();
-                })
-              }
+              onSignOut={signOut}
             />
           </div>
         </header>
@@ -1266,6 +1329,9 @@ function Workspace() {
                 </div>
               )}
             </div>
+          )}
+          {drivePage && user.e2ee && section === 'My Drive' && !place && (
+            <E2eeMigrationBanner onDetails={() => navigate('Settings')} />
           )}
           {drivePage && (
             <DriveWorkspace
@@ -1926,6 +1992,7 @@ function Workspace() {
                   Manage devices
                 </Button>
               </Card>
+              <E2eeSettings api={api} encrypted={!!user.e2ee} usedBytes={usage.usedBytes} />
               <TwoFactorSettings api={api} email={user.email} />
               <EmailSettings
                 productUpdates={user.emailPreferences?.productUpdates !== false}
@@ -2034,7 +2101,8 @@ function Workspace() {
       />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
-          pdf={pdfPreview}
+          // Encrypted PDFs need pdf.js to read decrypted ranges (openEncrypted), which it can't yet.
+          pdf={pdfPreview && !isEncrypted(modal.item)}
           cacheScope={user?.id ?? 'anonymous'}
           item={modal.item}
           load={loadPreview}
