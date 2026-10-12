@@ -203,6 +203,7 @@ function PreviewBody({
             // Shown at once as a blank page, then filled in once the link arrives.
             <PdfPreview
               url={content && 'url' in content ? content.url : undefined}
+              read={content && 'read' in content ? content.read : undefined}
               size={item.sizeBytes}
               renew={async () => {
                 const fresh = await load(item, new AbortController().signal);

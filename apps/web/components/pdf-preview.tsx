@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Minus, Plus } from 'lucide-react';
 import type { PDFDocumentProxy, PDFWorker } from 'pdfjs-dist';
 import { Button } from './ui/button';
+import type { ReadRange } from '../lib/file-preview';
 
 // Fonts, CMaps and decoders are copied to /pdfjs by scripts/copy-pdfjs.mjs.
 const assets = '/pdfjs/';
@@ -44,7 +45,7 @@ export function preloadPdfViewer() {
  * `Accept-Ranges`, which the storage CORS rules do not expose, so ranges are fetched here.
  * Download links expire after a few minutes; an expired link is renewed once and retried.
  */
-function rangeReader(initialUrl: string, size: number, renew: () => Promise<string>) {
+function linkRanges(initialUrl: string, renew: () => Promise<string>): ReadRange {
   let url = initialUrl;
   let renewing: Promise<string> | undefined;
   const fetchRange = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
@@ -66,6 +67,11 @@ function rangeReader(initialUrl: string, size: number, renew: () => Promise<stri
     // A server that ignores Range sends the whole file.
     return response.status === 206 ? data : data.subarray(begin, end);
   };
+  return (begin, end) => fetchRange(begin, end);
+}
+
+/** Reads ahead of pdf.js, from a link or from decrypted ranges of an encrypted file. */
+function rangeReader(fetchRange: ReadRange, size: number) {
   // Ranges fetched before or beyond what pdf.js asked for; reused when one covers a request.
   const ahead: { begin: number; end: number; data: Promise<Uint8Array> }[] = [];
   const prefetch = (begin: number, end: number) => {
@@ -99,6 +105,7 @@ function rangeReader(initialUrl: string, size: number, renew: () => Promise<stri
 
 export function PdfPreview({
   url,
+  read,
   size,
   renew,
   name,
@@ -107,6 +114,8 @@ export function PdfPreview({
 }: {
   /** Undefined while the download link is still being fetched. */
   url: string | undefined;
+  /** Reads the file's bytes instead of a link: an encrypted file's decrypted ranges. */
+  read?: ReadRange;
   size: number;
   /** A fresh download link for the same file, once `url` has expired. */
   renew: () => Promise<string>;
@@ -120,17 +129,20 @@ export function PdfPreview({
   const [width, setWidth] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!url) return;
+    if (!url && !read) return;
     let cancelled = false;
     let destroy = () => {};
     // Start downloading before pdf.js has loaded, in case it was not preloaded.
-    const ranges = size > wholeFileBytes ? rangeReader(url, size, renew) : undefined;
+    const ranges =
+      size > wholeFileBytes ? rangeReader(read ?? linkRanges(url!, renew), size) : undefined;
     const whole = ranges
       ? undefined
-      : fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' }).then((response) => {
-          if (!response.ok) throw new Error(`Download failed with ${response.status}`);
-          return response.arrayBuffer();
-        });
+      : read
+        ? read(0, size)
+        : fetch(url!, { credentials: 'omit', referrerPolicy: 'no-referrer' }).then((response) => {
+            if (!response.ok) throw new Error(`Download failed with ${response.status}`);
+            return response.arrayBuffer();
+          });
     whole?.catch(() => {});
     if (ranges) {
       const tail = Math.floor((size - tailBytes) / rangeChunkBytes) * rangeChunkBytes;
@@ -193,8 +205,8 @@ export function PdfPreview({
       cancelled = true;
       destroy();
     };
-    // The callbacks only report status; a new URL is what restarts loading.
-  }, [url]);
+    // The callbacks only report status; a new URL or reader is what restarts loading.
+  }, [url, read]);
   useEffect(() => {
     const element = scroller.current;
     if (!element) return;

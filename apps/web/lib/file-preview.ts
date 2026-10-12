@@ -2,7 +2,9 @@ import type { FileEntry } from './file-metadata';
 import type { TextPreview } from '../../../packages/api-client/src/preview';
 
 export type PreviewKind = 'text' | 'image' | 'video' | 'audio' | 'pdf';
-export type PreviewContent = TextPreview | { url: string };
+/** Reads bytes [begin, end) of the file, as an encrypted file's decrypted ranges. */
+export type ReadRange = (begin: number, end: number) => Promise<Uint8Array>;
+export type PreviewContent = TextPreview | { url: string } | { read: ReadRange; size: number };
 export type PreviewLoader = (item: FileEntry, signal: AbortSignal) => Promise<PreviewContent>;
 
 const extensions: Record<PreviewKind, Set<string>> = {

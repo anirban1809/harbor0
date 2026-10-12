@@ -93,15 +93,20 @@ export async function readAll(
 export const isEncrypted = (item: Pick<DriveItem, 'encrypted'>) => item.encrypted === true;
 
 /** A decrypted preview: text for text files, an object URL for everything else. */
-export async function encryptedPreview(api: ApiClient, item: DriveItem, text: boolean) {
+/**
+ * A decrypted preview: the first megabyte of a text file, a PDF as decrypted ranges that
+ * pdf.js reads page by page, and other files whole, as an object URL.
+ */
+export async function encryptedPreview(api: ApiClient, item: DriveItem, kind: string | null) {
   const reader = await openEncrypted(api, { driveItemId: item.id });
-  if (text) {
+  if (kind === 'text') {
     const bytes = await reader.read(0, Math.min(reader.size, TEXT_PREVIEW_BYTES));
-    return {
-      text: new TextDecoder().decode(bytes),
-      truncated: reader.size > TEXT_PREVIEW_BYTES,
-    } satisfies TextPreview;
+    const text = new TextDecoder().decode(bytes);
+    if (text.includes('\0'))
+      throw new Error('This file contains binary data and cannot be shown as text.');
+    return { text, truncated: reader.size > TEXT_PREVIEW_BYTES } satisfies TextPreview;
   }
+  if (kind === 'pdf') return { read: reader.read, size: reader.size };
   const blob = new Blob(await readAll(reader), { type: item.mimeType ?? guessMime(item.name) });
   return { url: URL.createObjectURL(blob) };
 }

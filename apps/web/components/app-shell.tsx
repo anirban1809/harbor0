@@ -144,7 +144,7 @@ async function encryptsInto(id: string | null | undefined) {
 }
 const loadPreview: PreviewLoader = async (item, signal) => {
   if (isEncrypted(item as DriveItem))
-    return encryptedPreview(api, item as DriveItem, previewKind(item) === 'text');
+    return encryptedPreview(api, item as DriveItem, previewKind(item));
   const result = await api.download({ driveItemId: item.id });
   signal.throwIfAborted();
   return previewKind(item) === 'text'
@@ -2104,8 +2104,7 @@ function Workspace() {
       />
       {modal?.mode === 'preview' && modal.item && (
         <FilePreview
-          // Encrypted PDFs need pdf.js to read decrypted ranges (openEncrypted), which it can't yet.
-          pdf={pdfPreview && !isEncrypted(modal.item)}
+          pdf={pdfPreview}
           cacheScope={user?.id ?? 'anonymous'}
           item={modal.item}
           load={loadPreview}
