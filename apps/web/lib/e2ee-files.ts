@@ -201,6 +201,8 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
       resume = undefined;
     }
   }
+  // A resumed upload asks which parts storage already has; a new one has none.
+  const resumed = !!resume;
   if (resume) cipher = plain ? undefined : await FileCipher.open(keys, fromB64url(resume.header));
   else {
     cipher = plain ? undefined : await FileCipher.create(keys);
@@ -223,7 +225,7 @@ export async function uploadEncrypted(input: EncryptedUploadInput): Promise<Driv
     input.onCreated?.(resume);
   }
   const session = resume;
-  const status = await api.request(`/v1/uploads/${session.id}`);
+  const status = resumed ? await api.request(`/v1/uploads/${session.id}`) : { parts: [] };
   const done = new Map<number, string>(
     (status.parts ?? []).map((p: CompletedPart) => [p.partNumber, p.etag]),
   );

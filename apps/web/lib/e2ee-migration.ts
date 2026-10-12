@@ -79,11 +79,12 @@ const done = (f: Found) =>
 const purgeKey = (userId: string) => `harbor0-e2ee-purge:${userId}`;
 
 export async function runMigration(
-  raw: Transport,
+  direct: Transport,
   userId: string,
   keys: AccountKeys,
   signal: AbortSignal,
 ) {
+  const raw = patient(direct, signal);
   const api = new ApiClient(raw);
   const found = await walk(api, signal);
   const files = found.filter((f) => f.item.type === 'FILE');
@@ -245,10 +246,11 @@ const emptyProgress = (
  * Items in Trash are restored for a moment, decrypted and put back.
  */
 export async function runDecryption(
-  raw: Transport,
+  direct: Transport,
   keys: AccountKeys,
   signal: AbortSignal,
 ): Promise<MigrationProgress & { finished: boolean }> {
+  const raw = patient(direct, signal);
   const api = new ApiClient(raw);
   const found = (await walk(api, signal)).filter((f) => !f.backup);
   const trashed: DriveItem[] = [];
@@ -455,4 +457,38 @@ export function startDecryption(
       .catch(() => {});
   else void run();
   return () => controller.abort();
+}
+
+// The account may make 600 requests a minute and each file takes about six. Spacing the
+// runner's requests leaves room for the app itself, and a rate-limited request waits and
+// retries instead of failing the file.
+const RUNNER_SPACING_MS = 150;
+function patient(raw: Transport, signal: AbortSignal): Transport {
+  let next = 0;
+  const pause = (ms: number) =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+  return async (path, init) => {
+    for (let attempt = 0; ; attempt++) {
+      const now = Date.now();
+      const at = Math.max(now, next);
+      next = at + RUNNER_SPACING_MS;
+      if (at > now) await pause(at - now);
+      try {
+        return await raw(path, init);
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 429) || attempt >= 12) throw e;
+        await pause(Math.min(30_000, 2_000 * 2 ** attempt));
+      }
+    }
+  };
 }
