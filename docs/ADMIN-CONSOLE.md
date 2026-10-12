@@ -5,7 +5,7 @@ separate from the product at every layer:
 
 | Layer   | Product                              | Console                                               |
 | ------- | ------------------------------------ | ----------------------------------------------------- |
-| Web app | `apps/web` on app.harbor0.com        | `apps/admin` (static export) on its own distribution  |
+| Web app | `apps/web` on app.harbor0.com        | harbor0-admin repo (static export), own distribution  |
 | API     | `Api` Lambda, `HttpApi`              | `Admin` Lambda (`index.admin`), `AdminHttpApi`        |
 | Sign-in | `Users` Cognito pool                 | `Staff` pool: no self sign-up, password sign-in       |
 | Session | `harbor_access` cookies via `/api/*` | `harbor_staff_*` HTTP-only cookies, `SameSite=Strict` |
@@ -13,8 +13,11 @@ separate from the product at every layer:
 
 Code: `apps/backend/src/admin/` (`api.ts` routes and cookie session, `service.ts` actions and
 audit log, `directory.ts` customer pool admin calls, `staff-auth.ts` staff sign-in),
-`packages/contracts/src/admin.ts` (schemas and role permissions), `apps/admin` (UI),
-`infra/admin.ts` (HarborAdmin stack), staff pool and Lambda in `infra/app.ts`.
+`packages/contracts/src/admin.ts` (schemas and role permissions), staff pool and Lambda in
+`infra/app.ts`. The UI and its HarborAdmin stack (site + CloudFront) live in their own
+repository, [anirban1809/harbor0-admin](https://github.com/anirban1809/harbor0-admin), which copies the contracts and web kit files it uses into `shared/`
+(`npm run sync:shared` there). Ship a console change that needs a new API after this repo
+has deployed it.
 
 ## Roles
 
@@ -55,18 +58,18 @@ the entry in the same transaction as the change.
 ## Local development
 
 `npm run dev` (with `DEV_AUTH=true`) also starts the console API on `127.0.0.1:8789`; then
-`npm run dev:admin` serves the console at http://localhost:3300 (it proxies `/api/*` to 8789).
+`npm run dev` in a harbor0-admin checkout serves the console at http://127.0.0.1:3300 (it
+proxies `/api/*` to 8789).
 Staff: `admin@example.test` (admin) and `support@example.test` (support), password
 `Development-only-123!`. Tests: `apps/backend/test/admin.test.ts`.
 
 ## Deploying
 
 1. `npm run cloud:deploy` — creates the staff pool, `Admin` Lambda and `AdminHttpApi`.
-2. `npm run cloud:deploy-admin` — deploys HarborAdmin, writes `ADMIN_ORIGIN` to `.env.cloud`,
-   redeploys HarborStorage so the console API accepts that origin (until then it refuses every
-   change), then uploads the export. `:assets` re-uploads only.
-   Optional `.env.cloud` settings: `ADMIN_DOMAIN` + `ADMIN_CERT_ARN` (us-east-1 ACM) for a custom
-   hostname, `ADMIN_ALLOWED_IPS` (comma-separated) to restrict the console to office/VPN IPs.
+2. The site deploys from harbor0-admin: pushes to its `main` publish HarborAdmin through GitHub
+   Actions (see its README for the custom domain and IP allowlist settings). `ADMIN_ORIGIN` here
+   (`.env.cloud`, `PRODUCTION_ADMIN_ORIGIN`) must be the console's URL, or the console API
+   refuses every change; after changing it, redeploy HarborStorage.
 3. Invite staff: `npm run admin:staff -- add someone@harbor0.com admin|support`. Cognito emails
    a temporary password; the first sign-in sets a password (14+ characters). Also `list`,
    `role`, `disable`, `enable`, `reset-password`.

@@ -23,7 +23,7 @@ Not in scope for v1: automated drip or lifecycle sequences such as "7 days after
 - **Admin console:**
   - Roles are SUPPORT and ADMIN (`packages/contracts/src/admin.ts:9`), and permissions are checked with `guard()` (`admin/api.ts:241`).
   - Changes are written together with an audit row (`admin/service.ts:74`), require a `reason`, and use `expectedUpdatedAt` for optimistic concurrency.
-  - The flags page (`apps/admin/app/flags/page.tsx`) is the pattern for list and editor pages.
+  - The flags page (harbor0-admin `app/flags/page.tsx`) is the pattern for list and editor pages.
   - The admin API is not part of `npm run openapi`.
 - **Possible recipient sources:**
   - Accounts: `directory.all()` together with `scanProfiles()`.
@@ -100,7 +100,7 @@ States: `DRAFT → SCHEDULED → SENDING → SENT`, or `STOPPED` if stopped mid-
 
 ## Admin API
 
-All routes live under `/api/v1/admin/email`. Contracts are in `packages/contracts/src/campaigns.ts`; client methods in `apps/admin/lib/api.ts`. The admin API is not in `npm run openapi`.
+All routes live under `/api/v1/admin/email`. Contracts are in `packages/contracts/src/campaigns.ts`; client methods in harbor0-admin `lib/api.ts`. The admin API is not in `npm run openapi`.
 
 | Method & path | Permission |
 | --- | --- |

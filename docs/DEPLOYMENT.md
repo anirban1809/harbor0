@@ -136,11 +136,11 @@ On this machine no Developer ID certificate is available. Version 0.1.1 was buil
 
 ## Automated production deploys
 
-Production deploys itself from `main`. `.github/workflows/deploy-production.yml` runs after the Validate workflow completes successfully for a push to `main`. Validate covers checks, integration, e2e and sync. The deploy workflow checks out exactly the commit Validate passed and runs `cloud:deploy`, `cloud:deploy-web`, `cloud:deploy-admin` and `cloud:deploy-landing` in order. Deploys never overlap. Pull requests and failed Validate runs never deploy. A manual **Run workflow** on `main` redeploys its latest commit. Staging is deployed manually; see [STAGING.md](STAGING.md).
+Production deploys itself from `main`. `.github/workflows/deploy-production.yml` runs after the Validate workflow completes successfully for a push to `main`. Validate covers checks, integration, e2e and sync. The deploy workflow checks out exactly the commit Validate passed and runs `cloud:deploy`, `cloud:deploy-web` and `cloud:deploy-landing` in order. The management console's site deploys separately from [anirban1809/harbor0-admin](https://github.com/anirban1809/harbor0-admin). Deploys never overlap. Pull requests and failed Validate runs never deploy. A manual **Run workflow** on `main` redeploys its latest commit. Staging is deployed manually; see [STAGING.md](STAGING.md).
 
 One-time setup:
 
-1. Run `npx cdk deploy HarborGitHubProduction --app 'npx tsx infra/github.ts'`. The role it creates can only be assumed by workflow runs on `refs/heads/main` of this repository. It can publish through the CDK bootstrap roles and update the `harbor-storage/r2` secret. It can also upload only to the production web, admin and landing buckets, and invalidate CloudFront.
+1. Run `npx cdk deploy HarborGitHubProduction --app 'npx tsx infra/github.ts'`. The role it creates can only be assumed by workflow runs on `refs/heads/main` of this repository. It can publish through the CDK bootstrap roles and update the `harbor-storage/r2` secret. It can also upload only to the production web and landing buckets, and invalidate CloudFront.
 2. In GitHub, go to **Settings → Secrets and variables → Actions** and add the following. They mirror `.env.cloud`.
    - Variables:
      - `PRODUCTION_AWS_ROLE_ARN`: the `DeployRoleArn` output. Until it is set, the deploy job is skipped.
@@ -150,8 +150,6 @@ One-time setup:
      - `PRODUCTION_WEB_CERT_ARN`
      - `PRODUCTION_LANDING_CERT_ARN`
      - `PRODUCTION_ADMIN_ORIGIN`
-     - `PRODUCTION_ADMIN_DOMAIN`
-     - `PRODUCTION_ADMIN_CERT_ARN`
      - Optional: `PRODUCTION_EMAIL_FROM`, `PRODUCTION_AWS_REGION`
    - Secrets:
      - `PRODUCTION_R2_ACCESS_KEY_ID`

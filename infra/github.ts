@@ -52,10 +52,9 @@ role.addToPolicy(
   }),
 );
 // Static uploads go only to this environment's buckets (CDK names them after their stacks, so
-// `harborweb-*` never matches staging's `harborwebstaging-*`).
-const buckets = harborEnv.production
-  ? ['harborweb-*', 'harboradmin-*', 'harborlanding-*']
-  : ['harborwebstaging-*', 'harboradminstaging-*'];
+// `harborweb-*` never matches staging's `harborwebstaging-*`). The console's bucket is deployed
+// from anirban1809/harbor0-admin with its own role.
+const buckets = harborEnv.production ? ['harborweb-*', 'harborlanding-*'] : ['harborwebstaging-*'];
 role.addToPolicy(
   new iam.PolicyStatement({
     actions: ['s3:ListBucket', 's3:GetObject', 's3:PutObject', 's3:DeleteObject'],

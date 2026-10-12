@@ -44,17 +44,13 @@ jobs:
           WEB_CERT_ARN: ${{ vars.STAGING_WEB_CERT_ARN }}
           EMAIL_FROM: ${{ vars.STAGING_EMAIL_FROM }}
           ADMIN_ORIGIN: ${{ vars.STAGING_ADMIN_ORIGIN }}
-          ADMIN_DOMAIN: ${{ vars.STAGING_ADMIN_DOMAIN }}
-          ADMIN_CERT_ARN: ${{ vars.STAGING_ADMIN_CERT_ARN }}
         run: |
           umask 077
           for name in HARBOR_ENV AWS_REGION R2_BUCKET R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
             CLOUDFLARE_API_TOKEN WEB_ORIGIN WEB_DOMAIN WEB_CERT_ARN EMAIL_FROM \
-            ADMIN_ORIGIN ADMIN_DOMAIN ADMIN_CERT_ARN; do
+            ADMIN_ORIGIN; do
             printf '%s=%s\n' "$name" "${!name}"
           done > .env.staging
       # Backend first (writes the outputs the web deploy reads), then the web app.
       - run: npm run staging:deploy
       - run: npm run staging:deploy-web
-      - if: vars.STAGING_ADMIN_ORIGIN != ''
-        run: npm run staging:deploy-admin

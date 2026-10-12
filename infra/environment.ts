@@ -15,7 +15,6 @@ export const harborEnv = {
   stacks: {
     storage: `HarborStorage${suffix}`,
     web: `HarborWeb${suffix}`,
-    admin: `HarborAdmin${suffix}`,
   },
   /** Git-ignored settings and credentials for this environment. */
   envFile: production ? '.env.cloud' : '.env.staging',
@@ -31,7 +30,6 @@ export const harborEnv = {
 const outputFiles = {
   storage: 'outputs.json',
   web: 'web-outputs.json',
-  admin: 'admin-outputs.json',
 };
 export const outputsPath = (kind: keyof typeof outputFiles) =>
   `${harborEnv.cloudDir}/${outputFiles[kind]}`;

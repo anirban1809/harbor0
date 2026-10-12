@@ -24,14 +24,13 @@ Staging deploys are manual; pushing to `staging` deploys nothing. Production is 
 git checkout staging && git merge main && git push
 ```
 
-Then either run **Actions → Deploy staging → Run workflow** on the `staging` branch, or deploy from your machine. The workflow (`.github/workflows/deploy-staging.yml`) runs lint, typecheck and tests, then `staging:deploy` (backend), `staging:deploy-web`, and `staging:deploy-admin` when `STAGING_ADMIN_ORIGIN` is set.
+Then either run **Actions → Deploy staging → Run workflow** on the `staging` branch, or deploy from your machine. The workflow (`.github/workflows/deploy-staging.yml`) runs lint, typecheck and tests, then `staging:deploy` (backend) and `staging:deploy-web`. The console site deploys from [anirban1809/harbor0-admin](https://github.com/anirban1809/harbor0-admin) (its own Deploy staging workflow); set `STAGING_ADMIN_ORIGIN` here to its URL.
 
 Local deploys use the same scripts. They refuse to run unless the checkout is on `staging`. Set `HARBOR_ALLOW_ANY_BRANCH=true` to override this deliberately.
 
 ```sh
 npm run staging:deploy        # backend stack
 npm run staging:deploy-web    # web stack + assets (then redeploys the backend with the web origin)
-npm run staging:deploy-admin  # optional console
 npm run staging:admin-staff -- add you@example.com admin
 npm run staging:validate      # live end-to-end checks against staging
 ```
@@ -50,7 +49,7 @@ Desktop and mobile clients target staging through their API URL setting, for exa
      - `STAGING_R2_BUCKET`
      - `STAGING_R2_ENDPOINT`
      - `STAGING_WEB_ORIGIN`: the deployed staging URL
-     - Optional: `STAGING_WEB_DOMAIN`, `STAGING_WEB_CERT_ARN`, `STAGING_EMAIL_FROM`, `STAGING_AWS_REGION`, `STAGING_ADMIN_ORIGIN`, `STAGING_ADMIN_DOMAIN`, `STAGING_ADMIN_CERT_ARN`
+     - Optional: `STAGING_WEB_DOMAIN`, `STAGING_WEB_CERT_ARN`, `STAGING_EMAIL_FROM`, `STAGING_AWS_REGION`, `STAGING_ADMIN_ORIGIN`
    - Secrets:
      - `STAGING_R2_ACCESS_KEY_ID`
      - `STAGING_R2_SECRET_ACCESS_KEY`
@@ -59,7 +58,7 @@ Desktop and mobile clients target staging through their API URL setting, for exa
 ## Tearing down
 
 ```sh
-HARBOR_ENV=staging npx cdk destroy HarborAdminStaging --app 'npx tsx infra/admin.ts'
+# HarborAdminStaging (the console site) is destroyed from a harbor0-admin checkout.
 HARBOR_ENV=staging npx cdk destroy HarborWebStaging --app 'npx tsx infra/web.ts'
 HARBOR_ENV=staging npx cdk destroy HarborStorageStaging --app 'npx tsx infra/app.ts'
 ```

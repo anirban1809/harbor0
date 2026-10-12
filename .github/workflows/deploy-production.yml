@@ -53,17 +53,15 @@ jobs:
           LANDING_CERT_ARN: ${{ vars.PRODUCTION_LANDING_CERT_ARN }}
           EMAIL_FROM: ${{ vars.PRODUCTION_EMAIL_FROM }}
           ADMIN_ORIGIN: ${{ vars.PRODUCTION_ADMIN_ORIGIN }}
-          ADMIN_DOMAIN: ${{ vars.PRODUCTION_ADMIN_DOMAIN }}
-          ADMIN_CERT_ARN: ${{ vars.PRODUCTION_ADMIN_CERT_ARN }}
         run: |
           umask 077
           for name in AWS_REGION R2_BUCKET R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
             CLOUDFLARE_API_TOKEN WEB_ORIGIN WEB_CERT_ARN LANDING_CERT_ARN EMAIL_FROM \
-            ADMIN_ORIGIN ADMIN_DOMAIN ADMIN_CERT_ARN; do
+            ADMIN_ORIGIN; do
             printf '%s=%s\n' "$name" "${!name}"
           done > .env.cloud
-      # Backend first (writes the outputs the other deploys read), then the sites.
+      # Backend first (writes the outputs the other deploys read), then the sites. The management
+      # console's site deploys from anirban1809/harbor0-admin; its API is part of HarborStorage.
       - run: npm run cloud:deploy
       - run: npm run cloud:deploy-web
-      - run: npm run cloud:deploy-admin
       - run: npm run cloud:deploy-landing
