@@ -125,7 +125,7 @@ import { guardTransport, setSignedIn, useSessionEnd } from '../lib/session-guard
 import { e2eeTransport } from '../lib/e2ee-transport';
 import { currentVault, lock, restore as restoreVault, useVault } from '../lib/e2ee-vault';
 import { encryptedPreview, isEncrypted, saveEncrypted } from '../lib/e2ee-files';
-import { startDecryption, startMigration } from '../lib/e2ee-migration';
+import { startDecryption, startMigration, useMigrationProgress } from '../lib/e2ee-migration';
 import { E2eeError } from '../../../packages/api-client/src/e2ee';
 import { E2eeSettings, e2eeQuery } from './e2ee-settings';
 import { E2eeUnlock } from './e2ee-unlock';
@@ -143,8 +143,12 @@ async function encryptsInto(id: string | null | undefined) {
   return item.ownerUserId === userId ? keys : undefined;
 }
 const loadPreview: PreviewLoader = async (item, signal) => {
-  if (isEncrypted(item as DriveItem))
-    return encryptedPreview(api, item as DriveItem, previewKind(item));
+  // A listing loaded before a file was encrypted (or decrypted) by the migration still says
+  // how it was stored then; on an encrypted account, ask for the file as it is now.
+  const current: DriveItem = currentVault().enabled
+    ? (await api.request(`/v1/drive/items/${item.id}`)).item
+    : (item as DriveItem);
+  if (isEncrypted(current)) return encryptedPreview(api, current, previewKind(current));
   const result = await api.download({ driveItemId: item.id });
   signal.throwIfAborted();
   return previewKind(item) === 'text'
@@ -354,6 +358,14 @@ function Workspace() {
     if (!user?.e2ee || !vault.keys || decrypting || migrationDone !== false) return;
     return startMigration(rawTransport, user.id, vault.keys);
   }, [user?.id, !!user?.e2ee, vault.keys, migrationDone, decrypting]);
+  // Files change as the migration encrypts or decrypts them; keep the listing current.
+  const migrating = !!useMigrationProgress()?.running;
+  useEffect(() => {
+    const refreshFiles = () => void cache.invalidateQueries({ queryKey: ['files'] });
+    if (!migrating) return refreshFiles();
+    const timer = setInterval(refreshFiles, 15_000);
+    return () => clearInterval(timer);
+  }, [migrating]);
   // Turning off: decrypt everything, then the server deletes the keys.
   useEffect(() => {
     if (!user || !decrypting || !vault.keys) return;

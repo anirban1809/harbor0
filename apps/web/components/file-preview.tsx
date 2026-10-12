@@ -123,9 +123,14 @@ function PreviewBody({
           setContent(result);
           if ('text' in result) setReady(true);
         })
-        .catch(() => {
-          if (!controller.signal.aborted)
-            setError('Could not load this preview. Check your connection and try again.');
+        .catch((e: Error) => {
+          if (controller.signal.aborted) return;
+          // A file that isn't text says so; anything else is most likely the connection.
+          setError(
+            e?.message?.includes('binary data')
+              ? e.message
+              : 'Could not load this preview. Check your connection and try again.',
+          );
         });
     return () => controller.abort();
   }, [item.id, item.name, item.mimeType, item.sizeBytes, load, kind, attempt, cache, key]);
