@@ -51,6 +51,7 @@ import {
     releaseInboxClaim,
 } from './signup-guard';
 import { joinTrackedSignup } from './signup-tracking';
+import { assertNameFor, conversionAllowance, encryptedAccount, encryptsNew } from './e2ee';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -91,6 +92,8 @@ export type Account = User & {
     storageAlertLevel?: StorageAlertLevel | 0;
     /** The `?ref=` of the sign-up link the account came through; see signup-tracking.ts. */
     trackingId?: string;
+    /** When end-to-end encryption was last turned off. */
+    e2eeDisabledAt?: string;
 };
 /** Whether `item` was in the trash when it was last emptied. */
 export const emptied = (item: Pick<DriveItem, 'deletedAt'>, account: Account) =>
@@ -160,6 +163,8 @@ export type Upload = {
     expectedSizeBytes: number;
     mimeType: string;
     contentHash: string | null;
+    /** The client encrypted the bytes; see e2ee.ts. */
+    encrypted?: boolean;
     state: 'CREATED' | 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'FAILED' | 'ABORTED' | 'EXPIRED';
     multipart: true;
     partSizeBytes: number;
@@ -557,6 +562,7 @@ export class StorageService {
                     `Folders can be nested up to ${MAX_DEPTH} levels.`,
                     400,
                 );
+                assertNameFor(await this.account(tx, owner), input.name);
                 const item = this.newItem(owner, input.parentId, input.name, 'FOLDER');
                 await this.reserveName(tx, item);
                 await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
@@ -685,6 +691,7 @@ export class StorageService {
                 assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'Restore this item before editing.', 404);
                 const depth = await this.parent(tx, ownerId, item.parentId);
                 if (input.name !== undefined) {
+                    assertNameFor(await this.account(tx, ownerId), input.name);
                     item.name = input.name.normalize('NFC');
                     item.normalizedName = normalizeName(input.name);
                     type = 'ITEM_RENAMED';
@@ -893,7 +900,23 @@ export class StorageService {
                     );
                 }
                 const account = await this.account(tx, owner);
-                this.assertRoom(account, userId, input.sizeBytes, shared?.item);
+                if (encryptsNew(account)) {
+                    assert(
+                        input.encrypted,
+                        'E2EE_REQUIRED',
+                        'This account uses end-to-end encryption. Update the app so it can encrypt files.',
+                        409,
+                    );
+                    if (!prior) assertNameFor(account, input.name);
+                }
+                this.assertRoom(
+                    account,
+                    userId,
+                    input.sizeBytes,
+                    shared?.item,
+                    undefined,
+                    conversionAllowance(account, prior, !!input.encrypted, owner === userId),
+                );
                 account.storageReservedBytes += input.sizeBytes;
                 await tx.put(userPK(owner), 'PROFILE', account);
                 const objectId = uid();
@@ -908,6 +931,7 @@ export class StorageService {
                     expectedSizeBytes: input.sizeBytes,
                     mimeType: input.mimeType,
                     contentHash: input.contentHash ?? null,
+                    ...(input.encrypted ? { encrypted: true } : {}),
                     state: 'CREATED',
                     multipart: true,
                     partSizeBytes: Math.max(
@@ -1102,6 +1126,8 @@ export class StorageService {
             item.mimeType = u.mimeType;
             item.currentVersionId = u.versionId;
             item.cloudState = 'AVAILABLE';
+            if (u.encrypted) item.encrypted = true;
+            else delete item.encrypted;
             const versions = old
                 ? await tx.get<FileVersion>(userPK(owner), `VERSION#${item.id}#${old.currentVersionId}`)
                 : undefined;
@@ -1114,6 +1140,7 @@ export class StorageService {
                 contentHash,
                 contentHashAlgorithm: 'SHA256',
                 sourceDeviceId: u.deviceId,
+                ...(u.encrypted ? { encrypted: true } : {}),
                 createdAt: now(),
             };
             await tx.put(userPK(owner), `VERSION#${item.id}#${version.id}`, version);
@@ -1359,6 +1386,13 @@ export class StorageService {
         const item = await this.owned(tx, owner, itemId);
         if (write) await assertBackupMutable(tx, owner, itemId);
         if (owner === userId) return { item, owner, access: undefined };
+        // Others can't read an encrypted account's files, so its shares pause.
+        assert(
+            !encryptedAccount(await this.account(tx, owner)),
+            'E2EE_SHARE_PAUSED',
+            'The owner turned on end-to-end encryption, so this shared folder is paused.',
+            403,
+        );
         assert(
             !(await this.account(tx, owner)).deletedAt,
             'ITEM_NOT_FOUND',
@@ -1428,8 +1462,11 @@ export class StorageService {
         bytes: number,
         target?: DriveItem,
         message = 'There is not enough available storage.',
+        /** Room beyond the quota, for a file whose old copy is about to be purged. */
+        allowanceBytes = 0,
     ) {
-        const available = storageUsage(account).availableBytes;
+        const { quotaBytes, usedBytes, reservedBytes } = storageUsage(account);
+        const available = Math.max(0, quotaBytes + allowanceBytes - usedBytes - reservedBytes);
         if (bytes <= available) return;
         if (account.id !== actor)
             throw new OwnerStorageFull(account.id, {
@@ -1615,6 +1652,12 @@ export class StorageService {
                         `VERSION#${itemId}#${item.currentVersionId}`,
                     ))!;
                     const account = await this.account(tx, owner);
+                    assert(
+                        !encryptsNew(account) || previous.encrypted,
+                        'E2EE_REQUIRED',
+                        'This version was stored before encryption was turned on, so it can’t be restored.',
+                        409,
+                    );
                     this.assertRoom(
                         account,
                         userId,
@@ -1636,6 +1679,8 @@ export class StorageService {
                     item.currentVersionId = v.id;
                     item.cloudState = 'AVAILABLE';
                     item.sizeBytes = v.sizeBytes;
+                    if (v.encrypted) item.encrypted = true;
+                    else delete item.encrypted;
                     item.revision++;
                     item.updatedAt = now();
                     await tx.put(userPK(owner), `ITEM#${itemId}`, item);

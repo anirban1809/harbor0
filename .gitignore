@@ -4,6 +4,8 @@ node_modules/
 !.env.example
 !.env.staging.example
 .next/
+# Second dev servers (NEXT_DIST_DIR) build here.
+.next-*/
 apps/landing/out/
 dist/
 release/

@@ -122,8 +122,33 @@ import { readDroppedFiles, type UploadEntry } from '../lib/dropped-files';
 import { onLive, useLiveUpdates } from '../lib/live-updates';
 import { registerBrowser } from '../lib/device-key';
 import { guardTransport, setSignedIn, useSessionEnd } from '../lib/session-guard';
-const api = new ApiClient(guardTransport(createTransport('/api')));
+import { e2eeTransport } from '../lib/e2ee-transport';
+import { currentVault, lock, restore as restoreVault, useVault } from '../lib/e2ee-vault';
+import { encryptedPreview, isEncrypted, saveEncrypted } from '../lib/e2ee-files';
+import { startDecryption, startMigration, useMigrationProgress } from '../lib/e2ee-migration';
+import { E2eeError } from '../../../packages/api-client/src/e2ee';
+import { E2eeSettings, e2eeQuery } from './e2ee-settings';
+import { E2eeUnlock } from './e2ee-unlock';
+import { E2eeMigrationBanner, ProtectionChoice, shouldOfferProtection } from './e2ee-banner';
+// The plain transport is for the encryption migration, which needs to see stored names as
+// they are; everything else goes through the encrypting one.
+const rawTransport = guardTransport(createTransport('/api'));
+const api = new ApiClient(e2eeTransport(rawTransport));
+/** Whether files uploaded into `id` (a folder, or the file a version replaces) are encrypted. */
+async function encryptsInto(id: string | null | undefined) {
+  const { enabled, decrypting, keys, userId } = currentVault();
+  if (!enabled || decrypting || !keys) return undefined;
+  if (!id) return keys;
+  const { item } = await api.request(`/v1/drive/items/${id}`);
+  return item.ownerUserId === userId ? keys : undefined;
+}
 const loadPreview: PreviewLoader = async (item, signal) => {
+  // A listing loaded before a file was encrypted (or decrypted) by the migration still says
+  // how it was stored then; on an encrypted account, ask for the file as it is now.
+  const current: DriveItem = currentVault().enabled
+    ? (await api.request(`/v1/drive/items/${item.id}`)).item
+    : (item as DriveItem);
+  if (isEncrypted(current)) return encryptedPreview(api, current, previewKind(current));
   const result = await api.download({ driveItemId: item.id });
   signal.throwIfAborted();
   return previewKind(item) === 'text'
@@ -315,6 +340,40 @@ function Workspace() {
   useEffect(() => {
     if (user) void registerBrowser(api.request, user.id).catch(() => {});
   }, [user?.id]);
+  const vault = useVault();
+  const e2eeAllowed = me.data?.flags?.e2ee === true;
+  const [protectionOffered, setProtectionOffered] = useState(false);
+  // A browser that kept its key unlocks by itself; others ask for the passphrase.
+  useEffect(() => {
+    if (vault.restoring) void restoreVault(api.request);
+  }, [vault.userId, vault.restoring]);
+  // Answers fetched while locked carry encrypted names; read them again with the key.
+  useEffect(() => {
+    if (vault.keys) void cache.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'me' });
+  }, [vault.keys]);
+  const e2eeState = useQuery({ ...e2eeQuery(api), enabled: !!user?.e2ee && !!vault.keys });
+  const migrationDone = e2eeState.data ? !!e2eeState.data.migration?.complete : undefined;
+  const decrypting = !!user?.e2ee?.decryptingSince;
+  useEffect(() => {
+    if (!user?.e2ee || !vault.keys || decrypting || migrationDone !== false) return;
+    return startMigration(rawTransport, user.id, vault.keys);
+  }, [user?.id, !!user?.e2ee, vault.keys, migrationDone, decrypting]);
+  // Files change as the migration encrypts or decrypts them; keep the listing current.
+  const migrating = !!useMigrationProgress()?.running;
+  useEffect(() => {
+    const refreshFiles = () => void cache.invalidateQueries({ queryKey: ['files'] });
+    if (!migrating) return refreshFiles();
+    const timer = setInterval(refreshFiles, 15_000);
+    return () => clearInterval(timer);
+  }, [migrating]);
+  // Turning off: decrypt everything, then the server deletes the keys.
+  useEffect(() => {
+    if (!user || !decrypting || !vault.keys) return;
+    return startDecryption(rawTransport, user.id, vault.keys, () => {
+      void cache.invalidateQueries();
+      setToast('End-to-end encryption is off. Your files are stored unencrypted again.');
+    });
+  }, [user?.id, decrypting, vault.keys]);
   const activity = useActivityFeed(user?.id);
   useEffect(() => {
     if (!user) clearBrowserCaches();
@@ -645,6 +704,15 @@ function Workspace() {
     entryId?: string;
   }) {
     await act(async () => {
+      // Encrypted files are decrypted here; a file stored before encryption downloads as is.
+      if (currentVault().enabled && data.driveItemId) {
+        const { item } = await api.request(`/v1/drive/items/${data.driveItemId}`);
+        try {
+          if (await saveEncrypted(api, item, data.versionId)) return;
+        } catch (e) {
+          if (!(e instanceof E2eeError && e.code === 'CORRUPT')) throw e;
+        }
+      }
       const r = await api.download(data);
       const a = document.createElement('a');
       a.href = r.downloadUrl;
@@ -709,7 +777,11 @@ function Workspace() {
     job.running = true;
     try {
       job.parent ??= await uploadParent(job);
-      const upload = new BrowserUpload(api, user.id);
+      const upload = new BrowserUpload(
+        api,
+        user.id,
+        await encryptsInto(job.target?.kind === 'replace' ? job.target.item.id : job.parent),
+      );
       job.upload = upload;
       const item = await upload.run(
         job.file,
@@ -883,12 +955,13 @@ function Workspace() {
     void Promise.all(pending).catch((e: Error) => setError(e.message));
   }
   const uploadsRunning = progress.some((u) => ['queued', 'hashing', 'uploading'].includes(u.phase));
+  // Closing the tab pauses encrypting or decrypting existing files until the app is opened again.
   useEffect(() => {
-    if (!uploadsRunning) return;
+    if (!uploadsRunning && !migrating) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [uploadsRunning]);
+  }, [uploadsRunning, migrating]);
   useEffect(() => {
     // Leaving the page abandons unfinished uploads; release their storage instead of holding it a day.
     const release = (e: PageTransitionEvent) => {
@@ -1100,6 +1173,25 @@ function Workspace() {
     );
   }
   if (authMode || pathname === '/') return <WorkspaceSkeleton />;
+  const signOut = () =>
+    void act(async () => {
+      setSignedIn(false);
+      await lock(api.request);
+      await api.request('/v1/auth/logout', { method: 'POST', body: {} });
+      cache.clear();
+      clearBrowserCaches();
+      window.location.reload();
+    });
+  if (user.e2ee && !vault.keys)
+    return vault.restoring ? (
+      <WorkspaceSkeleton />
+    ) : (
+      <E2eeUnlock api={api} email={user.email} onSignOut={signOut} />
+    );
+  if (e2eeAllowed && !protectionOffered && shouldOfferProtection(user))
+    return (
+      <ProtectionChoice api={api} userId={user.id} onDone={() => setProtectionOffered(true)} />
+    );
   const usage = me.data!.storage;
   const pageError =
     error ||
@@ -1189,20 +1281,7 @@ function Workspace() {
               }}
               onMarkAllRead={markAllRead}
             />
-            <AccountMenu
-              user={user}
-              storage={usage}
-              onNavigate={navigate}
-              onSignOut={() =>
-                void act(async () => {
-                  setSignedIn(false);
-                  await api.request('/v1/auth/logout', { method: 'POST', body: {} });
-                  cache.clear();
-                  clearBrowserCaches();
-                  window.location.reload();
-                })
-              }
-            />
+            <AccountMenu user={user} storage={usage} onNavigate={navigate} onSignOut={signOut} />
           </div>
         </header>
         <main
@@ -1266,6 +1345,9 @@ function Workspace() {
                 </div>
               )}
             </div>
+          )}
+          {drivePage && user.e2ee && section === 'My Drive' && !place && (
+            <E2eeMigrationBanner onDetails={() => navigate('Settings')} />
           )}
           {drivePage && (
             <DriveWorkspace
@@ -1926,6 +2008,7 @@ function Workspace() {
                   Manage devices
                 </Button>
               </Card>
+              <E2eeSettings api={api} encrypted={!!user.e2ee} usedBytes={usage.usedBytes} />
               <TwoFactorSettings api={api} email={user.email} />
               <EmailSettings
                 productUpdates={user.emailPreferences?.productUpdates !== false}

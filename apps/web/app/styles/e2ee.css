@@ -1,0 +1,264 @@
+/* End-to-end encryption: the Settings card, the turn-on steps, unlocking and migration. */
+.e2ee-row-text {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.two-factor-methods strong .badge[data-tone='accent'] {
+  margin-left: 8px;
+}
+.e2ee-progress {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  margin-top: 8px;
+}
+
+.e2ee-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+.e2ee-dialog .form {
+  display: grid;
+  gap: 16px;
+}
+.e2ee-steps {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: var(--text-xs);
+}
+.e2ee-steps-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.e2ee-steps-bar span {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--fill-3);
+}
+.e2ee-steps-bar span[data-on] {
+  background: var(--primary);
+}
+.e2ee-section-label {
+  margin-bottom: 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.e2ee-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  list-style: disc;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+ol.e2ee-list {
+  list-style: decimal;
+}
+.e2ee-option ul {
+  list-style: disc;
+}
+.e2ee-next {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--fill-1);
+}
+
+.e2ee-meter {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+}
+.e2ee-meter span {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--fill-3);
+}
+.e2ee-meter[data-level='1'] span:nth-child(-n + 1) {
+  background: var(--destructive);
+}
+.e2ee-meter[data-level='2'] span:nth-child(-n + 2) {
+  background: var(--warning);
+}
+.e2ee-meter[data-level='3'] span:nth-child(-n + 3),
+.e2ee-meter[data-level='4'] span {
+  background: var(--success);
+}
+.e2ee-meter-row,
+.e2ee-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.e2ee-label-row {
+  margin: 0 0 6px;
+}
+
+.e2ee-keybox {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--fill-1);
+}
+.e2ee-key {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 12px;
+  font: 500 var(--text-lg) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+.e2ee-key-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.e2ee-groups {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+  font: var(--text-sm) var(--font-mono);
+  text-align: center;
+  color: var(--text-3);
+}
+.e2ee-group-input {
+  padding-inline: 4px;
+  font-family: var(--font-mono);
+  text-align: center;
+  text-transform: uppercase;
+}
+.e2ee-ok {
+  font-size: var(--text-sm);
+  color: var(--success-text);
+}
+.e2ee-bad {
+  color: var(--danger-text);
+}
+.e2ee-code {
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.e2ee-tile {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.e2ee-tile svg {
+  width: 22px;
+  height: 22px;
+}
+.e2ee-note {
+  margin-top: 16px;
+  font-size: var(--text-sm);
+}
+.e2ee-switch {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 16px;
+}
+.e2ee-step-label {
+  margin-bottom: 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.e2ee-options {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.e2ee-option {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.e2ee-option[data-selected] {
+  border-color: var(--primary);
+  background: var(--accent-soft);
+}
+.e2ee-option > span {
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+.e2ee-option strong {
+  font-size: var(--text-base);
+}
+.e2ee-option ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+}
+
+.e2ee-migration {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+.e2ee-migration progress {
+  width: 100%;
+}
+.e2ee-migration-head,
+.e2ee-migration-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.e2ee-migration-head strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.e2ee-migration-head svg {
+  width: 16px;
+  height: 16px;
+  color: var(--primary);
+}
+.e2ee-migration-head .muted {
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.e2ee-migration-foot {
+  font-size: var(--text-xs);
+}
+@media (max-width: 640px) {
+  .e2ee-key {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .e2ee-groups {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

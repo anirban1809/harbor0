@@ -1,5 +1,7 @@
 import { ApiClient, ApiError, describeProblem } from '@harbor/api-client';
 import type { ClientEventStage, CompletedPart, DriveItem } from '@harbor/contracts';
+import type { AccountKeys } from '../../../packages/api-client/src/e2ee';
+import { fileSource, uploadEncrypted, type EncryptedResume } from './e2ee-files';
 /** How a file lands: under its own name, as a new version of an item, or beside a same-named one. */
 export type UploadTarget =
   | { kind: 'new' }
@@ -75,7 +77,7 @@ const STALL_MS = 60_000;
 /** A storage failure with what the problem report needs. */
 const storageError = (message: string, code: string, httpStatus: number) =>
   Object.assign(new Error(message), { code, httpStatus });
-function put(
+export function put(
   url: string,
   blob: Blob,
   signal: AbortSignal,
@@ -138,6 +140,8 @@ export class BrowserUpload {
   constructor(
     private api: ApiClient,
     private userId: string,
+    /** Set on an end-to-end encrypted account, for files going into its own folders. */
+    private keys?: AccountKeys,
   ) {}
   pause() {
     this.controller.abort();
@@ -186,6 +190,7 @@ export class BrowserUpload {
     this.stage = 'hash';
     this.controller = new AbortController();
     const signal = this.controller.signal;
+    if (this.keys) return this.encrypted(file, parentId, progress, target, signal, this.keys);
     progress({ name: file.name, size: file.size, loaded: 0, phase: 'hashing' });
     const contentHash = await hashFile(file, signal);
     const into = target.kind === 'replace' ? `item:${target.item.id}` : (parentId ?? 'root');
@@ -316,4 +321,61 @@ export class BrowserUpload {
       throw e;
     }
   }
+
+  /** The same upload, encrypted in this browser; see uploadEncrypted. */
+  private async encrypted(
+    file: File,
+    parentId: string | null,
+    progress: (p: UploadProgress) => void,
+    target: UploadTarget,
+    signal: AbortSignal,
+    keys: AccountKeys,
+  ): Promise<DriveItem> {
+    const into = target.kind === 'replace' ? `item:${target.item.id}` : (parentId ?? 'root');
+    const keyFor = (name: string) =>
+      `harbor-upload:${this.userId}:${into}:e2ee:${file.size}:${file.lastModified}:${name}`;
+    progress({ name: file.name, size: file.size, loaded: 0, phase: 'uploading' });
+    this.stage = 'create';
+    for (let n = 2; ; n++) {
+      const name = n === 2 || target.kind !== 'keep-both' ? file.name : numberedName(file.name, n - 1);
+      const key = keyFor(name);
+      const resume = JSON.parse(localStorage.getItem(key) ?? 'null') as EncryptedResume | null;
+      try {
+        const item = await uploadEncrypted({
+          api: this.api,
+          keys,
+          source: fileSource(file),
+          name,
+          parentId,
+          replace: target.kind === 'replace' ? target.item : undefined,
+          signal,
+          resume: resume ?? undefined,
+          onCreated: (saved) => {
+            this.uploadId = saved.id;
+            this.resumeKey = key;
+            this.stage = 'storage';
+            localStorage.setItem(key, JSON.stringify(saved));
+          },
+          put,
+          onProgress: (loaded, total) =>
+            progress({
+              name: file.name,
+              size: file.size,
+              loaded: Math.round((loaded / total) * file.size),
+              phase: 'uploading',
+            }),
+        });
+        localStorage.removeItem(key);
+        this.uploadId = undefined;
+        progress({ name: file.name, size: file.size, loaded: file.size, phase: 'done' });
+        return item;
+      } catch (e) {
+        if (!this.uploadId && target.kind === 'keep-both' && isNameConflict(e) && n <= 50) continue;
+        this.controller.abort();
+        if (permanentUploadError(e)) await this.cancel().catch(() => {});
+        throw e;
+      }
+    }
+  }
+
 }

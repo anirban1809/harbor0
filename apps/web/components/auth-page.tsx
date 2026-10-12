@@ -390,29 +390,7 @@ export function AuthPage({
       <div className="auth-theme">
         <ThemeToggle />
       </div>
-      <section className="auth-story">
-        <div className="brand">
-          <BrandLogo />
-        </div>
-        <div>
-          <h1>Your files, everywhere.</h1>
-          <p>Store, sync, and share files across every device you own.</p>
-          <ul className="auth-features">
-            {features.map(({ icon: Icon, text }) => (
-              <li key={text}>
-                <span className="auth-feature-icon">
-                  <Icon aria-hidden="true" />
-                </span>
-                {text}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="auth-foot">
-          <ShieldCheck aria-hidden="true" />
-          Files are private unless you share them.
-        </div>
-      </section>
+      <AuthStory />
       <section className="auth-form">
         <div>
           <h2>{title}</h2>
@@ -703,5 +681,34 @@ export function AuthPage({
         </div>
       </section>
     </main>
+  );
+}
+
+/** The sign-in pages' left side; the encryption unlock screens share it. */
+export function AuthStory() {
+  return (
+    <section className="auth-story">
+      <div className="brand">
+        <BrandLogo />
+      </div>
+      <div>
+        <h1>Your files, everywhere.</h1>
+        <p>Store, sync, and share files across every device you own.</p>
+        <ul className="auth-features">
+          {features.map(({ icon: Icon, text }) => (
+            <li key={text}>
+              <span className="auth-feature-icon">
+                <Icon aria-hidden="true" />
+              </span>
+              {text}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="auth-foot">
+        <ShieldCheck aria-hidden="true" />
+        Files are private unless you share them.
+      </div>
+    </section>
   );
 }
