@@ -292,3 +292,37 @@ it('backs up the files waiting for the quiet hour right away on demand', async (
   expect(journal.jobs()).toHaveLength(0);
   expect(calls.find((c) => c.url.endsWith('/runs'))?.body.trigger).toBe('MANUAL');
 });
+it('retries a failed file with a new operation ID even when no upload was recorded', async () => {
+  await file('old.txt', BACKUP_QUIET_MS + 5000);
+  perform.mockImplementationOnce(async (_r, job) => {
+    job.payload.upload = { operationId: 'first' };
+    throw new ApiError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This operation ID was used for a different request.',
+      409,
+    );
+  });
+  await process();
+  const [job] = journal.jobs();
+  expect(job.payload.upload.operationId).not.toBe('first');
+  expect(job.payload.upload.uploadId).toBeUndefined();
+  expect(calls.filter((c) => c.url.endsWith('/complete')).at(-1)?.body.error).toContain(
+    'operation ID',
+  );
+});
+it('keeps the run and operation ID when a request times out', async () => {
+  await file('old.txt', BACKUP_QUIET_MS + 5000);
+  perform.mockImplementationOnce(async (_r, job) => {
+    job.payload.upload = { operationId: 'first' };
+    journal.saveJob(job);
+    throw Object.assign(new Error('Sync stopped responding and was restarted.'), {
+      name: 'TimeoutError',
+    });
+  });
+  await expect(process()).rejects.toThrow('stopped responding');
+  expect(calls.some((c) => c.url.endsWith('/complete'))).toBe(false);
+  expect(journal.jobs()[0].payload.upload.operationId).toBe('first');
+  await process();
+  expect(new Set(calls.filter((c) => c.url.endsWith('/runs')).map((c) => c.body.id)).size).toBe(1);
+  expect(journal.jobs()).toHaveLength(0);
+});

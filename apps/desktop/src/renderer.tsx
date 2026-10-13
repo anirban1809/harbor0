@@ -75,7 +75,13 @@ import {
   type FolderActivity,
 } from '../../web/components/drive-account';
 import { AddSyncFolderDialog, OpenFolderProgress, SyncFolderPanel } from './sync-page';
-import { folderState, syncRequirements, type SyncFolder } from './sync-state';
+import {
+  folderState,
+  syncRequirements,
+  type SyncFolder,
+  type SyncIssue,
+  type SyncIssueCode,
+} from './sync-state';
 import { SyncNotifications } from './sync-notifications';
 import { SharedSyncInvitations } from './sync-sharing';
 import { IncomingDialog } from './incoming-dialog';
@@ -93,6 +99,14 @@ import { RecipientPicker, type RecipientKind } from '../../web/components/recipi
 import { ActionsMenu, MenuItem, MenuSeparator } from '../../web/components/ui/menu';
 import '../../web/app/globals.css';
 import './desktop.css';
+// Problems that leave a backup folder unreadable, and their one-line label.
+const UNAVAILABLE: Partial<Record<SyncIssueCode, string>> = {
+  DRIVE_MISSING: 'Drive not connected',
+  WRONG_DRIVE: 'Wrong drive connected',
+  SHARE_UNAVAILABLE: 'Network share unavailable',
+  FOLDER_MISSING: 'Folder not found',
+  PERMISSION_DENIED: 'Can’t read folder',
+};
 const bridge = window.harbor;
 const request = (path: string, method = 'GET', body?: unknown) =>
   bridge.request({ path, method, body });
@@ -749,8 +763,21 @@ function App() {
     }
     return result;
   })();
+  // A backup folder this computer can't read right now, and why, in the words shown to the user.
+  const unavailable = (root: SyncFolder) => {
+    const issue = sync?.issues.find(
+      (item: SyncIssue) => item.rootId === root.id && !item.jobId && UNAVAILABLE[item.code],
+    );
+    return issue
+      ? { label: UNAVAILABLE[issue.code as SyncIssueCode]!, message: issue.message as string }
+      : undefined;
+  };
   const backupDesktop: BackupDesktop = {
-    roots: backupRoots.map((root) => ({ ...root, progress: sync?.progress?.[root.id] })),
+    roots: backupRoots.map((root) => ({
+      ...root,
+      progress: sync?.progress?.[root.id],
+      unavailable: unavailable(root),
+    })),
     backup: (id) => bridge.backupNow({ id }),
     disconnect: (id) => bridge.disconnectBackup({ id }),
     archive: (id, archived) => bridge.archiveBackup({ id, archived }),

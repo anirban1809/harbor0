@@ -20,6 +20,8 @@ type PendingRun = {
   error?: string;
 };
 const ARCHIVE_ATTEMPTS = 3;
+// Files looked up at once while scanning, which matters most on high-latency shares.
+const SCAN_BATCH = 16;
 // Telling harbor0 a folder with nothing new is still backed up happens at most this often.
 const CHECKED_MS = 12 * 3600_000;
 // A request the server will keep refusing; retrying every pass would stall all other folders.
@@ -47,6 +49,9 @@ export class FolderBackups {
   constructor(
     private api: ApiClient,
     private journal: Journal,
+    // Time-limits looks at a folder on a network share; see SyncEngine.onShare.
+    private onShare: <T>(root: Root, work: () => Promise<T>) => Promise<T> = (_root, work) =>
+      work(),
   ) {}
   /** Files saved and files in the backup run under way, if one is. */
   run(rootId: string) {
@@ -74,16 +79,47 @@ export class FolderBackups {
     if (changed) this.journal.set(`backup-now:${root.id}`, true);
     return changed;
   }
+  /**
+   * Queue every file that may have changed. A file with the size and modified time it had when
+   * it was saved is skipped without being read, which on a network share saves reading it all.
+   */
   private async scan(root: Root, relative = '') {
     const directory = contained(root.localPath, relative);
-    const info = await lstat(directory);
+    const info = await this.onShare(root, () => lstat(directory));
     if (info.isSymbolicLink() || !info.isDirectory())
       throw new Error('Backup folder is unavailable.');
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entries = await this.onShare(root, () => readdir(directory, { withFileTypes: true }));
+    const files: string[] = [];
+    for (const entry of entries) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
       if (this.ignored(root, name) || entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) await this.scan(root, name);
-      else if (entry.isFile()) this.journal.enqueue(root.id, name, 'upsert');
+      else if (entry.isFile()) files.push(name);
+    }
+    for (let start = 0; start < files.length; start += SCAN_BATCH) {
+      const batch = files.slice(start, start + SCAN_BATCH);
+      const infos = await Promise.all(
+        batch.map((name) =>
+          this.onShare(root, () => lstat(contained(root.localPath, name))).catch(
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === 'SHARE_UNAVAILABLE') throw error;
+              return null;
+            },
+          ),
+        ),
+      );
+      for (const [index, name] of batch.entries()) {
+        const file = infos[index];
+        const known = this.journal.file(root.id, name);
+        if (
+          file &&
+          known?.type === 'FILE' &&
+          known.sizeBytes === file.size &&
+          known.mtimeMs === file.mtimeMs
+        )
+          continue;
+        this.journal.enqueue(root.id, name, 'upsert');
+      }
     }
   }
   /**
@@ -261,13 +297,19 @@ export class FolderBackups {
             }
           } catch (error) {
             // Retain upload state and the run for network retries, including acknowledgement loss.
-            if (error instanceof TypeError || (error as { status?: number }).status! >= 500)
+            // Timed-out requests (including the stall watchdog's abort) may have been applied.
+            if (
+              error instanceof TypeError ||
+              (error as Error).name === 'TimeoutError' ||
+              (error as { status?: number }).status! >= 500
+            )
               throw error;
             if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
-            if (job.payload.upload?.uploadId) {
+            if (job.payload.upload?.uploadId)
               await cancelUpload(this.api, job.payload.upload.uploadId);
-              job.payload.upload = { operationId: crypto.randomUUID() };
-            }
+            // The retry belongs to a new run, a different request to the server, so it needs a new
+            // operation ID even when no upload was recorded: one may have been made unseen.
+            if (job.payload.upload) job.payload.upload = { operationId: crypto.randomUUID() };
             job.attempts++;
             job.payload.retryAfter = Date.now() + 60000;
             job.error = (error as Error).message;

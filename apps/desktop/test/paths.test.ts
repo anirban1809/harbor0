@@ -46,7 +46,14 @@ it('refuses to follow symlinks in destination paths', async () => {
   }
 });
 it('treats OS metadata files as internal at any depth without hiding ordinary dotfiles', () => {
-  for (const name of ['.DS_Store', 'a/b/.DS_Store', 'a/._photo.jpg', 'Thumbs.db', 'a/desktop.ini'])
+  for (const name of [
+    '.DS_Store',
+    'a/b/.DS_Store',
+    'a/._photo.jpg',
+    'Thumbs.db',
+    'a/desktop.ini',
+    '.localized',
+  ])
     expect(internalPath(name)).toBe(true);
   expect(internalPath('.Spotlight-V100/Store-V2/index')).toBe(true);
   for (const name of ['.gitignore', '.env', 'a/DS_Store.txt', 'thumbs.db.bak', 'notes.txt'])

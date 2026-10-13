@@ -788,7 +788,7 @@ app
           input.mode === 'sync' ? 'Choose your harbor0 sync folder' : 'Choose a folder to back up',
       });
       if (selection.canceled) return null;
-      const localPath = await localDirectory(selection.filePaths[0]);
+      const localPath = await localDirectory(selection.filePaths[0], 'backup');
       profiles.assertAvailable(localPath, journal);
       let remoteId: string | null = null;
       let backupId: string | undefined;

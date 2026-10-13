@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { Volume } from './volumes';
 export type Root = {
   id: string;
   localPath: string;
@@ -20,6 +21,10 @@ export type Root = {
   lastSyncedAt?: string;
   // Backup folders only: why the last run skipped files or failed; cleared by a clean run.
   lastBackupError?: string;
+  // The removable or secondary drive the folder is on, recorded when it is first seen there.
+  volume?: Volume;
+  // On a network share, which is checked with time limits; kept while the share is away.
+  network?: boolean;
 };
 export type LocalFile = {
   rootId: string;

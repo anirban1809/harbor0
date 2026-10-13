@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FolderBackups, backupReady, type BackupConversion } from './backups';
 import { SyncReceipts } from './sync-receipts';
-import { mkdir, lstat, rename, rm, access, readdir } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, access, readdir, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
   stickyIssue,
@@ -13,6 +13,7 @@ import {
   type SyncActivityItem,
 } from './sync-state';
 import { watchTree, type TreeWatcher } from './local-watcher';
+import { findVolume, isNetwork, volumeId, volumeLabel, volumeRoot, type Volume } from './volumes';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { DriveItem } from '@harbor/contracts';
 import { Journal, type Root, type LocalJob, type LocalFile } from './journal';
@@ -46,6 +47,15 @@ function foldersDeletedLast(jobs: LocalJob[], isFolder: (job: LocalJob) => boole
 }
 // A pass waiting this long on one server request is aborted and started again.
 export const STALL_TIMEOUT = 3 * 60_000;
+// How often a folder whose drive is away looks for it mounted somewhere else.
+export const VOLUME_SEARCH_INTERVAL = 10_000;
+// A network share that takes longer than this to answer is treated as unavailable.
+export const NETWORK_TIMEOUT = 15_000;
+// Network shares are rescanned less often: every look is a round trip, and their own changes
+// made from other computers are not reported by the OS anyway.
+export const NETWORK_SCAN_INTERVAL = 30 * 60_000;
+// Files looked up at once while scanning, which matters most on high-latency shares.
+const SCAN_BATCH = 16;
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
 const retryDelay = (attempts: number) => Math.min(300_000, 2000 * 2 ** Math.min(attempts, 10));
 // Remote checks start every 2s and back off to 30s while nothing changes;
@@ -66,6 +76,12 @@ export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
   private watchers = new Map<string, TreeWatcher>();
+  // When each folder whose drive is away may next look for that drive at another mount point.
+  private nextVolumeSearch = new Map<string, number>();
+  // Folders on network shares, by root id, with the share they are on.
+  private shares = new Map<string, string>();
+  // Shares with a request still stuck after timing out: nothing more is sent until it returns.
+  private stalledShares = new Set<string>();
   private scannedAt = new Map<string, number>();
   private api: ApiClient;
   private tickController = new AbortController();
@@ -144,7 +160,7 @@ export class SyncEngine {
       }
     });
     this.receipts = new SyncReceipts(api, journal);
-    this.backups = new FolderBackups(this.api, journal);
+    this.backups = new FolderBackups(this.api, journal, (root, work) => this.onShare(root, work));
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
     // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
     this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
@@ -177,7 +193,8 @@ export class SyncEngine {
       if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
       // An archived folder has no local copy to watch until it is restored.
       if (root.archive === 'archived' || root.archive === 'restoring') continue;
-      if (await this.checkRoot(root)) await this.watch(root);
+      const checked = await this.checkRoot(root);
+      if (checked) await this.watch(checked);
     }
     this.timer = setInterval(() => void this.run(), REMOTE_POLL_MIN);
     this.watchdog = setInterval(() => this.checkStalled(), 15_000);
@@ -368,27 +385,37 @@ export class SyncEngine {
     const walk = async (relative: string) => {
       let entries;
       try {
-        entries = await readdir(relative ? contained(root.localPath, relative) : root.localPath, {
-          withFileTypes: true,
-        });
+        const directory = relative ? contained(root.localPath, relative) : root.localPath;
+        entries = await this.onShare(root, () => readdir(directory, { withFileTypes: true }));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
         throw error;
       }
-      for (const entry of entries) {
+      const names = entries
+        .filter((entry) => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+        .map((entry) => (relative ? `${relative}/${entry.name}` : entry.name))
+        .filter((name) => !this.ignored(root, name));
+      for (let start = 0; start < names.length; start += SCAN_BATCH) {
         if (this.stopped || this.state.paused) return;
-        const name = relative ? `${relative}/${entry.name}` : entry.name;
-        if (this.ignored(root, name) || entry.isSymbolicLink()) continue;
-        if (!entry.isDirectory() && !entry.isFile()) continue;
-        let info: Stats;
-        try {
-          info = await lstat(contained(root.localPath, name));
-        } catch {
-          continue;
+        const batch = names.slice(start, start + SCAN_BATCH);
+        const infos = await Promise.all(
+          batch.map((name) =>
+            this.onShare(root, () => lstat(contained(root.localPath, name))).catch(
+              (error: NodeJS.ErrnoException) => {
+                // A share that stopped answering ends the scan; one vanished file does not.
+                if (error.code === 'SHARE_UNAVAILABLE') throw error;
+                return null;
+              },
+            ),
+          ),
+        );
+        for (const [index, name] of batch.entries()) {
+          const info: Stats | null = infos[index];
+          if (!info) continue;
+          seen.add(name);
+          if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
+          if (info.isDirectory()) await walk(name);
         }
-        seen.add(name);
-        if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
-        if (entry.isDirectory()) await walk(name);
       }
     };
     await walk('');
@@ -571,7 +598,14 @@ export class SyncEngine {
     if (!root) throw new Error('Backup folder was not found on this computer.');
     if (this.state.paused) throw new Error('Resume backups before backing up now.');
     if (root.archive) throw new Error('Restore this archived folder before backing up.');
-    const changes = await this.backups.request(root);
+    const checked = await this.checkRoot(root);
+    if (!checked) {
+      this.persistIssues();
+      this.emit();
+      const issue = this.state.issues.find((item) => item.rootId === id && !item.jobId);
+      throw new Error(issue?.message ?? 'This folder is unavailable.');
+    }
+    const changes = await this.backups.request(checked);
     if (changes) {
       // Saying "Backing up" and failing a moment later helps no one: check there is room first.
       // Offline, the run simply waits for the connection as before.
@@ -607,7 +641,14 @@ export class SyncEngine {
       if (!previous) throw new Error('Folder was not found.');
       if (previous.localPath !== root.localPath || previous.remoteId !== root.remoteId)
         this.journal.resetRootFiles(root.id);
-      this.journal.root({ ...root, needsReconcile: root.mode === 'sync' });
+      // A newly chosen location may be on another drive; it is recorded when next checked.
+      const same = previous.localPath === root.localPath;
+      this.journal.root({
+        ...root,
+        volume: same ? previous.volume : undefined,
+        network: same ? previous.network : undefined,
+        needsReconcile: root.mode === 'sync',
+      });
       this.rootRetry.delete(root.id);
       this.state.issues = this.state.issues.filter(
         (issue) => issue.rootId !== root.id || stickyIssue(issue),
@@ -812,18 +853,149 @@ export class SyncEngine {
       this.emit();
     }
   }
-  private async checkRoot(root: Root) {
+  /**
+   * The folder as it can be used now — moved, when its drive came back at another mount point —
+   * or null when it is unavailable, with the reason recorded as the folder's issue.
+   */
+  private async checkRoot(root: Root): Promise<Root | null> {
+    const mount = volumeRoot(root.localPath);
+    // A share that is away is missing from the mount table, so its kind is remembered.
+    const network = !!mount && ((await isNetwork(mount)) || !!root.network);
+    if (network !== !!root.network) {
+      root = { ...root, network: network || undefined };
+      this.journal.root(root);
+    }
+    if (network) this.shares.set(root.id, mount);
+    else this.shares.delete(root.id);
     try {
-      const info = await lstat(root.localPath);
-      if (!info.isDirectory() || info.isSymbolicLink())
-        throw Object.assign(new Error('The local folder is unavailable.'), { code: 'ENOTDIR' });
-      await access(root.localPath, constants.R_OK | constants.W_OK);
-      return true;
+      return await this.onShare(root, () => this.checkLocation(root));
     } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'DRIVE_MISSING' || code === 'WRONG_DRIVE' || code === 'SHARE_UNAVAILABLE') {
+        // Whatever is mounted there now is not this folder; nothing of it may be queued.
+        await this.watchers.get(root.id)?.close();
+        this.watchers.delete(root.id);
+        this.scannedAt.delete(root.id);
+      }
       if (root.mode === 'sync') this.journal.root({ ...root, needsReconcile: true });
       this.issue(root.id, error);
-      return false;
+      return null;
     }
+  }
+  private async checkLocation(root: Root) {
+    root = await this.checkVolume(root);
+    const info = await lstat(root.localPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      throw Object.assign(
+        new Error(
+          `“${path.basename(root.localPath)}” can’t be found at ${root.localPath}. It may have been moved, renamed or deleted.`,
+        ),
+        { code: 'ENOENT' },
+      );
+    });
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw Object.assign(new Error('The local folder is unavailable.'), { code: 'ENOTDIR' });
+    // Backing up only reads the folder, so a read-only drive is fine.
+    await access(
+      root.localPath,
+      root.mode === 'backup' ? constants.R_OK : constants.R_OK | constants.W_OK,
+    );
+    return root;
+  }
+  /**
+   * Runs one look at a folder's files, time-limited when the folder is on a network share. A
+   * share that stopped answering would otherwise hold up every other folder; once a request
+   * times out, nothing more is sent to that share until it returns.
+   */
+  private async onShare<T>(root: Root, work: () => Promise<T>): Promise<T> {
+    const share = this.shares.get(root.id);
+    if (!share) return work();
+    if (this.stalledShares.has(share)) throw this.shareUnavailable(root, share, 'responding');
+    const task = work();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.stalledShares.add(share);
+        void task.then(
+          () => this.stalledShares.delete(share),
+          () => this.stalledShares.delete(share),
+        );
+        reject(this.shareUnavailable(root, share, 'responding'));
+      }, NETWORK_TIMEOUT);
+    });
+    try {
+      return await Promise.race([task, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  private shareUnavailable(root: Root, share: string, state: 'connected' | 'responding') {
+    const resumes = root.mode === 'backup' ? 'Backups resume' : 'Syncing resumes';
+    return Object.assign(
+      new Error(
+        `The network share “${volumeLabel(share)}” isn’t ${state}. ${resumes} when it’s back.`,
+      ),
+      { code: 'SHARE_UNAVAILABLE' },
+    );
+  }
+  /**
+   * A folder on a removable or secondary drive belongs to that drive: once recorded, another
+   * drive mounted at the same place (same volume name on macOS, same letter on Windows) is
+   * refused, and the folder follows its own drive to wherever it is mounted now.
+   */
+  private async checkVolume(root: Root) {
+    const mount = volumeRoot(root.localPath);
+    if (!mount) return root;
+    const connected = !!(await stat(mount).catch(() => null));
+    // Null for a drive without one (a network share, some file systems): those are not checked.
+    const id = connected ? await volumeId(mount) : null;
+    const recorded = root.volume?.root === mount ? root.volume : undefined;
+    if (!recorded) {
+      // First seen here, or the user chose a new location: this is the folder's drive.
+      if (id && (await lstat(root.localPath).catch(() => null))?.isDirectory()) {
+        root = { ...root, volume: { root: mount, id } };
+        this.journal.root(root);
+      }
+      if (connected) return root;
+    } else if (id === recorded.id || (connected && !id)) return root;
+    else {
+      const moved = await this.followVolume(root, recorded);
+      if (moved) return moved;
+    }
+    if (!connected && this.shares.has(root.id))
+      throw this.shareUnavailable(root, mount, 'connected');
+    const name = volumeLabel(mount);
+    const resumes = root.mode === 'backup' ? 'Backups resume' : 'Syncing resumes';
+    throw Object.assign(
+      new Error(
+        connected
+          ? `A different drive is connected as “${name}”. ${resumes} when you connect the drive this folder is on.`
+          : `The drive “${name}” isn’t connected. ${resumes} when you connect it.`,
+      ),
+      { code: connected ? 'WRONG_DRIVE' : 'DRIVE_MISSING' },
+    );
+  }
+  private async followVolume(root: Root, volume: Volume) {
+    if (Date.now() < (this.nextVolumeSearch.get(root.id) ?? 0)) return null;
+    this.nextVolumeSearch.set(root.id, Date.now() + VOLUME_SEARCH_INTERVAL);
+    const found = await findVolume(volume.id);
+    if (!found || found === volume.root) return null;
+    const localPath = path.join(found, path.relative(volume.root, root.localPath));
+    const info = await lstat(localPath).catch(() => null);
+    if (!info?.isDirectory() || info.isSymbolicLink()) return null;
+    const moved: Root = { ...root, localPath, volume: { root: found, id: volume.id } };
+    try {
+      this.validateRoot(moved);
+    } catch {
+      return null;
+    }
+    await this.watchers.get(root.id)?.close();
+    this.watchers.delete(root.id);
+    this.scannedAt.delete(root.id);
+    this.nextVolumeSearch.delete(root.id);
+    this.journal.root(moved);
+    this.emit();
+    return moved;
   }
   async reconcile(root: Root) {
     if (root.mode === 'backup' || root.paused || this.state.paused || this.stopped) return;
@@ -1039,11 +1211,19 @@ export class SyncEngine {
         if (root.archive === 'archived') continue;
         if (root.archive === 'restoring' && !root.paused)
           await mkdir(root.localPath, { recursive: true });
-        if (root.paused || !(await this.checkRoot(root))) continue;
+        if (root.paused) continue;
+        const checked = await this.checkRoot(root);
+        if (!checked) continue;
+        root = checked;
         if (
           root.mode === 'sync' &&
           this.state.issues.some(
-            (issue) => issue.rootId === root.id && issue.code === 'FOLDER_MISSING' && !issue.scope,
+            (issue) =>
+              issue.rootId === root.id &&
+              ['FOLDER_MISSING', 'DRIVE_MISSING', 'WRONG_DRIVE', 'SHARE_UNAVAILABLE'].includes(
+                issue.code,
+              ) &&
+              !issue.scope,
           )
         ) {
           // A disappearing volume can generate unlink events for every child.
@@ -1052,11 +1232,21 @@ export class SyncEngine {
         }
         if (!this.watchers.has(root.id)) await this.watch(root);
         // A folder being removed or restored has no settled local copy to compare.
+        const interval = this.shares.has(root.id) ? NETWORK_SCAN_INTERVAL : LOCAL_SCAN_INTERVAL;
         if (
           (!root.archive || root.archive === 'pending') &&
-          Date.now() - (this.scannedAt.get(root.id) ?? 0) >= LOCAL_SCAN_INTERVAL
-        )
-          await this.scanLocal(root);
+          Date.now() - (this.scannedAt.get(root.id) ?? 0) >= interval
+        ) {
+          try {
+            await this.scanLocal(root);
+          } catch (error) {
+            if ((error as { code?: string }).code !== 'SHARE_UNAVAILABLE') throw error;
+            await this.watchers.get(root.id)?.close();
+            this.watchers.delete(root.id);
+            this.issue(root.id, error);
+            continue;
+          }
+        }
         available.add(root.id);
         this.currentRootId = root.id;
         // Keep a problem visible while its file or folder is still waiting to retry.

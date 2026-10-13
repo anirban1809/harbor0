@@ -69,6 +69,8 @@ export type LocalBackupRoot = {
   localPathDisplayName?: string;
   // Percent complete of the backup run under way on this device.
   progress?: number;
+  // Why this device can't read the folder right now, such as its drive being disconnected.
+  unavailable?: { label: string; message: string };
 };
 /** What the desktop app can do with a folder it backs up itself. */
 export type BackupDesktop = {
@@ -343,40 +345,46 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                   detail:
                     'No new versions are saved until you resume. Saved versions are still here.',
                 }
-              : local?.progress !== undefined
+              : local?.unavailable
                 ? {
-                    tone: 'busy',
-                    label: 'Backing up',
-                    detail: `Saving changed files · ${local.progress}% complete`,
+                    tone: 'error',
+                    label: local.unavailable.label,
+                    detail: local.unavailable.message,
                   }
-                : latestRun?.state === 'RUNNING'
+                : local?.progress !== undefined
                   ? {
                       tone: 'busy',
                       label: 'Backing up',
-                      detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
+                      detail: `Saving changed files · ${local.progress}% complete`,
                     }
-                  : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+                  : latestRun?.state === 'RUNNING'
                     ? {
-                        tone: 'error',
-                        label: 'Needs attention',
-                        detail: latestRun?.error
-                          ? `The last backup didn’t finish: ${latestRun.error}`
-                          : `The last backup didn’t finish. It will try again automatically.`,
+                        tone: 'busy',
+                        label: 'Backing up',
+                        detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
                       }
-                    : lastGoodRun
+                    : root.state === 'ERROR' || latestRun?.state === 'FAILED'
                       ? {
-                          tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
-                          label:
-                            latestRun?.state === 'PARTIAL' ? 'Some files skipped' : 'Backed up',
-                          detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                          tone: 'error',
+                          label: 'Needs attention',
+                          detail: latestRun?.error
+                            ? `The last backup didn’t finish: ${latestRun.error}`
+                            : `The last backup didn’t finish. It will try again automatically.`,
                         }
-                      : {
-                          tone: 'ok',
-                          label: 'Waiting',
-                          detail: historyLoading
-                            ? 'Checking backup status…'
-                            : 'The first backup runs once files have been unchanged for an hour.',
-                        };
+                      : lastGoodRun
+                        ? {
+                            tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
+                            label:
+                              latestRun?.state === 'PARTIAL' ? 'Some files skipped' : 'Backed up',
+                            detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                          }
+                        : {
+                            tone: 'ok',
+                            label: 'Waiting',
+                            detail: historyLoading
+                              ? 'Checking backup status…'
+                              : 'The first backup runs once files have been unchanged for an hour.',
+                          };
   const historyButton = (
     <Button size="sm" variant="ghost" onClick={() => setHistoryOpen(true)}>
       <History />
@@ -449,7 +457,7 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
           <div className="backup-actions backup-summary-actions">
             <Button
               size="sm"
-              disabled={busy || local.paused || status.tone === 'busy'}
+              disabled={busy || local.paused || status.tone === 'busy' || !!local.unavailable}
               onClick={() => {
                 let changes = 0;
                 void act(

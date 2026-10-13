@@ -51,7 +51,14 @@ function ago(value?: string | null) {
     });
 }
 const needsAttention = (state: string) =>
-    ['Action required', 'Conflict', 'Folder unavailable'].includes(state);
+    [
+        'Action required',
+        'Conflict',
+        'Folder unavailable',
+        'Drive not connected',
+        'Wrong drive',
+        'Share unavailable',
+    ].includes(state);
 function StateIcon({ state }: { state: string; }) {
     if (state === 'Up to date') return <Check aria-hidden="true" />;
     if (state === 'Paused') return <Pause aria-hidden="true" />;
@@ -118,6 +125,11 @@ export function OpenFolderProgress({
 const issueText: Record<SyncIssue['code'], string> = {
     MAPPING_REQUIRED: 'Finish setting up this local folder to start syncing.',
     FOLDER_MISSING: 'The local folder can no longer be found.',
+    DRIVE_MISSING: 'The drive this folder is on isn’t connected. Syncing resumes when you connect it.',
+    WRONG_DRIVE:
+        'A different drive is connected where this folder’s drive was. Syncing resumes when you connect the right one.',
+    SHARE_UNAVAILABLE:
+        'The network share this folder is on isn’t available. Syncing resumes when it’s back.',
     PERMISSION_DENIED: 'harbor0 no longer has permission to access this folder.',
     FILE_IN_USE:
         'This file is open in another app. Once that app closes it, syncing retries automatically.',
@@ -158,7 +170,7 @@ export function SyncProblem({
                         ? 'harbor0 does not have permission to read or change this item. Once its permissions are fixed, syncing retries automatically.'
                         : issue.code === 'STORAGE_QUOTA_EXCEEDED'
                             ? storageText(issue, root)
-                            : issue.code === 'SYNC_DETACHED'
+                            : ['SYNC_DETACHED', 'DRIVE_MISSING', 'WRONG_DRIVE', 'SHARE_UNAVAILABLE'].includes(issue.code)
                                 ? issue.message
                                 : issueText[issue.code]}
                 </p>

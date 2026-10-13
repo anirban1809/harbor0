@@ -2,6 +2,9 @@ import type { Root } from './journal';
 export type SyncIssueCode =
   | 'MAPPING_REQUIRED'
   | 'FOLDER_MISSING'
+  | 'DRIVE_MISSING'
+  | 'WRONG_DRIVE'
+  | 'SHARE_UNAVAILABLE'
   | 'PERMISSION_DENIED'
   | 'FILE_IN_USE'
   | 'STORAGE_QUOTA_EXCEEDED'
@@ -90,6 +93,9 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
     state.issues?.filter(
       (issue) => issue.rootId === root.id && issue.code !== 'FOLDER_RECOVERED',
     ) ?? [];
+  if (issues.some((issue) => issue.code === 'DRIVE_MISSING')) return 'Drive not connected';
+  if (issues.some((issue) => issue.code === 'WRONG_DRIVE')) return 'Wrong drive';
+  if (issues.some((issue) => issue.code === 'SHARE_UNAVAILABLE')) return 'Share unavailable';
   if (issues.some((issue) => issue.code === 'FOLDER_MISSING')) return 'Folder unavailable';
   if (issues.some((issue) => issue.code === 'CONFLICT')) return 'Conflict';
   if (issues.length) return 'Action required';
@@ -152,6 +158,8 @@ export function syncIssueCode(error: unknown, item = false): SyncIssueCode {
   const code = (error as { code?: string })?.code;
   // A single missing file is not a missing sync folder.
   if (code === 'ENOENT' || code === 'ENOTDIR') return item ? 'SYNC_ERROR' : 'FOLDER_MISSING';
+  if (code === 'DRIVE_MISSING' || code === 'WRONG_DRIVE' || code === 'SHARE_UNAVAILABLE')
+    return code;
   // Windows: another app has the file open without sharing it, as Office and Outlook do.
   if (code === 'EBUSY') return 'FILE_IN_USE';
   if (code === 'EACCES' || code === 'EPERM') return 'PERMISSION_DENIED';

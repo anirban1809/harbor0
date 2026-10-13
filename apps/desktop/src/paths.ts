@@ -28,6 +28,7 @@ export function legacySafeSegment(name: string, id: string) {
 // OS and file-manager bookkeeping that should never be synced or backed up.
 const METADATA_NAMES = new Set([
   '.ds_store',
+  '.localized',
   '.appledouble',
   '.lsoverride',
   '.spotlight-v100',

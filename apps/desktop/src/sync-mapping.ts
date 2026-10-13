@@ -28,11 +28,12 @@ export async function cloudLocation(api: ApiClient, id: string | null): Promise<
     trail,
   };
 }
-export async function localDirectory(selected: string) {
+/** Backups only read the folder, so they can come from a read-only drive; syncing writes. */
+export async function localDirectory(selected: string, mode: 'sync' | 'backup' = 'sync') {
   const info = await lstat(selected);
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error('Choose a real local folder, not a shortcut.');
   const resolved = await realpath(selected);
-  await access(resolved, constants.R_OK | constants.W_OK);
+  await access(resolved, mode === 'backup' ? constants.R_OK : constants.R_OK | constants.W_OK);
   return resolved;
 }
