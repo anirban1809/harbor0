@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/api';
 import { DevelopmentAuth } from '../src/auth';
+import { encryptingClient } from '../src/e2ee';
 import { StorageService, userPK } from '../src/domain';
 import { FLAG_PK, emptyFlag } from '../src/flags';
 import { MemoryRepository, Transaction, transact } from '../src/repository';
@@ -327,5 +328,16 @@ describe('end-to-end encryption', () => {
     });
     expect(plain.status).toBe(200);
     expect((await call('POST', '/v1/e2ee/enroll', web, enrollBody())).status).toBe(200);
+  });
+});
+
+describe('apps that can open encrypted accounts', () => {
+  it('include test builds of a version that can', () => {
+    const mac = (appVersion: string) => encryptingClient({ platform: 'MACOS', appVersion });
+    expect(mac('0.1.9-test')).toBe(true);
+    expect(mac('0.1.9-test.2')).toBe(true);
+    expect(mac('0.1.7')).toBe(true);
+    expect(mac('0.1.6')).toBe(false);
+    expect(encryptingClient({ platform: 'IOS', appVersion: '9.9.9' })).toBe(false);
   });
 });

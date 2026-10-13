@@ -14,6 +14,7 @@ import {
 import type { Account, StorageService } from './domain';
 import { emptied, userPK } from './domain';
 import { assert } from './errors';
+import { atLeast } from './flags';
 import { Transaction, transact } from './repository';
 
 /** The account's wrapped keys; the server can unwrap none of them. */
@@ -48,11 +49,8 @@ export function encryptingClient(device?: Pick<Device, 'platform' | 'appVersion'
   const min = E2EE_CLIENTS[device.platform];
   if (min === undefined) return false;
   if (min === '0') return true;
-  const parts = (v: string) => v.split('.').map(Number);
-  const [have, need] = [parts(device.appVersion ?? '0'), parts(min)];
-  for (let i = 0; i < Math.max(have.length, need.length); i++)
-    if ((have[i] ?? 0) !== (need[i] ?? 0)) return (have[i] ?? 0) > (need[i] ?? 0);
-  return true;
+  // Test builds such as 0.1.9-test count as their release.
+  return atLeast(device.appVersion, min);
 }
 export const encryptedAccount = (account?: Pick<Account, 'e2ee'>) => !!account?.e2ee?.enabledAt;
 /** Being turned off: files are decrypted, so unencrypted names and uploads are allowed again. */
