@@ -84,7 +84,8 @@ port.on('message', (message: DavHostMessage) => {
       break;
     }
     case 'forget':
-      dav?.forget();
+      // A change elsewhere, or this server's own upload coming back: read again behind.
+      dav?.refresh();
       break;
     case 'stop':
       // Empty files still waiting for content are uploaded before the thread ends.

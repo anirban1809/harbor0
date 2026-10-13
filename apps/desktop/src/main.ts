@@ -211,7 +211,7 @@ async function startWebdav() {
       username: WEBDAV_USERNAME,
       password: webdavPasswordShown,
       mountSecret: webdavMountSecret,
-      // Live updates forget listings as soon as something changes elsewhere.
+      // Live updates have listings read again as soon as something changes elsewhere.
       listingTtlMs: 60_000,
       port,
       tempDir: webdavCacheDir(port),

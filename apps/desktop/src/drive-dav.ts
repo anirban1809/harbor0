@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { once } from 'node:events';
 import path from 'node:path';
@@ -69,6 +69,8 @@ export type DriveDavOptions = {
   mountSecret?: string;
   /** Where uploads wait while they go up; emptied as each one finishes. */
   tempDir: string;
+  /** The first wait before an upload that failed for a moment is tried again; it doubles. */
+  uploadRetryMs?: number;
   onError?: (error: unknown) => void;
 };
 
@@ -99,6 +101,42 @@ type LocalFile = {
 };
 const JUNK_MAX_BYTES = 1024 * 1024;
 const EMPTY_FILE_WAIT_MS = 30_000;
+
+/**
+ * A file still going up. Clients are answered as soon as it is saved here, so it is listed and
+ * served from `temp` until the upload is done.
+ */
+type Upload = {
+  entry: DavEntry;
+  temp: string;
+  modifiedAt?: Date;
+  /** A newer version of the file arrived before this one started; only that one goes up. */
+  superseded?: boolean;
+  /** Settles when the upload is done or has failed; never rejects. */
+  done: Promise<void>;
+};
+const UPLOAD_CONCURRENCY = 3;
+const UPLOAD_RETRIES = 8;
+const UPLOAD_RETRY_MS = 2_000;
+const UPLOAD_RETRY_MAX_MS = 60_000;
+/**
+ * Failures worth trying again: the network, the server, or the account locked for a moment.
+ * A full drive (507) stays full.
+ */
+const retryable = (error: unknown) =>
+  error instanceof ApiError
+    ? (error.status >= 500 && error.status !== 507) || [401, 423, 429].includes(error.status)
+    : !(error instanceof DavError);
+
+type Listing = {
+  at: number;
+  entries: Promise<DavEntry[]>;
+  /** Something changed elsewhere: served as it is while it's read again. */
+  stale?: boolean;
+  refreshing?: boolean;
+  /** Counts changes made here, so a reading begun before one doesn't undo it. */
+  version: number;
+};
 
 const LISTING_TTL_MS = 10_000;
 const READER_TTL_MS = 5 * 60_000;
@@ -159,9 +197,15 @@ export function parseRange(header: string | undefined, size: number) {
 
 export class DriveDav {
   private server?: Server;
-  private folders = new Map<string, { at: number; entries: Promise<DavEntry[]> }>();
+  private folders = new Map<string, Listing>();
   private readers = new Map<string, { at: number; reader: Promise<DavReader> }>();
   private local = new Map<string, Map<string, LocalFile>>();
+  private uploads = new Map<string, Map<string, Upload>>();
+  private uploading = 0;
+  private waitingToUpload: (() => void)[] = [];
+  private stopping = false;
+  /** Wakes uploads waiting to try again, so stopping doesn't wait out the pause. */
+  private wakers = new Set<() => void>();
   private quota?: { at: number; value: Promise<{ usedBytes: number; availableBytes: number }> };
   constructor(private options: DriveDavOptions) {}
 
@@ -176,6 +220,7 @@ export class DriveDav {
 
   async start() {
     await this.stop();
+    this.stopping = false;
     const server = createServer((req, res) => void this.handle(req, res));
     // Large uploads and downloads take as long as they take.
     server.requestTimeout = 0;
@@ -197,6 +242,10 @@ export class DriveDav {
   async stop() {
     const server = this.server;
     this.server = undefined;
+    // Uploads still going finish; those waiting to try again try once more, now.
+    this.stopping = true;
+    for (const wake of this.wakers) wake();
+    await this.settled();
     // Empty files still waiting for content stay as they were made.
     await Promise.all(
       [...this.local.values()].flatMap((files) =>
@@ -210,11 +259,27 @@ export class DriveDav {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
-  /** Forgets cached listings and open files, after a change made elsewhere. */
+  /** Forgets cached listings and open files, after the account's keys change. */
   forget() {
     this.folders.clear();
     this.readers.clear();
     this.quota = undefined;
+  }
+  /**
+   * Something changed elsewhere: listings are read again, and the ones held are served meanwhile
+   * so no request waits. The server says something changed, not what, and its own uploads are
+   * among the changes it reports.
+   */
+  refresh() {
+    for (const listing of this.folders.values()) listing.stale = true;
+  }
+  /** Waits for every upload under way. */
+  async settled() {
+    while (true) {
+      const uploads = [...this.uploads.values()].flatMap((files) => [...files.values()]);
+      if (!uploads.length) return;
+      await Promise.all(uploads.map((upload) => upload.done));
+    }
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse) {
@@ -358,20 +423,65 @@ export class DriveDav {
 
   // Listings and lookups
 
-  private children(folderId: string | null) {
+  /** A folder's items, with files still going up in place of what they replace. */
+  private async children(folderId: string | null) {
+    const entries = await this.stored(folderId);
+    const uploads = this.uploads.get(folderKey(folderId));
+    if (!uploads?.size) return entries;
+    return [
+      ...entries.filter((e) => !uploads.has(normalizeName(e.name))),
+      ...[...uploads.values()].map((upload) => upload.entry),
+    ];
+  }
+  /** A folder's items as the drive has them. */
+  private stored(folderId: string | null) {
     const key = folderKey(folderId);
     const cached = this.folders.get(key);
     const ttl = this.options.listingTtlMs ?? LISTING_TTL_MS;
-    if (cached && Date.now() - cached.at < ttl) return cached.entries;
+    if (cached && Date.now() - cached.at < ttl) {
+      if (cached.stale) this.reread(key, folderId, cached);
+      return cached.entries;
+    }
     const entries = this.options.drive.list(folderId);
-    this.folders.set(key, { at: Date.now(), entries });
+    this.folders.set(key, { at: Date.now(), entries, version: 0 });
     entries.catch(() => {
       if (this.folders.get(key)?.entries === entries) this.folders.delete(key);
     });
     return entries;
   }
+  /** Reads a stale listing again in the background; the next request gets the new one. */
+  private reread(key: string, folderId: string | null, listing: Listing) {
+    if (listing.refreshing) return;
+    listing.refreshing = true;
+    const version = listing.version;
+    this.options.drive.list(folderId).then(
+      (entries) => {
+        if (this.folders.get(key) !== listing) return;
+        // Changed here while it was read: it stays stale and is read again next time.
+        if (listing.version !== version) listing.refreshing = false;
+        else
+          this.folders.set(key, { at: Date.now(), entries: Promise.resolve(entries), version: 0 });
+      },
+      () => (listing.refreshing = false),
+    );
+  }
   private changed(...folderIds: (string | null)[]) {
     for (const id of folderIds) this.folders.delete(folderKey(id));
+  }
+  /** Puts an item just written here into its folder's listing, rather than reading it again. */
+  private added(entry: DavEntry) {
+    const key = folderKey(entry.parentId);
+    const listing = this.folders.get(key);
+    if (!listing) return;
+    listing.version++;
+    const entries = listing.entries.then((entries) => [
+      ...entries.filter((e) => e.id !== entry.id && !same(e.name, entry.name)),
+      entry,
+    ]);
+    listing.entries = entries;
+    entries.catch(() => {
+      if (this.folders.get(key)?.entries === entries) this.folders.delete(key);
+    });
   }
 
   /** The entry at a path: ROOT for the top, undefined when there is nothing there. */
@@ -511,7 +621,8 @@ export class DriveDav {
       res.writeHead(range ? 206 : 200, headers);
       return void res.end();
     }
-    const reader = await this.reader(found);
+    const upload = this.uploadOf(found);
+    const reader = upload ? fileReader(upload.temp, found.size) : await this.reader(found);
     // The first chunk is read before answering, so a file that can't be read gets an error.
     let next: Promise<Uint8Array> = reader.read(start, Math.min(end, start + READ_CHUNK));
     await next;
@@ -557,18 +668,131 @@ export class DriveDav {
     await mkdir(this.options.tempDir, { recursive: true, mode: 0o700 });
     const temp = path.join(this.options.tempDir, randomUUID());
     const replaced = !!existing || !!local.file;
+    let uploading = false;
     try {
       await pipeline(req, createWriteStream(temp, { mode: 0o600 }));
-      if (!existing && (await stat(temp)).size === 0) this.holdEmpty(local, name);
+      const { size } = await stat(temp);
+      if (!existing && size === 0) this.holdEmpty(local, name);
       else {
         this.dropLocal(local.files, local.key);
-        await this.options.drive.write(parentId, name, temp, existing, modifiedAt);
+        // Answered now, and uploaded behind: an upload is several trips to the server.
+        this.upload(parentId, name, temp, size, existing, modifiedAt);
+        uploading = true;
       }
     } finally {
-      await rm(temp, { force: true });
-      this.changed(parentId);
+      if (!uploading) await rm(temp, { force: true });
     }
     this.end(res, replaced ? 204 : 201, '', modifiedAt ? { 'X-OC-MTime': 'accepted' } : {});
+  }
+
+  // Uploads
+
+  private uploadsIn(folderId: string | null) {
+    const key = folderKey(folderId);
+    if (!this.uploads.has(key)) this.uploads.set(key, new Map());
+    return this.uploads.get(key)!;
+  }
+  /** The upload a listed entry stands for, while it's going up. */
+  private uploadOf(entry: DavEntry) {
+    const upload = this.uploads.get(folderKey(entry.parentId))?.get(normalizeName(entry.name));
+    return upload?.entry === entry ? upload : undefined;
+  }
+  /** Waits for the upload of the file at this path, if one is going. */
+  private async uploadedAt(segments: string[]) {
+    const parent = await this.find(segments.slice(0, -1));
+    if (parent === undefined || (parent && !parent.folder)) return;
+    await this.uploads.get(folderKey(parent?.id ?? null))?.get(normalizeName(segments.at(-1)!))
+      ?.done;
+  }
+  /**
+   * Uploads the file at `temp`, then deletes it. Uploads of one name go up in turn, and a version
+   * replaced before it started never does.
+   */
+  private upload(
+    parentId: string | null,
+    name: string,
+    temp: string,
+    size: number,
+    existing: DavEntry | undefined,
+    modifiedAt?: Date,
+  ) {
+    const files = this.uploadsIn(parentId);
+    const key = normalizeName(name);
+    const previous = files.get(key);
+    if (previous) previous.superseded = true;
+    const id = `upload-${randomUUID()}`;
+    const now = new Date().toISOString();
+    const upload: Upload = {
+      entry: {
+        id,
+        parentId,
+        name,
+        folder: false,
+        size,
+        mimeType: existing?.mimeType ?? 'application/octet-stream',
+        created: existing?.created ?? now,
+        modified: modifiedAt?.toISOString() ?? now,
+        etag: id,
+      },
+      temp,
+      modifiedAt,
+      done: Promise.resolve(),
+    };
+    upload.done = (async () => {
+      await previous?.done;
+      await this.uploadSlot();
+      try {
+        if (!upload.superseded) this.added(await this.send(upload));
+      } catch (error) {
+        this.options.onError?.(error);
+        this.changed(parentId);
+      } finally {
+        this.uploading--;
+        this.waitingToUpload.shift()?.();
+        if (files.get(key) === upload) files.delete(key);
+        await rm(temp, { force: true });
+      }
+    })();
+    files.set(key, upload);
+  }
+  private async uploadSlot() {
+    if (this.uploading >= UPLOAD_CONCURRENCY)
+      await new Promise<void>((resolve) => this.waitingToUpload.push(resolve));
+    this.uploading++;
+  }
+  /** Writes an upload to the drive, trying again after failures that pass. */
+  private async send({ entry, temp, modifiedAt }: Upload) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // What it replaces is looked up now: an earlier upload of the name may have just finished.
+        const existing = (await this.stored(entry.parentId)).find((e) => same(e.name, entry.name));
+        if (existing?.folder)
+          throw new DavError(409, `A folder named ${entry.name} is in the way.`);
+        return await this.options.drive.write(
+          entry.parentId,
+          entry.name,
+          temp,
+          existing,
+          modifiedAt,
+        );
+      } catch (error) {
+        if (this.stopping || !retryable(error) || attempt >= UPLOAD_RETRIES) throw error;
+        this.options.onError?.(error);
+        const wait = (this.options.uploadRetryMs ?? UPLOAD_RETRY_MS) * 2 ** attempt;
+        await this.pause(Math.min(wait, UPLOAD_RETRY_MAX_MS));
+      }
+    }
+  }
+  private pause(ms: number) {
+    return new Promise<void>((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.wakers.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      this.wakers.add(wake);
+    });
   }
 
   private async mkcol(req: IncomingMessage, res: ServerResponse, segments: string[]) {
@@ -578,11 +802,14 @@ export class DriveDav {
     const parentId = await this.parentOf(segments);
     if ((await this.children(parentId)).some((e) => same(e.name, name)))
       throw new DavError(405, 'Something already has that name.');
+    let made: DavEntry;
     try {
-      await this.options.drive.mkdir(parentId, name);
-    } finally {
+      made = await this.options.drive.mkdir(parentId, name);
+    } catch (error) {
       this.changed(parentId);
+      throw error;
     }
+    this.added(made);
     this.end(res, 201);
   }
 
@@ -594,7 +821,13 @@ export class DriveDav {
       this.dropLocal(junk.files, junk.key);
       return this.end(res, 204);
     }
-    const found = await this.find(segments);
+    // A file still going up is deleted once it's there; a folder, once everything is.
+    await this.uploadedAt(segments);
+    let found = await this.find(segments);
+    if (found?.folder) {
+      await this.settled();
+      found = await this.find(segments);
+    }
     if (!found) throw new DavError(404, 'Not found.');
     try {
       await this.options.drive.remove(found);
@@ -649,7 +882,14 @@ export class DriveDav {
       if (move && !sameItem) local.files.delete(local.key);
       return this.end(res, to.file ? 204 : 201);
     }
-    const source = await this.find(segments);
+    // Files still going up are moved or copied once they're there.
+    await this.uploadedAt(segments);
+    await this.uploadedAt(target);
+    let source = await this.find(segments);
+    if (source?.folder) {
+      await this.settled();
+      source = await this.find(segments);
+    }
     if (!source) throw new DavError(404, 'Not found.');
     // Moving onto itself only changes the name's case; anything else onto itself is an error.
     if (sameItem && (!move || source.name === name))
@@ -803,6 +1043,23 @@ function junkProps(segments: string[], file: LocalFile) {
 }
 const propResponse = (href: string, fields: string[]) =>
   `<D:response><D:href>${escape(href)}</D:href><D:propstat><D:prop>${fields.join('')}</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`;
+
+/** Reads a file still going up from where it waits. */
+function fileReader(file: string, size: number): DavReader {
+  return {
+    size,
+    async read(begin, end) {
+      const handle = await open(file, 'r');
+      try {
+        const buffer = Buffer.alloc(end - begin);
+        const { bytesRead } = await handle.read(buffer, 0, end - begin, begin);
+        return new Uint8Array(buffer.subarray(0, bytesRead));
+      } finally {
+        await handle.close();
+      }
+    },
+  };
+}
 
 /** `X-OC-Mtime`, which rclone and ownCloud clients send with uploads: seconds since 1970. */
 function mtime(header: string | string[] | undefined) {

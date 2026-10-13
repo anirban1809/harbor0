@@ -155,8 +155,10 @@ describe('WebDAV server inside the app', () => {
     });
     expect(created.status).toBe(201);
     expect(created.headers.get('x-oc-mtime')).toBe('accepted');
+    await dav.settled();
     const replaced = await request('/Docs/new.txt', { method: 'PUT', body: 'fresher' });
     expect(replaced.status).toBe(204);
+    await dav.settled();
     expect(memory.calls.filter((c) => c.startsWith('write'))).toEqual([
       'write new.txt',
       expect.stringMatching(/^write new\.txt over item-/),
@@ -270,6 +272,7 @@ describe('WebDAV server inside the app', () => {
     ).text();
     expect(listing).toContain('/harbor0/Docs/new.txt');
     expect((await request('/Docs/new.txt', { method: 'PUT', body: 'content' })).status).toBe(204);
+    await dav.settled();
     expect(memory.calls.filter((c) => c.startsWith('write'))).toEqual(['write new.txt']);
     expect(await (await request('/Docs/new.txt')).text()).toBe('content');
   });
@@ -363,6 +366,127 @@ describe('WebDAV server inside the app', () => {
     expect(
       await (await request('/', { method: 'PROPFIND', headers: { Depth: '1' } })).text(),
     ).toContain('/harbor0/Elsewhere/');
+  });
+});
+
+describe('WebDAV uploads in the background', () => {
+  const listing = async (pathname: string) =>
+    (await request(pathname, { method: 'PROPFIND', headers: { Depth: '1' } })).text();
+  const writes = () => memory.calls.filter((c) => c.startsWith('write'));
+  /** Holds uploads until released. */
+  function holdWrites() {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const write = memory.drive.write;
+    memory.drive.write = async (...args) => {
+      await gate;
+      return write(...args);
+    };
+    return release;
+  }
+  async function restart(options: { uploadRetryMs?: number; onError?: (e: unknown) => void }) {
+    await dav.stop();
+    dav = new DriveDav({
+      drive: memory.drive,
+      username: 'harbor0',
+      password: 'secret',
+      port: 0,
+      tempDir: await mkdtemp(path.join(os.tmpdir(), 'drive-dav-')),
+      ...options,
+    });
+    await dav.start();
+    base = `http://127.0.0.1:${dav.port}`;
+    root = base + '/harbor0';
+  }
+
+  it('answers at once and serves the file while it goes up', async () => {
+    const release = holdWrites();
+    await listing('/Docs/');
+    const put = await request('/Docs/report.pdf', { method: 'PUT', body: 'pdf bytes' });
+    expect(put.status).toBe(201);
+    expect(writes()).toEqual([]);
+    const during = await listing('/Docs/');
+    expect(during).toContain('/harbor0/Docs/report.pdf');
+    expect(during).toContain('<D:getcontentlength>9</D:getcontentlength>');
+    expect(await (await request('/Docs/report.pdf')).text()).toBe('pdf bytes');
+    const range = await request('/Docs/report.pdf', { headers: { Range: 'bytes=4-' } });
+    expect(await range.text()).toBe('bytes');
+    const lists = memory.calls.filter((c) => c.startsWith('list')).length;
+    release();
+    await dav.settled();
+    expect(writes()).toEqual(['write report.pdf']);
+    // The upload goes into the listing held; the folder isn't read again.
+    expect(await listing('/Docs/')).toContain('/harbor0/Docs/report.pdf');
+    expect(await (await request('/Docs/report.pdf')).text()).toBe('pdf bytes');
+    expect(memory.calls.filter((c) => c.startsWith('list')).length).toBe(lists);
+  });
+
+  it('uploads only the latest of versions saved before the first one starts', async () => {
+    const release = holdWrites();
+    await request('/Docs/a.txt', { method: 'PUT', body: 'one' });
+    // The first is under way; the second waits, and the third replaces it.
+    expect((await request('/Docs/a.txt', { method: 'PUT', body: 'two' })).status).toBe(204);
+    expect((await request('/Docs/a.txt', { method: 'PUT', body: 'three' })).status).toBe(204);
+    expect(await (await request('/Docs/a.txt')).text()).toBe('three');
+    release();
+    await dav.settled();
+    expect(writes()).toEqual(['write a.txt', expect.stringMatching(/^write a\.txt over item-/)]);
+    expect(await (await request('/Docs/a.txt')).text()).toBe('three');
+  });
+
+  it('deletes and moves a file once its upload is done', async () => {
+    const release = holdWrites();
+    await request('/Docs/gone.txt', { method: 'PUT', body: 'x' });
+    await request('/Docs/moved.txt', { method: 'PUT', body: 'y' });
+    const deleted = request('/Docs/gone.txt', { method: 'DELETE' });
+    const moved = request('/Docs/moved.txt', {
+      method: 'MOVE',
+      headers: { Destination: root + '/kept.txt' },
+    });
+    release();
+    expect((await deleted).status).toBe(204);
+    expect((await moved).status).toBe(201);
+    expect(memory.calls).toEqual(
+      expect.arrayContaining(['write gone.txt', expect.stringMatching(/^remove item-/)]),
+    );
+    expect(await (await request('/kept.txt')).text()).toBe('y');
+    expect((await request('/Docs/gone.txt')).status).toBe(404);
+  });
+
+  it('tries again after a failure that passes, and drops an upload the drive refuses', async () => {
+    const errors: unknown[] = [];
+    await restart({ uploadRetryMs: 1, onError: (e) => errors.push(e) });
+    const write = memory.drive.write;
+    let failures = 1;
+    memory.drive.write = async (...args) => {
+      if (args[1] === 'big.bin') throw new ApiError('STORAGE_FULL', 'Your storage is full.', 507);
+      if (failures-- > 0) throw new ApiError('UNAVAILABLE', 'Try again.', 503);
+      return write(...args);
+    };
+    await request('/Docs/flaky.txt', { method: 'PUT', body: 'ok' });
+    await request('/Docs/big.bin', { method: 'PUT', body: 'too much' });
+    await dav.settled();
+    expect(await (await request('/Docs/flaky.txt')).text()).toBe('ok');
+    expect((await request('/Docs/big.bin')).status).toBe(404);
+    expect(errors.map((e) => (e as ApiError).status).sort()).toEqual([503, 507]);
+  });
+
+  it('finishes uploads before stopping', async () => {
+    const release = holdWrites();
+    await request('/Docs/last.txt', { method: 'PUT', body: 'z' });
+    const stopped = dav.stop();
+    release();
+    await stopped;
+    expect(writes()).toEqual(['write last.txt']);
+  });
+
+  it('serves listings held while reading them again after refresh()', async () => {
+    await listing('/');
+    memory.add(null, 'Elsewhere');
+    dav.refresh();
+    expect(await listing('/')).not.toContain('Elsewhere');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await listing('/')).toContain('/harbor0/Elsewhere/');
   });
 });
 
