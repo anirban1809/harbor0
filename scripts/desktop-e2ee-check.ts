@@ -131,14 +131,14 @@ async function readStored(item: DriveItem) {
   const plain = await cipher.decryptRange(size, 0, size, stored.subarray(range.start, range.end));
   return Buffer.from(plain).toString('utf8');
 }
-/** Uploads text encrypted, the way the web app does on an encrypted account. */
+/** Uploads text or bytes encrypted, the way the web app does on an encrypted account. */
 async function put(
-  text: string,
+  content: string | Uint8Array,
   name: string,
   parentId: string,
   replace?: Pick<DriveItem, 'id' | 'revision'>,
 ) {
-  const plain = new TextEncoder().encode(text);
+  const plain = typeof content === 'string' ? new TextEncoder().encode(content) : content;
   const cipher = await FileCipher.create(keys!);
   const stored = await cipher.encryptedRange(
     plain.length,
@@ -371,6 +371,52 @@ try {
     assert(listed.items.some((i: DriveItem) => i.name === 'cloud-after.txt'));
     assert(!JSON.stringify(listed).includes('"h0e1.'));
     await screenshot('unlocked');
+  });
+  await check('The app previews encrypted images and videos', async () => {
+    // Shown from the decrypted bytes: the download link is to ciphertext. A synced folder is
+    // listed under Synced Folders, so these go in a folder of their own in My Drive.
+    const { item: media } = await raw.createFolder(await encryptName(keys!, 'Previews ' + run));
+    const photo = await put(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=',
+        'base64',
+      ),
+      'photo.png',
+      media.id,
+    );
+    const clip = await put(await readFile('tests/fixtures/preview.webm'), 'clip.webm', media.id);
+    await page.getByRole('button', { name: 'My Drive', exact: true }).first().click();
+    await page
+      .getByText('Previews ' + run, { exact: true })
+      .locator('visible=true')
+      .first()
+      .dblclick();
+    const body = page.locator('.file-preview-body');
+    await page.getByText('photo.png', { exact: true }).locator('visible=true').first().dblclick();
+    const image = body.locator('img');
+    await until('the image preview', () =>
+      image.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0),
+    );
+    assert((await image.getAttribute('src'))!.startsWith('blob:'), 'Not shown decrypted');
+    await screenshot('image-preview');
+    await page.keyboard.press('Escape');
+    await page.getByText('clip.webm', { exact: true }).locator('visible=true').first().dblclick();
+    await until('the video preview', () =>
+      body.locator('video').evaluate((el: HTMLVideoElement) => el.readyState > 0),
+    );
+    await screenshot('video-preview');
+    await page.keyboard.press('Escape');
+    // Nothing encrypted may be left behind, or turning encryption off below can't finish.
+    for (const item of [photo, clip, media]) {
+      const { item: trashed } = await raw.request(`/v1/drive/items/${item.id}`, {
+        method: 'DELETE',
+        body: { ...op(), baseRevision: item.revision },
+      });
+      await raw.request(`/v1/drive/items/${item.id}/permanent`, {
+        method: 'DELETE',
+        body: { ...op(), baseRevision: trashed.revision },
+      });
+    }
   });
   await check('No sync problems are left', async () => {
     const s = await until(

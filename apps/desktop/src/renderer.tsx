@@ -8,6 +8,7 @@ import {
   type ZipDownloadStatus,
 } from '../../web/components/zip-download-status';
 import { previewKind, type PreviewLoader } from '../../web/lib/file-preview';
+import { guessMime } from '../../../packages/api-client/src/e2ee-transport';
 import { setPdfViewerHost } from '../../web/lib/pdf-viewer-host';
 import { UploadTray } from '../../web/components/upload-tray';
 import { finishedKeys, mergeUploads, type FileUpload } from '../../web/lib/upload-activity';
@@ -119,6 +120,8 @@ const request = (path: string, method = 'GET', body?: unknown) =>
   bridge.request({ path, method, body });
 const appearanceRequest: Transport = (path, init) => request(path, init?.method, init?.body);
 const backupApi = new ApiClient(appearanceRequest);
+// Bytes read per request when decrypting a preview; previewRange allows up to 16 MiB.
+const PREVIEW_READ_BYTES = 8 * 1024 * 1024;
 const loadPreview: PreviewLoader = async (item, signal) => {
   if (previewKind(item) === 'text') return bridge.previewText({ driveItemId: item.id });
   if (previewKind(item) === 'pdf') {
@@ -128,7 +131,22 @@ const loadPreview: PreviewLoader = async (item, signal) => {
   }
   const result = await request('/v1/downloads', 'POST', { driveItemId: item.id });
   signal.throwIfAborted();
-  return { url: result.downloadUrl };
+  if (!result.encrypted) return { url: result.downloadUrl };
+  // The link is to ciphertext, so images, video and audio are decrypted by the main process
+  // (the reader PDF previews use) and played from memory, as on the web.
+  const driveItemId = item.id;
+  const { size } = await bridge.previewPdf({ driveItemId });
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  for (let begin = 0; begin < size; begin += PREVIEW_READ_BYTES) {
+    signal.throwIfAborted();
+    const end = Math.min(size, begin + PREVIEW_READ_BYTES);
+    parts.push((await bridge.previewRange({ driveItemId, begin, end })) as Uint8Array<ArrayBuffer>);
+  }
+  const type =
+    item.mimeType && item.mimeType !== 'application/octet-stream'
+      ? item.mimeType
+      : guessMime(item.name);
+  return { url: URL.createObjectURL(new Blob(parts, { type })) };
 };
 const op = () => ({ operationId: crypto.randomUUID() });
 type Confirmation = {
