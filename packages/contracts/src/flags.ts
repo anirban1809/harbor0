@@ -34,11 +34,15 @@ export const featureFlags = {
   },
   rclone: {
     description:
-      'rclone and WebDAV: personal access tokens under Settings → Use with rclone on the web, and the desktop app’s local WebDAV server (Settings → Local WebDAV server, or `harbor0 webdav` in a terminal). Tokens already made keep working when the flag is turned off; revoke them to cut access. A local WebDAV server already running keeps running until it is restarted.',
+      'rclone: personal access tokens under Settings → Use with rclone on the web. Tokens already made keep working when the flag is turned off; revoke them to cut access.',
     usage: {
       TOKEN_CREATED: 'Created an access token',
       TOKEN_REVOKED: 'Revoked an access token',
     },
+  },
+  webdav: {
+    description:
+      'Local WebDAV server in the desktop app: Settings → Local WebDAV server serves My Drive on the computer, opens it in Finder or File Explorer, and decrypts end-to-end encrypted accounts there. `harbor0 webdav` runs it from a terminal and may create an access token for that, even without the rclone flag. A server already running keeps running until the app restarts.',
   },
   'pdf-preview': {
     description:

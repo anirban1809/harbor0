@@ -81,6 +81,23 @@ describe('personal access tokens', () => {
     expect(item).toMatchObject({ name: 'NAS', scope: 'FULL', lastUsedAt: null });
   });
 
+  it('can be created with only the WebDAV flag, for `harbor0 webdav`', async () => {
+    await transact(service.repo, async (tx) => {
+      await tx.put(FLAG_PK, 'rclone', { ...emptyFlag('rclone'), mode: 'OFF', userIds: [] });
+      await tx.put(FLAG_PK, 'webdav', {
+        ...emptyFlag('webdav'),
+        mode: 'TARGETED',
+        userIds: ['alice'],
+      });
+    });
+    featureFlagsFor(service.repo).invalidate();
+    await createToken({ name: 'WebDAV on this Mac' });
+    await transact(service.repo, (tx) =>
+      tx.put(FLAG_PK, 'webdav', { ...emptyFlag('webdav'), mode: 'OFF', userIds: [] }),
+    );
+    featureFlagsFor(service.repo).invalidate();
+  });
+
   it('stores only a hash of the secret', async () => {
     await flagOn(['alice']);
     const { token } = await createToken();

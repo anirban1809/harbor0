@@ -6,8 +6,8 @@ import { randomBytes } from 'node:crypto';
  * webdav` serves it from a terminal with an access token of its own.
  */
 export const WEBDAV_USERNAME = 'harbor0';
-/** The feature flag that turns on access tokens and WebDAV for an account. */
-export const WEBDAV_FLAG = 'rclone';
+/** The feature flag that turns on the local WebDAV server for an account. */
+export const WEBDAV_FLAG = 'webdav';
 export const WEBDAV_UNAVAILABLE = "WebDAV isn't available for your harbor0 account yet.";
 /** `harbor0 webdav` uses an access token, which can't read an encrypted account's files. */
 export const WEBDAV_ENCRYPTED =

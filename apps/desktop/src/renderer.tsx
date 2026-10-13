@@ -1784,7 +1784,7 @@ function App() {
                   </Button>
                 </div>
               </Card>
-              {flags?.rclone && <WebdavPanel />}
+              {flags?.webdav && <WebdavPanel />}
               <UpdatePanel status={update} />
             </div>
           )}

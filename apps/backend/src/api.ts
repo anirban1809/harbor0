@@ -1602,7 +1602,16 @@ export function createApp(
     'Create a personal access token for rclone and other tools; the token is returned only here',
     c.accessTokenInput,
     z.object({ token: z.string(), item: c.accessTokenSchema }),
-    flagged(flags, 'rclone', async (ctx, i) => {
+    async (ctx, i) => {
+      // `harbor0 webdav` makes a token of its own, so the WebDAV flag allows one too.
+      const device = ctx.get('device');
+      assert(
+        (await flags.enabled('rclone', userId(ctx), device)) ||
+          (await flags.enabled('webdav', userId(ctx), device)),
+        'FEATURE_UNAVAILABLE',
+        "This feature isn't available on your account yet.",
+        403,
+      );
       await notEncrypted(ctx, 'Access tokens');
       const created = await tokens.create(userId(ctx), i);
       await recordFlagUsage(service.repo, 'rclone', 'TOKEN_CREATED', {
@@ -1611,7 +1620,7 @@ export function createApp(
         details: { scope: i.scope, expiresInDays: i.expiresInDays },
       });
       return created;
-    }),
+    },
   );
   add(
     'delete',
