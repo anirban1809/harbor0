@@ -5,9 +5,11 @@
 // copied next to the running bundle and checked, and a detached script swaps the bundles once
 // the app has quit and opens the new one.
 //
-// On Windows the release's NSIS installer is downloaded and checked the same way, and a detached
-// PowerShell script runs it silently over the installed app once the app has quit. The installer
-// keeps the existing install location and opens the app when it is done.
+// On Windows the release's NSIS installer is downloaded and checked the same way, then started
+// silently as the app quits. With --updated it waits for (or closes) the running app, keeps the
+// existing install location, and with --force-run opens the app when it is done. It is started
+// directly rather than from a helper script: a detached PowerShell has no console and exits before
+// running anything, and one that isn't detached dies with the app.
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
@@ -96,30 +98,6 @@ fi
 rm -f "$0"
 `;
 
-/**
- * Waits for the app to quit, runs the installer silently over it (the installer opens the app
- * again), and opens the old app if the installer fails or is refused elevation.
- */
-export const WINDOWS_INSTALL_SCRIPT = `param([int]$AppPid, [string]$Installer, [string]$App)
-$deadline = (Get-Date).AddMinutes(5)
-try {
-  while (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) {
-    if ((Get-Date) -gt $deadline) { exit 1 }
-    Start-Sleep -Milliseconds 100
-  }
-  try {
-    $setup = Start-Process -FilePath $Installer -ArgumentList '/S', '--updated', '--force-run' -Wait -PassThru
-    $installed = $setup.ExitCode -eq 0
-  } catch {
-    $installed = $false
-  }
-  if (-not $installed) { Start-Process -FilePath $App }
-} finally {
-  Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-}
-`;
-
 export type UpdaterOptions = {
   current: string;
   /**
@@ -144,24 +122,10 @@ const runFile = (command: string, args: string[]) =>
       error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
     ),
   );
-const launchDetached = (script: string, args: string[]) =>
-  (script.endsWith('.ps1')
-    ? spawn(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-WindowStyle',
-          'Hidden',
-          '-File',
-          script,
-          ...args,
-        ],
-        { detached: true, stdio: 'ignore', windowsHide: true },
-      )
-    : spawn('/bin/sh', [script, ...args], { detached: true, stdio: 'ignore' })
+const launchDetached = (file: string, args: string[]) =>
+  (file.endsWith('.exe')
+    ? spawn(file, args, { detached: true, stdio: 'ignore' })
+    : spawn('/bin/sh', [file, ...args], { detached: true, stdio: 'ignore' })
   ).unref();
 
 export class Updater {
@@ -186,6 +150,7 @@ export class Updater {
   /** Checks shortly after start and then every six hours. */
   start() {
     if (this.status.state === 'unsupported') return;
+    if (this.platform === 'win32') void this.removeOldInstallers();
     setTimeout(() => void this.check().catch(() => {}), 10_000).unref?.();
     this.timer = setInterval(() => void this.check().catch(() => {}), CHECK_INTERVAL_MS);
     this.timer.unref?.();
@@ -262,7 +227,7 @@ export class Updater {
     if ('unsupported' in bundleOption) throw new Error(bundleOption.unsupported);
     if (this.busy) throw new Error('The update is already being installed.');
     if (!asset || !latest) throw new Error('No update is available.');
-    if (this.platform === 'win32') return this.installWindows(bundleOption.path, asset);
+    if (this.platform === 'win32') return this.installWindows(asset);
     const bundle = bundleOption.path;
     const parent = path.dirname(bundle);
     let work: string | undefined;
@@ -330,19 +295,18 @@ export class Updater {
     }
   }
 
-  /** Downloads the installer, then hands it to the install script and quits. */
-  private async installWindows(app: string, asset: Asset) {
-    const temp = this.options.temp ?? os.tmpdir();
-    const id = randomUUID();
-    const installer = path.join(temp, `harbor0-update-${id}.exe`);
+  /** Downloads the installer, then starts it and quits. */
+  private async installWindows(asset: Asset) {
+    const installer = path.join(
+      this.options.temp ?? os.tmpdir(),
+      `harbor0-update-${randomUUID()}.exe`,
+    );
     let handedOver = false;
     try {
       this.set({ state: 'downloading', received: 0, error: undefined });
       await this.download(asset, installer);
       this.set({ state: 'installing' });
-      const script = path.join(temp, `harbor0-update-${id}.ps1`);
-      await writeFile(script, WINDOWS_INSTALL_SCRIPT);
-      this.launch(script, [String(process.pid), installer, app]);
+      this.launch(installer, ['/S', '--updated', '--force-run']);
       handedOver = true;
       await this.options.quit();
     } catch (error) {
@@ -350,6 +314,17 @@ export class Updater {
       this.set({ state: 'failed', error: (error as Error).message });
       throw error;
     }
+  }
+
+  /** The installer can't delete itself, so the next start removes it (and older leftovers). */
+  private async removeOldInstallers() {
+    const temp = this.options.temp ?? os.tmpdir();
+    const names = await readdir(temp).catch(() => [] as string[]);
+    await Promise.all(
+      names
+        .filter((name) => /^harbor0-update-[0-9a-f-]{36}\.(exe|ps1)$/.test(name))
+        .map((name) => rm(path.join(temp, name), { force: true }).catch(() => {})),
+    );
   }
 
   private async download(asset: Asset, file: string) {

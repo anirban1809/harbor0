@@ -9,7 +9,6 @@ import {
   RELEASES_URL,
   SWAP_SCRIPT,
   Updater,
-  WINDOWS_INSTALL_SCRIPT,
   compareVersions,
   runningBundle,
   type UpdateStatus,
@@ -262,17 +261,26 @@ async function windowsSetup(body?: Buffer) {
   return { updater, app, launched, quit };
 }
 
-it('downloads the Windows installer, then hands it to the install script and quits', async () => {
-  const { updater, app, launched, quit } = await windowsSetup();
+it('downloads the Windows installer, then starts it silently and quits', async () => {
+  const { updater, launched, quit } = await windowsSetup();
   await updater.install();
   expect(launched).toHaveLength(1);
-  const [script, pid, setup, target] = launched[0];
-  expect(script.endsWith('.ps1')).toBe(true);
-  expect(await readFile(script, 'utf8')).toBe(WINDOWS_INSTALL_SCRIPT);
-  expect([pid, target]).toEqual([String(process.pid), app]);
+  const [setup, ...args] = launched[0];
+  expect(args).toEqual(['/S', '--updated', '--force-run']);
+  expect(path.dirname(setup)).toBe(directory);
   expect(await readFile(setup)).toEqual(installer);
   expect(quit).toHaveBeenCalledOnce();
   expect(updater.status.state).toBe('installing');
+});
+
+it('removes installers left over from earlier Windows updates when it starts', async () => {
+  const { updater } = await windowsSetup();
+  const id = '6a478879-0ca1-4ae4-9ec9-a3c75cdda44b';
+  for (const name of [`harbor0-update-${id}.exe`, `harbor0-update-${id}.ps1`, 'other.exe'])
+    await writeFile(path.join(directory, name), '');
+  updater.start();
+  updater.stop();
+  await vi.waitFor(async () => expect(await readdir(directory)).toEqual(['other.exe']));
 });
 
 it('refuses a damaged Windows installer and removes it', async () => {
@@ -282,57 +290,6 @@ it('refuses a damaged Windows installer and removes it', async () => {
   expect(launched).toEqual([]);
   expect(quit).not.toHaveBeenCalled();
 });
-
-it.runIf(process.platform === 'win32')(
-  'Windows install script runs the installer once the app exits, and reopens the app if it fails',
-  async () => {
-    const log = path.join(directory, 'log.txt');
-    // Stand-ins for the installer and the installed app; each records how it was started.
-    const setup = path.join(directory, 'setup.cmd');
-    await writeFile(setup, `@echo setup %* >> "${log}"\r\n@exit /b %HARBOR_SETUP_EXIT%\r\n`);
-    const app = path.join(directory, 'app.cmd');
-    await writeFile(app, `@echo app >> "${log}"\r\n`);
-    const run = async (exit: number) => {
-      await rm(log, { force: true });
-      const copy = path.join(directory, `setup-${exit}.cmd`);
-      await writeFile(copy, await readFile(setup));
-      const script = path.join(directory, `install-${exit}.ps1`);
-      await writeFile(script, WINDOWS_INSTALL_SCRIPT);
-      const running = spawn('powershell.exe', [
-        '-NoProfile',
-        '-Command',
-        'Start-Sleep -Milliseconds 500',
-      ]);
-      const install = spawn(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-File',
-          script,
-          String(running.pid),
-          copy,
-          app,
-        ],
-        { env: { ...process.env, HARBOR_SETUP_EXIT: String(exit) } },
-      );
-      expect(await new Promise((resolve) => install.on('exit', resolve))).toBe(0);
-      expect(running.exitCode).toBe(0);
-      expect(existsSync(copy)).toBe(false);
-      expect(existsSync(script)).toBe(false);
-      // The app is started without waiting; give it a moment to write.
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      return (await readFile(log, 'utf8'))
-        .trim()
-        .split(/\r?\n/)
-        .map((line) => line.trim());
-    };
-    expect(await run(0)).toEqual(['setup /S --updated --force-run']);
-    expect(await run(2)).toEqual(['setup /S --updated --force-run', 'app']);
-  },
-);
 
 it.skipIf(process.platform === 'win32')(
   'swap script replaces the bundle once the app exits, then opens it',
