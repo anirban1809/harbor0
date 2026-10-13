@@ -71,12 +71,12 @@ import {
   type WebdavSettings,
 } from './local-webdav';
 import { isWebdavKeyRequest } from './webdav-cli';
-import { DriveDav } from './drive-dav';
-import { apiDrive } from './drive-dav-api';
+import { DavHost } from './dav-host';
 import {
   canMount,
   mapInExplorer,
   mountInFinder,
+  revealMount,
   unmount,
   unmountNow,
   type WebdavMount,
@@ -120,9 +120,21 @@ function noteRevoked(error: unknown) {
           ? 'This computer was signed out from another device. Sign in again to resume syncing; your local files were kept.'
           : 'Your session ended. Sign in again to continue.';
 }
-// The local WebDAV server (Settings → Local WebDAV server); one change at a time. It serves
-// My Drive through the app's own session, so encrypted accounts are decrypted on this computer.
-let webdav: DriveDav | undefined;
+// The local WebDAV server (Settings → Local WebDAV server); one change at a time. It runs on a
+// thread of its own with this app's session and keys, so encrypted accounts are decrypted on
+// this computer and nothing the main thread waits on can stop it answering Finder.
+const webdav = new DavHost({
+  token: async (refresh) => {
+    if (refresh) await session.refresh();
+    return session.token();
+  },
+  vault: () => vault.current(),
+  onError: (message) => console.error('WebDAV request failed:', message),
+  onExit(reason) {
+    webdavError = reason;
+    void disconnectWebdav().then(sendWebdav);
+  },
+});
 let webdavPasswordShown: string | undefined;
 let webdavMountSecret: string | undefined;
 /** The server as a drive in Finder or File Explorer, while connected. */
@@ -132,10 +144,8 @@ let webdavError: string | null = null;
 let webdavQueue: Promise<unknown> = Promise.resolve();
 let accountId: string | undefined;
 async function stopWebdav() {
-  const server = webdav;
-  webdav = undefined;
   await disconnectWebdav();
-  await server?.stop();
+  await webdav.stop();
 }
 async function disconnectWebdav() {
   const mount = webdavMount;
@@ -152,16 +162,16 @@ function webdavView() {
   const encrypted = accountReady && vault.current().enabled;
   return {
     enabled: webdavSettings.enabled,
-    running: !!webdav?.running,
+    running: webdav.running,
     encrypted,
     url: webdavUrl(webdavSettings.port),
     username: WEBDAV_USERNAME,
-    password: webdav?.running ? (webdavPasswordShown ?? null) : null,
+    password: webdav.running ? (webdavPasswordShown ?? null) : null,
     // Finder on a Mac, File Explorer on Windows.
     mount: canMount() ? (webdavMount ?? null) : undefined,
     error:
       webdavError ??
-      (webdav?.running && vault.locked
+      (webdav.running && vault.locked
         ? 'Unlock your encrypted files to open them over WebDAV.'
         : null),
     // `harbor0 webdav` uses an access token, which can't read encrypted files.
@@ -196,17 +206,16 @@ async function startWebdav() {
     webdavPasswordShown = secrets.password;
     // Only File Explorer uses the mount path without a password.
     webdavMountSecret = process.platform === 'win32' ? secrets.mountSecret : undefined;
-    const server = new DriveDav({
-      drive: apiDrive(api),
+    await webdav.start({
+      apiUrl,
       username: WEBDAV_USERNAME,
       password: webdavPasswordShown,
       mountSecret: webdavMountSecret,
+      // Live updates forget listings as soon as something changes elsewhere.
+      listingTtlMs: 60_000,
       port,
       tempDir: webdavCacheDir(port),
-      onError: (error) => console.error('WebDAV request failed', error),
     });
-    await server.start();
-    webdav = server;
     webdavError = null;
   } catch (error) {
     webdavError = (error as Error).message;
@@ -296,7 +305,8 @@ function vaultChanged() {
     window?.webContents.send('harbor:status', statusView(journal, engine.state));
     if (!vault.locked) engine.wake();
   }
-  // The locked notice in Settings follows the vault.
+  // The WebDAV thread decrypts with the same keys; the locked notice in Settings follows.
+  webdav.updateVault();
   sendWebdav();
 }
 const e2eeView = () =>
@@ -444,7 +454,7 @@ async function connected() {
       if (journal !== activeJournal) return;
       if (message.type === 'changes') {
         activeEngine.wake();
-        webdav?.forget();
+        webdav.forget();
       } else void monitor.poll();
       window?.webContents.send('harbor:live', { connected: true, type: message.type });
     },
@@ -454,7 +464,7 @@ async function connected() {
       // Anything that happened while disconnected was not pushed.
       if (connected) {
         activeEngine.wake();
-        webdav?.forget();
+        webdav.forget();
         void monitor.poll();
       }
       window?.webContents.send('harbor:live', { connected });
@@ -1463,7 +1473,7 @@ app
     });
     ipc('openWebdavDrive', z.undefined(), async () => {
       await webdavTask(async () => {
-        if (!webdav?.running || !webdavPasswordShown) throw new Error('Turn on the server first.');
+        if (!webdav.running || !webdavPasswordShown) throw new Error('Turn on the server first.');
         const url = webdavUrl(webdavSettings.port);
         webdavMount =
           process.platform === 'win32'
@@ -1476,8 +1486,7 @@ app
               });
       });
       sendWebdav();
-      const error = await shell.openPath(webdavMount!.location);
-      if (error) throw new Error(error);
+      revealMount(webdavMount!);
       return webdavView();
     });
     ipc('disconnectWebdavDrive', z.undefined(), async () => {
@@ -1611,7 +1620,7 @@ app.on('before-quit', () => {
   void engine?.stop();
   // Finder would otherwise wait on a server that's gone.
   if (webdavMount) unmountNow(webdavMount);
-  void webdav?.stop();
+  webdav.kill();
 });
 app.on('window-all-closed', () => {
   /* The tray keeps sync alive. */

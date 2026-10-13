@@ -5,8 +5,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const main: BuildOptions = {
-  entryPoints: ['src/entry.ts'],
-  outfile: 'dist/main.cjs',
+  // The local WebDAV server runs on a worker thread from its own file beside the main bundle.
+  entryPoints: { main: 'src/entry.ts', 'dav-worker': 'src/dav-worker.ts' },
+  outdir: 'dist',
+  outExtension: { '.js': '.cjs' },
   bundle: true,
   platform: 'node',
   target: 'node22',

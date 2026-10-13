@@ -32,7 +32,10 @@ export function apiDrive(api: ApiClient): DavDrive {
       const entries: DavEntry[] = [];
       let cursor: string | undefined;
       do {
-        const page = await api.list(folderId, cursor);
+        // The largest page the API allows: each page is a round trip.
+        const page: { items: DriveItem[]; nextCursor: string | null } = await api.request(
+          `/v1/drive/folders/${folderId ? encodeURIComponent(folderId) : 'root'}/children?limit=500${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`,
+        );
         for (const item of page.items) if (!item.deletedAt) entries.push(davEntry(item));
         cursor = page.nextCursor ?? undefined;
       } while (cursor);

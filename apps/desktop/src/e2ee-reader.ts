@@ -1,7 +1,9 @@
 import type { ApiClient } from '@harbor/api-client';
 import {
+  CHUNK_SIZE,
   FileCipher,
   HEADER_SIZE,
+  encryptedSize,
   plainSize,
   type AccountKeys,
 } from '../../../packages/api-client/src/e2ee';
@@ -46,7 +48,10 @@ export async function openEncryptedFile(
   keys: AccountKeys,
 ): Promise<PlainReader> {
   const { storedSize, fetchRange } = await storedRanges(api, driveItemId);
-  const cipher = await FileCipher.open(keys, await fetchRange(0, HEADER_SIZE));
+  // The header comes with the first chunk: reads mostly start there, and a file of one chunk
+  // then needs a single request.
+  const head = await fetchRange(0, Math.min(storedSize, encryptedSize(CHUNK_SIZE)));
+  const cipher = await FileCipher.open(keys, head.subarray(0, HEADER_SIZE));
   const size = plainSize(storedSize);
   return {
     size,
@@ -54,7 +59,9 @@ export async function openEncryptedFile(
       end = Math.min(end, size);
       if (end <= begin) return new Uint8Array();
       const r = cipher.cipherRange(size, begin, end);
-      return cipher.decryptRange(size, begin, end, await fetchRange(r.start, r.end));
+      const stored =
+        r.end <= head.length ? head.subarray(r.start, r.end) : await fetchRange(r.start, r.end);
+      return cipher.decryptRange(size, begin, end, stored);
     },
   };
 }

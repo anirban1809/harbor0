@@ -106,6 +106,21 @@ export async function mapInExplorer(url: string): Promise<WebdavMount> {
   return { kind: 'explorer', location: drive + '\\' };
 }
 
+/**
+ * Opens the drive in Finder or File Explorer from another process. Electron's shell.openPath
+ * waits on the main thread while the system looks at the drive, and the drive is served from
+ * that same thread, so the app and the drive would wait on each other forever.
+ */
+export function revealMount(mount: WebdavMount) {
+  const [command, args] =
+    mount.kind === 'finder'
+      ? ['/usr/bin/open', [mount.location]]
+      : ['explorer.exe', [mount.location]];
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+}
+
 /** Disconnects the drive; best effort, as it may already be gone. */
 export async function unmount(mount: WebdavMount) {
   try {

@@ -60,6 +60,8 @@ export type DriveDavOptions = {
   port: number;
   /** Refuse changes. */
   readOnly?: boolean;
+  /** How long a folder listing is reused; changes made through this server clear it at once. */
+  listingTtlMs?: number;
   /**
    * File Explorer won't send a password over plain HTTP, so it maps
    * `/<mountSecret>/harbor0/` instead, which needs none: the secret in the path stands in for it.
@@ -359,7 +361,8 @@ export class DriveDav {
   private children(folderId: string | null) {
     const key = folderKey(folderId);
     const cached = this.folders.get(key);
-    if (cached && Date.now() - cached.at < LISTING_TTL_MS) return cached.entries;
+    const ttl = this.options.listingTtlMs ?? LISTING_TTL_MS;
+    if (cached && Date.now() - cached.at < ttl) return cached.entries;
     const entries = this.options.drive.list(folderId);
     this.folders.set(key, { at: Date.now(), entries });
     entries.catch(() => {
