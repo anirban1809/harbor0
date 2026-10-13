@@ -3,12 +3,20 @@
 //   npm run release:desktop                 next patch version
 //   npm run release:desktop -- minor        or major, or an exact version such as 0.2.0
 //   npm run release:desktop -- --dry-run    build and update the files, but commit and publish nothing
+//   npm run release:desktop -- --test       a test build of the next patch version, such as 0.1.9-test
+//                                           (then 0.1.9-test.2, …); takes minor, major or x.y.z too
 //
 // The installers are built from a clean worktree of HEAD, so uncommitted work in this checkout never
 // ships. Both come from this Mac: an Apple silicon DMG and an x64 NSIS installer (which also runs on
 // Windows on Arm). Installed apps find the new version through the GitHub release and update themselves. The version bump and the landing page's new link are committed together, the tag is pushed
 // and the GitHub release created with the installer, and then main is pushed, which deploys the
 // landing site once Validate passes.
+//
+// A test build is for trying new features before they ship. It can be released from any branch,
+// and is a GitHub pre-release only: the landing site, main and the version in package.json are left
+// alone (the version bump is committed only on the tag). Production apps never update to it, since
+// they only look at the latest full release; test apps update to newer test builds and to the
+// production release that follows them. Install the first test build by hand from its release page.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -19,6 +27,7 @@ import path from 'node:path';
 const root = process.cwd();
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
+const testBuild = args.includes('--test');
 const bump = args.find((arg) => !arg.startsWith('--')) ?? 'patch';
 
 const git = (...command: string[]) =>
@@ -45,11 +54,14 @@ const landingPage = 'apps/landing/app/apps/page.tsx';
 const released = [desktopPackage, lockfile, landingPage];
 
 // --- Checks -----------------------------------------------------------------------------------
-if (git('rev-parse', '--abbrev-ref', 'HEAD') !== 'main') throw new Error('Release from main.');
-const dirty = git('status', '--porcelain', '--', ...released);
-if (dirty) throw new Error(`Commit or discard the changes to these files first:\n${dirty}`);
-if (!dryRun) {
-  git('fetch', 'origin', 'main', '--tags');
+if (!testBuild) {
+  if (git('rev-parse', '--abbrev-ref', 'HEAD') !== 'main') throw new Error('Release from main.');
+  const dirty = git('status', '--porcelain', '--', ...released);
+  if (dirty) throw new Error(`Commit or discard the changes to these files first:\n${dirty}`);
+}
+if (!dryRun) git('fetch', 'origin', '--tags');
+if (!dryRun && !testBuild) {
+  git('fetch', 'origin', 'main');
   // Local commits not yet pushed are fine; they ship with the release.
   try {
     git('merge-base', '--is-ancestor', 'origin/main', 'HEAD');
@@ -59,7 +71,7 @@ if (!dryRun) {
 }
 
 const current = JSON.parse(await readFile(desktopPackage, 'utf8')).version as string;
-const version = (() => {
+const release = (() => {
   if (/^\d+\.\d+\.\d+$/.test(bump)) return bump;
   const [major, minor, patch] = current.split('.').map(Number);
   if (bump === 'major') return `${major + 1}.0.0`;
@@ -67,10 +79,27 @@ const version = (() => {
   if (bump === 'patch') return `${major}.${minor}.${patch + 1}`;
   throw new Error(`Unknown version "${bump}": use patch, minor, major or x.y.z.`);
 })();
+// Test builds of one release are numbered: x.y.z-test, then x.y.z-test.2, x.y.z-test.3, …
+const version = (() => {
+  if (!testBuild) return release;
+  if (git('tag', '--list', `v${release}`)) throw new Error(`v${release} is already released.`);
+  const builds = git('tag', '--list', `v${release}-test*`)
+    .split('\n')
+    .map((tag) => /^v\d+\.\d+\.\d+-test(?:\.(\d+))?$/.exec(tag))
+    .filter((match) => match !== null)
+    .map((match) => Number(match[1] ?? 1));
+  return builds.length ? `${release}-test.${Math.max(...builds) + 1}` : `${release}-test`;
+})();
 const tag = `v${version}`;
 if (git('tag', '--list', tag)) throw new Error(`${tag} already exists.`);
+// A release's generated notes cover everything since the last release, not since a test build.
+const previousRelease = git('tag', '--list', 'v*', '--sort=-v:refname')
+  .split('\n')
+  .find((existing) => /^v\d+\.\d+\.\d+$/.test(existing));
 const repo = gh('repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner');
-console.log(`Releasing harbor0 desktop ${current} → ${version}${dryRun ? ' (dry run)' : ''}`);
+console.log(
+  `Releasing harbor0 desktop ${current} → ${version}${testBuild ? ' (test build)' : ''}${dryRun ? ' (dry run)' : ''}`,
+);
 
 async function setVersion(directory: string) {
   const file = path.join(directory, desktopPackage);
@@ -128,6 +157,14 @@ try {
       path.join(root, 'apps/desktop/release', target.name),
     );
   }
+  // A test build's version lives only on its tag: commit the bump in the worktree, off any branch.
+  if (testBuild && !dryRun) {
+    execFileSync('git', ['add', desktopPackage, lockfile], { cwd: worktree });
+    execFileSync('git', ['commit', '-m', `chore(desktop): test build ${tag}`], { cwd: worktree });
+    execFileSync('git', ['tag', '-a', tag, '-m', `harbor0 desktop test build ${version}`], {
+      cwd: worktree,
+    });
+  }
 } finally {
   git('worktree', 'remove', '--force', worktree);
   await rm(worktree, { recursive: true, force: true });
@@ -146,6 +183,43 @@ for (const target of targets) {
     sha256: hasher.digest('hex'),
     url: `https://github.com/${repo}/releases/download/${tag}/${target.name}`,
   });
+}
+
+if (testBuild) {
+  if (dryRun) {
+    console.log(`\nDry run: built ${installers.map((i) => i.file).join(' and ')}.`);
+    console.log('Nothing was tagged or published.');
+    process.exit(0);
+  }
+  git('push', 'origin', tag);
+  gh(
+    'release',
+    'create',
+    tag,
+    ...installers.map((i) => i.file),
+    '--repo',
+    repo,
+    '--verify-tag',
+    '--prerelease',
+    '--latest=false',
+    '--title',
+    `harbor0 ${version} (test build)`,
+    '--notes',
+    [
+      `Test build of harbor0 desktop ${version}, for trying new features before they ship. Not for general use.`,
+      '',
+      'Test builds update themselves to newer test builds and to the next release. Released apps never update to a test build.',
+      '',
+      ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
+    ].join('\n'),
+  );
+  for (const { url } of installers) {
+    const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+    if (!response.ok) throw new Error(`The release download ${url} returned ${response.status}.`);
+  }
+  console.log(`\nReleased test build ${tag}: https://github.com/${repo}/releases/tag/${tag}`);
+  for (const { platform, url } of installers) console.log(`${platform}: ${url}`);
+  process.exit(0);
 }
 
 // --- Point the landing site at the new installers ---------------------------------------------
@@ -213,6 +287,7 @@ gh(
   '--notes',
   notes,
   '--generate-notes',
+  ...(previousRelease ? ['--notes-start-tag', previousRelease] : []),
 );
 for (const { url } of installers) {
   const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });

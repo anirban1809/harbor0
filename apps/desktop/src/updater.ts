@@ -10,6 +10,11 @@
 // existing install location, and with --force-run opens the app when it is done. It is started
 // directly rather than from a helper script: a detached PowerShell has no console and exits before
 // running anything, and one that isn't detached dies with the app.
+//
+// Test builds (versions like 0.1.9-test or 0.1.9-test.2) are GitHub pre-releases. A production
+// build only ever looks at the latest full release, which GitHub never points at a pre-release, so
+// it can't be offered one. A test build looks through recent releases and takes the newest of
+// either kind: the next test build, or the production release it was testing.
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
@@ -19,6 +24,8 @@ import path from 'node:path';
 import { once } from 'node:events';
 
 export const RELEASES_URL = 'https://api.github.com/repos/anirban1809/harbor0/releases/latest';
+export const TEST_RELEASES_URL =
+  'https://api.github.com/repos/anirban1809/harbor0/releases?per_page=30';
 const BUNDLE_ID = 'com.harbor.storage';
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STALL_MS = 60_000;
@@ -51,13 +58,29 @@ type Release = {
 };
 type Asset = { url: string; bytes: number; sha256: string; name: string };
 
-/** -1, 0 or 1 as `a` is older than, the same as, or newer than `b` (x.y.z only). */
+const VERSION = /^v?(\d+)\.(\d+)\.(\d+)(?:-test(?:\.(\d+))?)?$/;
+
+/** Whether `version` is a test build, such as 0.1.9-test or 0.1.9-test.2. */
+export function isTestVersion(version: string) {
+  return /-test(?:\.\d+)?$/.test(version);
+}
+
+/**
+ * -1, 0 or 1 as `a` is older than, the same as, or newer than `b`. Versions are x.y.z, optionally
+ * with -test or -test.N; a test build comes before the release of the same x.y.z, and -test is
+ * the first of its test builds (-test.2 follows it).
+ */
 export function compareVersions(a: string, b: string) {
-  const parse = (v: string) => v.replace(/^v/, '').split('.').map(Number);
+  const parse = (v: string) => {
+    const match = VERSION.exec(v);
+    if (!match) return [0, 0, 0, 0];
+    const [, major, minor, patch, build] = match;
+    const test = isTestVersion(v) ? Number(build ?? 1) : Infinity;
+    return [Number(major), Number(minor), Number(patch), test];
+  };
   const [x, y] = [parse(a), parse(b)];
-  for (let i = 0; i < 3; i++) {
-    const d = (x[i] ?? 0) - (y[i] ?? 0);
-    if (d) return Math.sign(d);
+  for (let i = 0; i < 4; i++) {
+    if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
   }
   return 0;
 }
@@ -186,20 +209,31 @@ export class Updater {
     const previous = this.status;
     this.set({ state: 'checking', error: undefined });
     try {
-      const response = await this.fetch(RELEASES_URL, {
+      const testBuild = isTestVersion(this.options.current);
+      const response = await this.fetch(testBuild ? TEST_RELEASES_URL : RELEASES_URL, {
         headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'harbor0-desktop' },
         signal: AbortSignal.timeout(20_000),
       });
       if (!response.ok) throw new Error(`GitHub returned ${response.status}.`);
-      const release = (await response.json()) as Release;
-      const version = release.tag_name.replace(/^v/, '');
-      const asset =
-        !release.draft && !release.prerelease && compareVersions(version, this.options.current) > 0
-          ? releaseAsset(release, this.options.arch, this.platform)
-          : null;
+      const releases = testBuild
+        ? ((await response.json()) as Release[])
+        : [(await response.json()) as Release];
+      let release: Release | undefined;
+      let asset: Asset | null = null;
+      for (const candidate of releases) {
+        const version = candidate.tag_name.replace(/^v/, '');
+        // A production build never takes a test build, even if one were marked as the latest.
+        if (candidate.draft || !VERSION.test(version)) continue;
+        if (!testBuild && (candidate.prerelease || isTestVersion(version))) continue;
+        if (compareVersions(version, this.options.current) <= 0) continue;
+        if (release && compareVersions(version, release.tag_name) <= 0) continue;
+        const found = releaseAsset(candidate, this.options.arch, this.platform);
+        if (found) [release, asset] = [candidate, found];
+      }
+      const version = release?.tag_name.replace(/^v/, '');
       this.asset = asset;
       this.set(
-        asset
+        asset && release && version
           ? {
               state: 'available',
               latest: { version, bytes: asset.bytes, releaseUrl: release.html_url },

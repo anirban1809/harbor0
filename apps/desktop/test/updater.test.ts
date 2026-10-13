@@ -8,8 +8,10 @@ import path from 'node:path';
 import {
   RELEASES_URL,
   SWAP_SCRIPT,
+  TEST_RELEASES_URL,
   Updater,
   compareVersions,
+  isTestVersion,
   runningBundle,
   type UpdateStatus,
 } from '../src/updater';
@@ -43,16 +45,97 @@ function release(
     ],
   };
 }
-function github(latest: object, body: Buffer = installer) {
+function github(latest: object, body: Buffer = installer, recent: object[] = [latest]) {
   return vi.fn(async (url: string | URL | Request) =>
-    String(url) === RELEASES_URL ? Response.json(latest) : new Response(new Uint8Array(body)),
+    String(url) === RELEASES_URL
+      ? Response.json(latest)
+      : String(url) === TEST_RELEASES_URL
+        ? Response.json(recent)
+        : new Response(new Uint8Array(body)),
   ) as unknown as typeof fetch;
 }
+const testRelease = (version: string) => ({ ...release(version), prerelease: true });
 
 it('compares versions numerically', () => {
   expect(compareVersions('0.1.10', '0.1.9')).toBe(1);
   expect(compareVersions('v0.2.0', '0.10.0')).toBe(-1);
   expect(compareVersions('1.0.0', '1.0.0')).toBe(0);
+});
+
+it('orders test builds before the release they lead up to', () => {
+  expect(compareVersions('0.1.9-test', '0.1.8')).toBe(1);
+  expect(compareVersions('0.1.9-test', '0.1.9')).toBe(-1);
+  expect(compareVersions('0.1.9-test.2', '0.1.9-test')).toBe(1);
+  expect(compareVersions('0.1.9-test.10', '0.1.9-test.9')).toBe(1);
+  expect(compareVersions('v0.1.9-test.1', '0.1.9-test')).toBe(0);
+  expect(isTestVersion('0.1.9-test.2')).toBe(true);
+  expect(isTestVersion('0.1.9')).toBe(false);
+});
+
+it('never offers a test build to a production build', async () => {
+  const fetch = github(testRelease('0.1.9-test'), installer, [testRelease('0.1.9-test')]);
+  const updater = new Updater({
+    current: '0.1.8',
+    bundle: { path: '/Applications/harbor0.app' },
+    arch: 'arm64',
+    onChange: () => {},
+    quit: async () => {},
+    fetch,
+  });
+  expect((await updater.check()).state).toBe('current');
+  // Even one GitHub reports as the latest release without the pre-release mark.
+  const unmarked = new Updater({
+    current: '0.1.8',
+    bundle: { path: '/Applications/harbor0.app' },
+    arch: 'arm64',
+    onChange: () => {},
+    quit: async () => {},
+    fetch: github(release('0.1.9-test')),
+  });
+  expect((await unmarked.check()).state).toBe('current');
+  expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([RELEASES_URL]);
+});
+
+it.each([
+  ['the next test build', [release('0.1.8'), testRelease('0.1.9-test.2')], '0.1.9-test.2'],
+  ['the release it was testing', [release('0.1.9'), testRelease('0.1.9-test.2')], '0.1.9'],
+  [
+    'the newest of several',
+    [testRelease('0.1.9-test.3'), testRelease('0.1.9-test.2')],
+    '0.1.9-test.3',
+  ],
+])('offers a test build %s', async (_, recent, expected) => {
+  const fetch = github(release('0.1.8'), installer, recent);
+  const updater = new Updater({
+    current: '0.1.9-test',
+    bundle: { path: '/Applications/harbor0.app' },
+    arch: 'arm64',
+    onChange: () => {},
+    quit: async () => {},
+    fetch,
+  });
+  expect(await updater.check()).toMatchObject({
+    state: 'available',
+    latest: { version: expected },
+  });
+  expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(TEST_RELEASES_URL);
+});
+
+it('keeps a test build when nothing newer has an installer', async () => {
+  const updater = new Updater({
+    current: '0.1.9-test.2',
+    bundle: { path: '/Applications/harbor0.app' },
+    arch: 'arm64',
+    onChange: () => {},
+    quit: async () => {},
+    fetch: github(release('0.1.8'), installer, [
+      testRelease('0.1.9-test'),
+      release('0.1.8'),
+      { ...release('0.1.9'), draft: true },
+      release('0.1.10', { arch: 'x64' }),
+    ]),
+  });
+  expect((await updater.check()).state).toBe('current');
 });
 
 it('finds the Mac bundle only for packaged Mac builds', () => {
