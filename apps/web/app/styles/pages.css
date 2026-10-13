@@ -726,6 +726,22 @@
   width: 18px;
   height: 18px;
 }
+.token-secret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--fill-1);
+}
+.token-secret code {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 .totp-setup {
   display: flex;
   flex-wrap: wrap;

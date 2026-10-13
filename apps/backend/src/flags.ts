@@ -44,7 +44,7 @@ export function bucket(key: string, userId: string) {
 function family(platform: Device['platform']): FlagClient | null {
   if (platform === 'IOS') return 'IOS';
   if (platform === 'ANDROID') return 'ANDROID';
-  if (platform === 'WEB') return null;
+  if (platform === 'WEB' || platform === 'CLI') return null;
   return 'DESKTOP';
 }
 /** Whether `version` is at least `min`, comparing dotted numbers; a missing version is too old. */

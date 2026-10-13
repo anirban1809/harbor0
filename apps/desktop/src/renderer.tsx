@@ -22,6 +22,8 @@ import {
   Send,
   Cloud,
   Laptop,
+  Globe,
+  Smartphone,
   Pause,
   Play,
   RefreshCw,
@@ -95,6 +97,7 @@ import { Dialog, DialogActions } from '../../web/components/ui/dialog';
 import { Alert } from '../../web/components/ui/alert';
 import { Badge } from '../../web/components/ui/badge';
 import { Card } from '../../web/components/ui/card';
+import { WebdavPanel } from './webdav-panel';
 import { Checkbox } from '../../web/components/ui/checkbox';
 import { Field } from '../../web/components/ui/field';
 import { RecipientPicker, type RecipientKind } from '../../web/components/recipient-picker';
@@ -889,6 +892,7 @@ function App() {
       ? Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)
       : undefined;
   };
+  const unavailableBackups = backupRoots.filter((root) => !root.paused && unavailable(root));
   // The server flags only some failures; this computer knows its own last run skipped files.
   const failingBackups = [
     ...backupRoots.filter((root) => root.lastBackupError && !root.paused),
@@ -928,59 +932,70 @@ function App() {
                 },
                 open: () => openPlace('synced', status.deviceId ?? undefined),
               }
-            : failingBackups.length
+            : unavailableBackups.length
               ? {
                   activity: {
                     tone: 'error',
                     label:
-                      failingBackups.length === 1
-                        ? `${failingBackups[0].localPathDisplayName} needs attention`
-                        : `${failingBackups.length} backups need attention`,
+                      unavailableBackups.length === 1
+                        ? `${unavailableBackups[0].localPathDisplayName} · ${unavailable(unavailableBackups[0])!.label.toLowerCase()}`
+                        : `${unavailableBackups.length} backup folders unavailable`,
                   },
-                  open: () => openPlace('backups'),
+                  open: () => openPlace('backups', status.deviceId ?? undefined),
                 }
-              : sync.paused
+              : failingBackups.length
                 ? {
-                    activity: { tone: 'paused', label: 'Sync and backups paused' },
-                    open: () => setSection('Settings'),
+                    activity: {
+                      tone: 'error',
+                      label:
+                        failingBackups.length === 1
+                          ? `${failingBackups[0].localPathDisplayName} needs attention`
+                          : `${failingBackups.length} backups need attention`,
+                    },
+                    open: () => openPlace('backups'),
                   }
-                : !sync.online
+                : sync.paused
                   ? {
-                      activity: { tone: 'paused', label: 'Offline · changes wait' },
-                      open: () => openPlace('synced', status.deviceId ?? undefined),
+                      activity: { tone: 'paused', label: 'Sync and backups paused' },
+                      open: () => setSection('Settings'),
                     }
-                  : syncing.length
+                  : !sync.online
                     ? {
-                        activity: {
-                          tone: 'busy',
-                          label: 'Syncing…',
-                          percent: average(syncing.map((root) => sync.progress?.[root.id])),
-                        },
+                        activity: { tone: 'paused', label: 'Offline · changes wait' },
                         open: () => openPlace('synced', status.deviceId ?? undefined),
                       }
-                    : backingUp.length
+                    : syncing.length
                       ? {
                           activity: {
                             tone: 'busy',
-                            label:
-                              backingUp.length === 1
-                                ? `Backing up ${backingUp[0].localPathDisplayName}…`
-                                : `Backing up ${backingUp.length} folders…`,
-                            percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                            label: 'Syncing…',
+                            percent: average(syncing.map((root) => sync.progress?.[root.id])),
                           },
-                          open: () => openPlace('backups', status.deviceId ?? undefined),
+                          open: () => openPlace('synced', status.deviceId ?? undefined),
                         }
-                      : {
-                          activity: {
-                            tone: 'ok',
-                            label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                          },
-                          open: () =>
-                            openPlace(
-                              syncRoots.length ? 'synced' : 'backups',
-                              status.deviceId ?? undefined,
-                            ),
-                        };
+                      : backingUp.length
+                        ? {
+                            activity: {
+                              tone: 'busy',
+                              label:
+                                backingUp.length === 1
+                                  ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                                  : `Backing up ${backingUp.length} folders…`,
+                              percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                            },
+                            open: () => openPlace('backups', status.deviceId ?? undefined),
+                          }
+                        : {
+                            activity: {
+                              tone: 'ok',
+                              label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                            },
+                            open: () =>
+                              openPlace(
+                                syncRoots.length ? 'synced' : 'backups',
+                                status.deviceId ?? undefined,
+                              ),
+                          };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
@@ -1769,6 +1784,7 @@ function App() {
                   </Button>
                 </div>
               </Card>
+              {flags?.rclone && <WebdavPanel />}
               <UpdatePanel status={update} />
             </div>
           )}
@@ -2201,7 +2217,7 @@ function EncryptionPanel({
   const decrypting = state.decrypting ? (details?.decryption ?? null) : null;
   return (
     <Card
-      className="panel"
+      className="panel e2ee-panel"
       title={
         <>
           End-to-end encryption{' '}
@@ -2219,18 +2235,33 @@ function EncryptionPanel({
       }
     >
       {error && <Alert tone="error">{error}</Alert>}
-      <dl className="details">
-        <dt>This computer</dt>
-        <dd>
-          {state.locked ? (
-            <Badge tone="warning">Locked</Badge>
-          ) : (
-            <Badge tone="success">Unlocked</Badge>
-          )}{' '}
-          {state.locked
-            ? 'Enter your passphrase in My Drive to sync.'
-            : 'Stays unlocked until you sign out or lock it.'}
-        </dd>
+      <div className="setting-row e2ee-status">
+        <span className="setting-row-icon">
+          <LockKeyhole aria-hidden="true" />
+        </span>
+        <div>
+          <strong>
+            This computer
+            {state.locked ? (
+              <Badge tone="warning">Locked</Badge>
+            ) : (
+              <Badge tone="success">Unlocked</Badge>
+            )}
+          </strong>
+          <p className="muted">
+            {state.locked
+              ? 'Enter your passphrase in My Drive to sync.'
+              : 'Stays unlocked until you sign out or lock it.'}
+          </p>
+        </div>
+        {!state.locked && (
+          <Button variant="outline" size="sm" disabled={busy} onClick={onLock}>
+            <LockKeyhole />
+            Lock
+          </Button>
+        )}
+      </div>
+      <dl className="details e2ee-details">
         <dt>Turned on</dt>
         <dd>{day(details?.enabledAt)}</dd>
         <dt>Passphrase</dt>
@@ -2259,37 +2290,43 @@ function EncryptionPanel({
             <dd>{conversionLine(decrypting)}</dd>
           </>
         )}
-        <dt>Devices with the key</dt>
-        <dd>
-          {details?.devices.length ? (
-            <ul className="e2ee-devices">
-              {details.devices.map((device) => (
-                <li key={device.id}>
-                  <strong>{device.name}</strong>
-                  {device.id === details.thisDevice && <Badge>This computer</Badge>}
-                  <span className="muted">
+      </dl>
+      <h3 className="e2ee-heading">Devices with the key</h3>
+      {details?.devices.length ? (
+        <ul className="setting-rows e2ee-devices">
+          {details.devices.map((device) => {
+            const Icon =
+              device.platform === 'WEB'
+                ? Globe
+                : device.platform === 'IOS' || device.platform === 'ANDROID'
+                  ? Smartphone
+                  : Laptop;
+            return (
+              <li key={device.id} className="setting-row">
+                <span className="setting-row-icon">
+                  <Icon aria-hidden="true" />
+                </span>
+                <div>
+                  <strong>
+                    {device.name}
+                    {device.id === details.thisDevice && <Badge>This computer</Badge>}
+                  </strong>
+                  <p className="muted">
                     {platformNames[device.platform] ?? device.platform} · last used{' '}
                     {day(device.lastUsedAt)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            '—'
-          )}
-        </dd>
-      </dl>
-      <p className="muted">
-        Finder and the local WebDAV server are off while encryption is on. Remove a device or change
-        your passphrase in the web app.
-      </p>
-      <div className="settings-actions">
-        {!state.locked && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={onLock}>
-            <LockKeyhole />
-            Lock this computer
-          </Button>
-        )}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="muted">—</p>
+      )}
+      <div className="e2ee-footer">
+        <p className="muted">
+          Remove a device or change your passphrase in the web app.
+        </p>
         {manage}
       </div>
     </Card>

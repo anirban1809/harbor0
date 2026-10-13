@@ -35,6 +35,7 @@ import { responseSchema, queryParameters } from './responses';
 import { storageAudit } from './storage-audit';
 import { Beta } from './beta';
 import { featureFlagsFor, recordFlagUsage, type FeatureFlags, type UsageInput } from './flags';
+import { AccessTokens, isAccessToken, toolVersion } from './access-tokens';
 import {
   linkSubscription,
   setLinkProductUpdates,
@@ -54,6 +55,8 @@ type Env = {
     errorCode?: string;
     /** Sizes and counts of a usage request (an upload, a download, a backup run). */
     usage?: Record<string, unknown>;
+    /** Set when the caller signed in with a personal access token rather than an app session. */
+    accessToken?: { scope: c.AccessTokenScope };
   };
 };
 type Handler = (ctx: Context<Env>, input: any) => Promise<unknown>;
@@ -92,6 +95,21 @@ const fileRoute = (path: string) =>
   /^\/v1\/(drive|uploads|downloads|folder-downloads|sync|backups|search|transfers|shares|storage)(\/|$)/.test(
     path,
   );
+/**
+ * Routes a personal access token may call: My Drive, uploads and downloads, and reading the
+ * account. Everything else (sign-in, account settings, sharing, devices, tokens themselves)
+ * needs a signed-in app, so a leaked token cannot take over the account.
+ */
+const tokenRoute = (method: string, path: string) =>
+  /^\/v1\/(drive|uploads|folder-downloads)(\/|$)/.test(path) ||
+  ['/v1/downloads', '/v1/search'].includes(path) ||
+  (path === '/v1/users/me' && method === 'get');
+/** Read-only tokens may list and download; these are the downloads that are not GETs. */
+const readOnlyPosts = new Set(['/v1/downloads', '/v1/folder-downloads']);
+/** Requests a minute for one token, within the account's own limit. */
+export const TOKEN_RATE_LIMIT = 300;
+/** Files a day that token clients may upload to one account. */
+export const TOKEN_DAILY_UPLOADS = 20_000;
 const bearer = (ctx: Context<Env>) => ctx.req.header('Authorization')?.match(/^Bearer (.+)$/)?.[1];
 const userId = (ctx: Context<Env>) => ctx.get('identity').id;
 const p = (ctx: Context<Env>, name: string) => c.id.parse(ctx.req.param(name));
@@ -256,52 +274,108 @@ export function createApp(
       429,
     );
   }
+  async function dailyLimit(key: string, max: number) {
+    const day = Math.floor(Date.now() / 86400_000);
+    const k = createHash('sha256').update(key).digest('hex');
+    assert(
+      await service.repo.increment({ pk: 'RATE', sk: `${k}#d${day}` }, max, (day + 2) * 86400),
+      'RATE_LIMITED',
+      `Access tokens can upload up to ${max.toLocaleString('en')} files a day. Try again tomorrow.`,
+      429,
+    );
+  }
+  const tokens = new AccessTokens(service.repo);
   function route(d: Definition) {
     definitions.push(d);
     app.on(d.method.toUpperCase(), d.path, async (ctx) => {
       if (!d.public) {
         const token = bearer(ctx);
         assert(token, 'AUTH_REQUIRED', 'Sign in to continue.', 401);
-        const timing: Record<string, number> = {};
-        ctx.set('timing', timing);
-        const timed = async <T>(name: string, work: Promise<T>) => {
-          const start = performance.now();
-          try {
-            return await work;
-          } finally {
-            timing[name] = Math.round(performance.now() - start);
-          }
-        };
-        const identity = await timed('auth', auth.identity(token));
-        assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
-        ctx.set('identity', identity);
-        // Registration (and its key challenge) is how a session becomes a checked device.
-        const registering = d.path === '/v1/auth/session' || d.path === sessionChallengePath;
-        if (!registering)
-          assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
-        // These checks are independent reads, so they run together rather than adding a
-        // database round trip each to every request. Failures report in their usual order.
-        const checks = await Promise.allSettled([
-          // A retried deletion must get past its own tombstone to finish removing the sign-in.
-          timed('profile', service.ensureUser(identity, d.path === deleteAccountPath)),
-          !registering && timed('device', service.checkDevice(identity.id, identity.deviceId!)),
-          timed('rate', rateLimit(`user:${identity.id}`, 600)),
-        ]);
-        for (const check of checks) if (check.status === 'rejected') throw check.reason;
-        if (checks[1].status === 'fulfilled' && checks[1].value) ctx.set('device', checks[1].value);
-        // An app that can't encrypt would upload plaintext or save ciphertext as the file.
-        if (
-          !registering &&
-          fileRoute(d.path) &&
-          checks[0].status === 'fulfilled' &&
-          encryptedAccount(checks[0].value) &&
-          !encryptingClient(ctx.get('device'))
-        )
-          throw new DomainError(
-            'E2EE_UPDATE_REQUIRED',
-            'Your account now uses end-to-end encryption. Update harbor0 to keep syncing; nothing was uploaded unencrypted.',
-            426,
+        if (isAccessToken(token)) {
+          assert(
+            tokenRoute(d.method, d.path),
+            'TOKEN_NOT_ALLOWED',
+            'Access tokens can only use My Drive. Sign in to the app for this.',
+            403,
           );
+          const { identity, scope } = await tokens.identity(token);
+          assert(
+            scope === 'FULL' || d.method === 'get' || readOnlyPosts.has(d.path),
+            'TOKEN_SCOPE',
+            'This access token is read-only.',
+            403,
+          );
+          ctx.set('identity', identity);
+          ctx.set('accessToken', { scope });
+          const checks = await Promise.allSettled([
+            service.ensureUser(identity),
+            service.checkDevice(identity.id, identity.deviceId!),
+            rateLimit(`user:${identity.id}`, 600),
+            rateLimit(`pat:${identity.deviceId}`, TOKEN_RATE_LIMIT),
+          ]);
+          for (const check of checks) if (check.status === 'rejected') throw check.reason;
+          if (checks[1].status === 'fulfilled') ctx.set('device', checks[1].value);
+          // Tools such as rclone can't encrypt, so they'd read ciphertext and write plaintext.
+          if (
+            fileRoute(d.path) &&
+            checks[0].status === 'fulfilled' &&
+            encryptedAccount(checks[0].value)
+          )
+            throw new DomainError(
+              'E2EE_UNSUPPORTED',
+              "Access tokens can't be used with end-to-end encryption yet.",
+              403,
+            );
+          if (d.method === 'post' && d.path === '/v1/uploads')
+            await dailyLimit(`uploads:${identity.id}`, TOKEN_DAILY_UPLOADS);
+          await tokens.touch(
+            identity.id,
+            identity.deviceId!,
+            toolVersion(ctx.req.header('User-Agent')),
+          );
+        } else {
+          const timing: Record<string, number> = {};
+          ctx.set('timing', timing);
+          const timed = async <T>(name: string, work: Promise<T>) => {
+            const start = performance.now();
+            try {
+              return await work;
+            } finally {
+              timing[name] = Math.round(performance.now() - start);
+            }
+          };
+          const identity = await timed('auth', auth.identity(token));
+          assert(identity.emailVerified, 'EMAIL_NOT_VERIFIED', 'Verify your email first.', 403);
+          ctx.set('identity', identity);
+          // Registration (and its key challenge) is how a session becomes a checked device.
+          const registering = d.path === '/v1/auth/session' || d.path === sessionChallengePath;
+          if (!registering)
+            assert(identity.deviceId, 'AUTH_INVALID', 'Register this session first.', 401);
+          // These checks are independent reads, so they run together rather than adding a
+          // database round trip each to every request. Failures report in their usual order.
+          const checks = await Promise.allSettled([
+            // A retried deletion must get past its own tombstone to finish removing the sign-in.
+            timed('profile', service.ensureUser(identity, d.path === deleteAccountPath)),
+            !registering && timed('device', service.checkDevice(identity.id, identity.deviceId!)),
+            timed('rate', rateLimit(`user:${identity.id}`, 600)),
+          ]);
+          for (const check of checks) if (check.status === 'rejected') throw check.reason;
+          if (checks[1].status === 'fulfilled' && checks[1].value)
+            ctx.set('device', checks[1].value);
+          // An app that can't encrypt would upload plaintext or save ciphertext as the file.
+          if (
+            !registering &&
+            fileRoute(d.path) &&
+            checks[0].status === 'fulfilled' &&
+            encryptedAccount(checks[0].value) &&
+            !encryptingClient(ctx.get('device'))
+          )
+            throw new DomainError(
+              'E2EE_UPDATE_REQUIRED',
+              'Your account now uses end-to-end encryption. Update harbor0 to keep syncing; nothing was uploaded unencrypted.',
+              426,
+            );
+        }
       }
       let input: unknown = {};
       if (d.body) {
@@ -1094,6 +1168,27 @@ export function createApp(
     },
   );
   add(
+    'get',
+    '/v1/drive/folders/:id/lookup',
+    'Find the item with a name in a folder, compared the way names are kept unique',
+    undefined,
+    z.object({ item: c.itemSchema }),
+    async (ctx) =>
+      service.findChild(
+        userId(ctx),
+        p(ctx, 'id') === 'root' ? null : p(ctx, 'id'),
+        c.filename.parse(ctx.req.query('name')),
+      ),
+  );
+  add(
+    'patch',
+    '/v1/drive/items/:id/modified',
+    "Set a file's modification time without changing its content or revision",
+    z.object({ baseRevision: z.number().int().positive(), modifiedAt: z.iso.datetime() }).strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.setModified(userId(ctx), p(ctx, 'id'), i),
+  );
+  add(
     'post',
     '/v1/drive/folders',
     'Create folder',
@@ -1112,8 +1207,8 @@ export function createApp(
   add(
     'post',
     '/v1/drive/items/:id/move',
-    'Move an item',
-    c.mutation.extend({ parentId: c.id.nullable() }).strict(),
+    'Move an item, renaming it on the way when a name is given',
+    c.mutation.extend({ parentId: c.id.nullable(), name: c.filename.optional() }).strict(),
     z.object({ item: c.itemSchema }),
     async (ctx, i) => service.mutate(userId(ctx), p(ctx, 'id'), i),
   );
@@ -1492,6 +1587,46 @@ export function createApp(
     undefined,
     z.object({ device: c.deviceSchema }),
     async (ctx) => service.signOutDevice(userId(ctx), p(ctx, 'id')),
+  );
+  add(
+    'get',
+    '/v1/tokens',
+    'List personal access tokens that still work',
+    undefined,
+    z.object({ items: z.array(c.accessTokenSchema) }),
+    async (ctx) => ({ items: await tokens.list(userId(ctx)) }),
+  );
+  add(
+    'post',
+    '/v1/tokens',
+    'Create a personal access token for rclone and other tools; the token is returned only here',
+    c.accessTokenInput,
+    z.object({ token: z.string(), item: c.accessTokenSchema }),
+    flagged(flags, 'rclone', async (ctx, i) => {
+      await notEncrypted(ctx, 'Access tokens');
+      const created = await tokens.create(userId(ctx), i);
+      await recordFlagUsage(service.repo, 'rclone', 'TOKEN_CREATED', {
+        userId: userId(ctx),
+        email: ctx.get('identity').email,
+        details: { scope: i.scope, expiresInDays: i.expiresInDays },
+      });
+      return created;
+    }),
+  );
+  add(
+    'delete',
+    '/v1/tokens/:id',
+    'Revoke a personal access token and remove its device',
+    undefined,
+    z.object({ revoked: z.boolean() }),
+    async (ctx) => {
+      await tokens.revoke(userId(ctx), p(ctx, 'id'));
+      await recordFlagUsage(service.repo, 'rclone', 'TOKEN_REVOKED', {
+        userId: userId(ctx),
+        email: ctx.get('identity').email,
+      });
+      return { revoked: true };
+    },
   );
   const syncSharing = new SyncSharing(service);
   add(

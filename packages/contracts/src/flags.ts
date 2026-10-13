@@ -32,6 +32,14 @@ export const featureFlags = {
       APP_BLOCKED: 'Blocked: app cannot encrypt',
     },
   },
+  rclone: {
+    description:
+      'rclone and WebDAV: personal access tokens under Settings → Use with rclone on the web, and the desktop app’s local WebDAV server (Settings → Local WebDAV server, or `harbor0 webdav` in a terminal). Tokens already made keep working when the flag is turned off; revoke them to cut access. A local WebDAV server already running keeps running until it is restarted.',
+    usage: {
+      TOKEN_CREATED: 'Created an access token',
+      TOKEN_REVOKED: 'Revoked an access token',
+    },
+  },
   'pdf-preview': {
     description:
       'PDF preview on the web: opening a PDF shows its pages in the preview tray instead of “No preview available”. The desktop and mobile apps are unaffected.',

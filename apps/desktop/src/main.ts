@@ -11,23 +11,18 @@ import {
   nativeImage,
   Notification,
   powerMonitor,
+  clipboard,
 } from 'electron';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile, mkdir, chmod, rm, stat } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { existsSync, watch } from 'node:fs';
+import { watch } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { rendererRequestSchema } from './request-schema';
-import {
-  ApiClient,
-  ApiError,
-  createTransport,
-  LiveUpdates,
-  SESSION_DURATION_SECONDS,
-} from '@harbor/api-client';
+import { ApiClient, ApiError, createTransport, LiveUpdates } from '@harbor/api-client';
 import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { DeviceKey } from './device-key';
@@ -50,35 +45,47 @@ import { E2eeError, parseRecoveryKey } from '../../../packages/api-client/src/e2
 import { TEXT_PREVIEW_BYTES } from '../../../packages/api-client/src/preview';
 import { contained, safeSegment, safeParents } from './paths';
 import type { FileUpload } from '../../web/lib/upload-activity';
-import {
-  desktopConfiguration,
-  loadDesktopEnvironment,
-  loadBundledDesktopConfiguration,
-} from './config';
-import { DesktopSession, RenewalError, isSessionError } from './session';
+import { prepareAppEnvironment } from './app-environment';
+import { DesktopSession, isSessionError, requestRenewal } from './session';
+import { readSavedSession, removeSealed, sessionFile, writeSealed } from './credentials';
 import { retrying } from './retry';
 import { cloudLocation, localDirectory } from './sync-mapping';
 import { IncomingMonitor, type IncomingContent } from './incoming';
 import { Updater, runningBundle } from './updater';
+import {
+  DEFAULT_WEBDAV_PORT,
+  WEBDAV_FLAG,
+  WEBDAV_UNAVAILABLE,
+  WEBDAV_USERNAME,
+  ensureWebdavKey,
+  webdavUrl,
+} from './webdav';
+import {
+  mintWebdavToken,
+  readWebdavSettings,
+  webdavCacheDir,
+  webdavKeys,
+  webdavMountPoint,
+  webdavSecrets,
+  writeWebdavSettings,
+  type WebdavSettings,
+} from './local-webdav';
+import { isWebdavKeyRequest } from './webdav-cli';
+import { DriveDav } from './drive-dav';
+import { apiDrive } from './drive-dav-api';
+import {
+  canMount,
+  mapInExplorer,
+  mountInFinder,
+  unmount,
+  unmountNow,
+  type WebdavMount,
+} from './webdav-mount';
 // fetch closes idle connections after 4s, so the first request after a quiet moment
 // paid a fresh TCP + TLS handshake (about 0.6s far from the API region). Keeping them
 // open longer lets a sync after a pause start immediately.
 setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 600_000 }));
-// Keep existing credentials and sync state when the display name changes.
-const legacyDataPath = app.isPackaged
-  ? path.join(app.getPath('appData'), 'Harbor')
-  : app.getPath('userData');
-const userDataPath = existsSync(legacyDataPath) ? legacyDataPath : app.getPath('userData');
-app.setName('harbor0');
-app.setPath('userData', userDataPath);
-// Development launches load public connection settings beside package.json.
-// Packaged applications load public release settings, with shell overrides.
-if (!app.isPackaged) loadDesktopEnvironment(path.resolve(__dirname, '..'), process.env);
-else loadBundledDesktopConfiguration(__dirname, process.env);
-const { development, apiUrl, webUrl, configured, configurationError } = desktopConfiguration(
-  process.env,
-  app.isPackaged,
-);
+const { development, apiUrl, webUrl, configured, configurationError } = prepareAppEnvironment();
 let window: BrowserWindow;
 let tray: Tray;
 let journal: Journal;
@@ -97,7 +104,6 @@ const incomingNotifications = new Set<Notification>();
 let notificationError: string | null = null;
 const localSelections = new Map<string, string>();
 const rendererPath = path.join(__dirname, 'renderer/index.html');
-const securePath = () => path.join(app.getPath('userData'), 'credentials.bin');
 // Revoking this computer stops its sync and backups for good: the next sign-in starts fresh.
 // Signing it out only pauses them, so its folders are kept for when it signs in again.
 let revokedJournal: Journal | undefined;
@@ -114,21 +120,115 @@ function noteRevoked(error: unknown) {
           ? 'This computer was signed out from another device. Sign in again to resume syncing; your local files were kept.'
           : 'Your session ended. Sign in again to continue.';
 }
-const session = new DesktopSession({
-  async persist(saved) {
-    if (
-      !safeStorage.isEncryptionAvailable() ||
-      (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')
-    )
-      throw new Error(
-        'Enable an OS keychain before signing in. harbor0 will not store unencrypted credentials.',
-      );
-    await writeFile(securePath(), safeStorage.encryptString(JSON.stringify(saved)), {
-      mode: 0o600,
+// The local WebDAV server (Settings → Local WebDAV server); one change at a time. It serves
+// My Drive through the app's own session, so encrypted accounts are decrypted on this computer.
+let webdav: DriveDav | undefined;
+let webdavPasswordShown: string | undefined;
+let webdavMountSecret: string | undefined;
+/** The server as a drive in Finder or File Explorer, while connected. */
+let webdavMount: WebdavMount | undefined;
+let webdavSettings: WebdavSettings = { enabled: false, port: DEFAULT_WEBDAV_PORT };
+let webdavError: string | null = null;
+let webdavQueue: Promise<unknown> = Promise.resolve();
+let accountId: string | undefined;
+async function stopWebdav() {
+  const server = webdav;
+  webdav = undefined;
+  await disconnectWebdav();
+  await server?.stop();
+}
+async function disconnectWebdav() {
+  const mount = webdavMount;
+  webdavMount = undefined;
+  if (mount) await unmount(mount);
+}
+function webdavTask<T>(task: () => Promise<T>) {
+  const run = webdavQueue.then(task, task);
+  webdavQueue = run.catch(() => {});
+  return run;
+}
+function webdavView() {
+  const executable = process.execPath.includes(' ') ? `"${process.execPath}"` : process.execPath;
+  const encrypted = accountReady && vault.current().enabled;
+  return {
+    enabled: webdavSettings.enabled,
+    running: !!webdav?.running,
+    encrypted,
+    url: webdavUrl(webdavSettings.port),
+    username: WEBDAV_USERNAME,
+    password: webdav?.running ? (webdavPasswordShown ?? null) : null,
+    // Finder on a Mac, File Explorer on Windows.
+    mount: canMount() ? (webdavMount ?? null) : undefined,
+    error:
+      webdavError ??
+      (webdav?.running && vault.locked
+        ? 'Unlock your encrypted files to open them over WebDAV.'
+        : null),
+    // `harbor0 webdav` uses an access token, which can't read encrypted files.
+    command: encrypted
+      ? null
+      : app.isPackaged
+        ? `${executable} webdav`
+        : 'npm run dev:desktop -- webdav',
+  };
+}
+function sendWebdav() {
+  window?.webContents.send('harbor:webdav', webdavView());
+}
+/** For `harbor0 webdav`: the saved key when it still works for this account, otherwise a new access token. */
+const currentWebdavKey = () =>
+  ensureWebdavKey({
+    apiUrl,
+    userId: accountId,
+    load: webdavKeys.load,
+    save: webdavKeys.save,
+    mint: () => mintWebdavToken(api),
+  });
+async function startWebdav() {
+  await stopWebdav();
+  if (!webdavSettings.enabled || !accountReady || !accountId) return sendWebdav();
+  try {
+    // Turned on earlier, but the account's flag may be off now.
+    const { flags } = await api.me();
+    if (!flags[WEBDAV_FLAG]) throw new Error(WEBDAV_UNAVAILABLE);
+    const port = webdavSettings.port;
+    const secrets = await webdavSecrets(accountId);
+    webdavPasswordShown = secrets.password;
+    // Only File Explorer uses the mount path without a password.
+    webdavMountSecret = process.platform === 'win32' ? secrets.mountSecret : undefined;
+    const server = new DriveDav({
+      drive: apiDrive(api),
+      username: WEBDAV_USERNAME,
+      password: webdavPasswordShown,
+      mountSecret: webdavMountSecret,
+      port,
+      tempDir: webdavCacheDir(port),
+      onError: (error) => console.error('WebDAV request failed', error),
     });
-    await chmod(securePath(), 0o600);
-  },
-  clear: () => rm(securePath(), { force: true }),
+    await server.start();
+    webdav = server;
+    webdavError = null;
+  } catch (error) {
+    webdavError = (error as Error).message;
+  }
+  sendWebdav();
+}
+/** Signing out revokes the server's access token, which also stops `harbor0 webdav`. */
+async function revokeWebdavKey() {
+  await stopWebdav();
+  const key = await webdavKeys.load().catch(() => undefined);
+  if (key && key.apiUrl === apiUrl && key.userId === accountId) {
+    try {
+      await api.request(`/v1/tokens/${key.tokenId}`, { method: 'DELETE' });
+    } catch {
+      /* The device list still shows it, so it can be revoked there. */
+    }
+    await webdavKeys.remove();
+  }
+}
+const session = new DesktopSession({
+  persist: (saved) => writeSealed(sessionFile(), saved),
+  clear: () => removeSealed(sessionFile()),
   signedOut() {
     live?.stop();
     live = undefined;
@@ -139,6 +239,8 @@ const session = new DesktopSession({
     const previous = engine;
     engine = undefined;
     accountReady = false;
+    accountId = undefined;
+    void webdavTask(stopWebdav).then(sendWebdav);
     localSelections.clear();
     stoppingSync = Promise.all([stoppingSync, previous?.stop()]).then(() => {});
     const revoked = revokedJournal;
@@ -152,27 +254,12 @@ const session = new DesktopSession({
   },
   async renew(refreshToken) {
     if (!configured) throw new Error(configurationError);
-    const response = await fetch(apiUrl + '/v1/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    });
-    // A gateway error page is not JSON; it means the server is unavailable, not signed out.
-    const data = await response.json().catch(() => undefined);
-    if (!response.ok || !data) {
-      const unavailable = !data?.error?.code && (response.ok || response.status >= 500);
-      const error = new RenewalError(
-        data?.error?.code ?? (unavailable ? 'BACKEND_UNAVAILABLE' : 'REQUEST_FAILED'),
-        data?.error?.message ??
-          (unavailable
-            ? 'harbor0 is temporarily unavailable. Try again in a moment.'
-            : 'Could not renew your session. Try again.'),
-        response.ok ? 502 : response.status,
-      );
+    try {
+      return await requestRenewal(apiUrl, refreshToken);
+    } catch (error) {
       noteRevoked(error);
       throw error;
     }
-    return data;
   },
 });
 const transport = retrying(
@@ -209,6 +296,8 @@ function vaultChanged() {
     window?.webContents.send('harbor:status', statusView(journal, engine.state));
     if (!vault.locked) engine.wake();
   }
+  // The locked notice in Settings follows the vault.
+  sendWebdav();
 }
 const e2eeView = () =>
   vault.current().enabled
@@ -300,6 +389,7 @@ async function connected() {
     }
   }
   journal.set('publicId', response.device.devicePublicId);
+  accountId = user.id;
   await engine?.stop();
   const activeJournal = journal;
   engine = new SyncEngine(
@@ -352,8 +442,10 @@ async function connected() {
     ticket: () => api.request('/v1/realtime/tickets', { method: 'POST' }),
     onMessage(message) {
       if (journal !== activeJournal) return;
-      if (message.type === 'changes') activeEngine.wake();
-      else void monitor.poll();
+      if (message.type === 'changes') {
+        activeEngine.wake();
+        webdav?.forget();
+      } else void monitor.poll();
       window?.webContents.send('harbor:live', { connected: true, type: message.type });
     },
     onConnected(connected) {
@@ -362,6 +454,7 @@ async function connected() {
       // Anything that happened while disconnected was not pushed.
       if (connected) {
         activeEngine.wake();
+        webdav?.forget();
         void monitor.poll();
       }
       window?.webContents.send('harbor:live', { connected });
@@ -369,6 +462,7 @@ async function connected() {
   });
   live.start();
   window?.webContents.send('harbor:authenticated');
+  void webdavTask(startWebdav);
   return { user };
 }
 // Windows shows notifications only for the app ID the installer gave the Start menu shortcut.
@@ -385,7 +479,14 @@ if (process.platform === 'win32') {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, _argv, _cwd, data) => {
+    // `harbor0 webdav` asks for an access key while this app holds the account's session.
+    if (isWebdavKeyRequest(data)) {
+      // An encrypted account's files can't be read with an access token.
+      if (accountReady && !authTransition && !vault.current().enabled)
+        void webdavTask(currentWebdavKey).catch(() => {});
+      return;
+    }
     window?.show();
     window?.focus();
   });
@@ -649,6 +750,7 @@ app
         signedIn: session.signedIn && accountReady,
         signedOutReason,
         live: live?.connected ?? false,
+        e2ee: accountReady ? e2eeView() : null,
         roots: (accountReady ? journal.roots() : []).map((r) => ({
           ...r,
           ...journal.fileCounts(r.id),
@@ -660,7 +762,6 @@ app
             : r.localPath,
         })),
         sync: engine ? statusView(journal, engine.state) : { message: 'Sign in to start syncing' },
-        e2ee: accountReady ? e2eeView() : null,
         jobs: (accountReady ? journal.jobs() : []).map((j) => ({
           id: j.id,
           rootId: j.rootId,
@@ -1352,6 +1453,40 @@ app
       },
     });
     updater.start();
+    ipc('webdav', z.undefined(), async () => webdavView());
+    ipc('setWebdav', z.object({ enabled: z.boolean() }).strict(), async ({ enabled }) => {
+      webdavSettings = { ...webdavSettings, enabled };
+      await writeWebdavSettings(webdavSettings);
+      webdavError = null;
+      await webdavTask(enabled ? startWebdav : stopWebdav);
+      return webdavView();
+    });
+    ipc('openWebdavDrive', z.undefined(), async () => {
+      await webdavTask(async () => {
+        if (!webdav?.running || !webdavPasswordShown) throw new Error('Turn on the server first.');
+        const url = webdavUrl(webdavSettings.port);
+        webdavMount =
+          process.platform === 'win32'
+            ? await mapInExplorer(url.replace('/harbor0/', `/${webdavMountSecret}/harbor0/`))
+            : await mountInFinder({
+                url,
+                username: WEBDAV_USERNAME,
+                password: webdavPasswordShown,
+                mountPoint: webdavMountPoint(),
+              });
+      });
+      sendWebdav();
+      const error = await shell.openPath(webdavMount!.location);
+      if (error) throw new Error(error);
+      return webdavView();
+    });
+    ipc('disconnectWebdavDrive', z.undefined(), async () => {
+      await webdavTask(disconnectWebdav);
+      return webdavView();
+    });
+    ipc('copyText', z.object({ text: z.string().max(10_000) }).strict(), async ({ text }) => {
+      clipboard.writeText(text);
+    });
     ipc('updateStatus', z.undefined(), async () => updater!.status);
     ipc('checkForUpdate', z.undefined(), () => updater!.check());
     ipc('installUpdate', z.undefined(), async () => {
@@ -1405,6 +1540,7 @@ app
     });
     ipc('logout', z.undefined(), async () => {
       await engine?.stop();
+      await webdavTask(revokeWebdavKey);
       // Signing out removes this computer's copy of the encryption key, here and on the server.
       await vault.lock(api.request).catch(() => {});
       vault.reset();
@@ -1444,15 +1580,12 @@ app
       watch(__dirname, (_, file) => {
         if (file === '.reload') window.webContents.reloadIgnoringCache();
       });
+    webdavSettings = await readWebdavSettings();
     authTransition = true;
     try {
-      if (safeStorage.isEncryptionAvailable()) {
-        const saved = JSON.parse(safeStorage.decryptString(await readFile(securePath())));
-        // Older installations stored only the refresh token. Keep its provider
-        // expiry and bound the migrated local session by the file's timestamp.
-        const expiresAt =
-          saved.expiresAt ?? (await stat(securePath())).mtimeMs + SESSION_DURATION_SECONDS * 1000;
-        await session.restore({ refreshToken: saved.refreshToken, expiresAt });
+      const saved = await readSavedSession();
+      if (saved) {
+        await session.restore(saved);
         await connected();
       }
     } catch (error) {
@@ -1476,6 +1609,9 @@ app.on('before-quit', () => {
   live?.stop();
   incomingMonitor?.stop();
   void engine?.stop();
+  // Finder would otherwise wait on a server that's gone.
+  if (webdavMount) unmountNow(webdavMount);
+  void webdav?.stop();
 });
 app.on('window-all-closed', () => {
   /* The tray keeps sync alive. */

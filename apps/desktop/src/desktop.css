@@ -211,6 +211,50 @@
   width: 100%;
 }
 
+/* Settings → Local WebDAV server: copyable connection details. */
+.webdav-panel .details {
+  margin-bottom: 16px;
+  align-items: center;
+}
+.webdav-panel .details dd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.webdav-panel > .card-description {
+  margin-bottom: 16px;
+}
+.webdav-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.webdav-value code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.webdav-copy {
+  display: inline-grid;
+  place-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.webdav-copy:hover {
+  background: var(--fill-2);
+  color: var(--text);
+}
+.webdav-copy svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* Settings rows: an icon, what the setting is and its state, then its actions on the right. */
 .setting-rows {
   display: grid;
@@ -269,17 +313,39 @@
   text-align: left;
 }
 
-/* Settings: devices holding the encryption key. */
-.e2ee-devices {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* Settings → End-to-end encryption: this computer's lock state, key details, devices. */
+.e2ee-panel > .card-description {
+  margin-bottom: 16px;
 }
-.e2ee-devices li {
+.e2ee-status {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.e2ee-details {
+  margin: 20px 0 24px;
+}
+.e2ee-heading {
+  margin: 0 0 12px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.e2ee-devices > .setting-row {
+  padding: 10px 0;
+}
+.e2ee-footer {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 8px;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.e2ee-footer p {
+  flex: 1;
+  min-width: 240px;
+  margin: 0;
+  font-size: var(--text-sm);
 }

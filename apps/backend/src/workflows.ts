@@ -395,6 +395,7 @@ export class TransferWorkflows {
             await s.reference(tx, version.storageObjectId, 1);
             await tx.put(userPK(save.userId), `VERSION#${item.id}#${version.id}`, version);
             item.currentVersionId = version.id;
+            item.contentHash = version.contentHash;
             item.sizeBytes = entry.sizeBytes;
             item.mimeType = entry.mimeType;
           }

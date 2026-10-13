@@ -108,7 +108,15 @@ Finder mounts read-only unless the server advertises class 2.
 
 ## E2EE
 
-The cloud server must see plaintext, so it can't serve E2EE accounts, and those accounts stay `403`. Later, WebDAV for E2EE accounts can be a local bridge in the desktop app: a loopback-only server (`127.0.0.1`, random per-session password, `Host` header check against DNS rebinding) that decrypts with the device's key. Serving ciphertext to E2EE-aware clients (an rclone backend) waits until the encryption format is stable. Decrypting on the server with a user-supplied key is ruled out.
+The cloud server must see plaintext, so it can't serve E2EE accounts, and those accounts stay `403`. Decrypting on the server with a user-supplied key is ruled out.
+
+**Decided 2026-10-13: WebDAV ships only as the desktop app's local server, and the app no longer bundles rclone.** The app serves every account from its built-in server (`apps/desktop/src/drive-dav.ts`) through its own session, so it decrypts E2EE accounts with the device's key. The server listens on loopback only and checks the `Host` header against DNS rebinding. `harbor0 webdav` runs the same server from a terminal with an access token, so it refuses E2EE accounts.
+
+**Finder and File Explorer (2026-10-13).** My Drive is served at `/harbor0/`, and the top only lists it, so both name the drive harbor0. Settings → Local WebDAV server → Open in Finder / Open in File Explorer connects the drive (`apps/desktop/src/webdav-mount.ts`) and disconnects it when the server stops:
+- **Mac:** `mount_webdav -S -i -v harbor0`, run under `script` so the password is typed at its prompt instead of appearing in a process list. The mount point is `<userData>/WebDAV/harbor0`. NetAuthAgent (`mount volume`) left a dialog open, and `mount_webdav -a <fd>` never sent the password, so neither is used.
+- **Windows:** WebClient won't send Basic credentials over plain HTTP without a registry change, so `net use * http://127.0.0.1:<port>/<mountSecret>/harbor0 /persistent:no` maps a secret path that needs no password. The secret is per account and only accepted on Windows. Explorer's WebClient can't open files over 50 MB (`FileSizeLimitInBytes`).
+- Finder and Explorer create each file empty and then write it again; the server keeps the empty file in memory and uploads once, or uploads it empty after 30 s.
+- Verified: macOS webdavfs mount with password (quota shown), Windows 11 `net use` + mkdir/write/append/12 MB round trip/rename/move/copy/delete through a Parallels VM. Serving ciphertext to E2EE-aware clients (an rclone backend) waits until the encryption format is stable.
 
 ## Open decisions
 

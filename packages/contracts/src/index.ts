@@ -55,7 +55,7 @@ export const username = z
         'Choose a different username.',
       ),
   );
-export const platform = z.enum(['WEB', 'MACOS', 'WINDOWS', 'LINUX', 'IOS', 'ANDROID']);
+export const platform = z.enum(['WEB', 'MACOS', 'WINDOWS', 'LINUX', 'IOS', 'ANDROID', 'CLI']);
 export const transferState = z.enum([
   'PENDING_RECIPIENT_SIGNUP',
   'PENDING',
@@ -169,6 +169,10 @@ export const itemSchema = z.object({
   deletedAt: z.string().nullable(),
   /** The current version was encrypted on the uploading device; `sizeBytes` is its stored size. */
   encrypted: z.boolean().optional(),
+  /** SHA-256 of the current version; absent on files stored before it was recorded here. */
+  contentHash: hash.nullable().optional(),
+  /** When the uploading client last changed the file's content, if it said. */
+  modifiedAt: z.string().nullable().optional(),
 });
 export const syncFolderSchema = itemSchema.extend({
   syncDevices: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -185,6 +189,7 @@ export const versionSchema = z.object({
   contentHashAlgorithm: z.literal('SHA256'),
   sourceDeviceId: z.string().nullable(),
   encrypted: z.boolean().optional(),
+  modifiedAt: z.string().nullable().optional(),
   createdAt: z.string(),
 });
 export const deviceSchema = z.object({
@@ -315,6 +320,7 @@ export const uploadInput = z
     baseRevision: z.number().int().positive().optional(),
     /** The bytes are encrypted by this device; required on end-to-end encrypted accounts. */
     encrypted: z.boolean().optional(),
+    modifiedAt: z.iso.datetime().optional(),
   })
   .strict();
 export const completedPart = z
@@ -440,3 +446,29 @@ export type FolderDownload = z.infer<typeof folderDownloadSchema>;
 export * from './flags';
 export * from './client-events';
 export * from './e2ee';
+/** What a personal access token may do: everything in My Drive, or only list and download. */
+export const accessTokenScope = z.enum(['FULL', 'READ']);
+export type AccessTokenScope = z.infer<typeof accessTokenScope>;
+/** A personal access token for tools such as rclone; the secret itself is shown only once. */
+export const accessTokenSchema = z.object({
+  /** The token's device, which also appears in the device list. */
+  id: z.string(),
+  name: z.string(),
+  scope: accessTokenScope,
+  createdAt: z.string(),
+  /** Null when the token never expires. */
+  expiresAt: z.string().nullable(),
+  lastUsedAt: z.string().nullable(),
+});
+export type AccessToken = z.infer<typeof accessTokenSchema>;
+export const accessTokenInput = z
+  .object({
+    name: z.string().trim().min(1).max(60),
+    scope: accessTokenScope.default('FULL'),
+    /** Null for a token that never expires. */
+    expiresInDays: z
+      .union([z.literal(30), z.literal(90), z.literal(365)])
+      .nullable()
+      .default(365),
+  })
+  .strict();

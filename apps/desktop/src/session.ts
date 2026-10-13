@@ -6,6 +6,29 @@ export type SavedSession = { refreshToken: string; expiresAt: number };
 /** A failed session renewal, as opposed to a failed request made with the session. */
 export class RenewalError extends ApiError {}
 
+/** Exchanges a refresh token for new tokens; a server outage is not reported as signed out. */
+export async function requestRenewal(apiUrl: string, refreshToken: string): Promise<Tokens> {
+  const response = await fetch(apiUrl + '/v1/auth/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken }),
+  });
+  // A gateway error page is not JSON; it means the server is unavailable, not signed out.
+  const data = await response.json().catch(() => undefined);
+  if (!response.ok || !data) {
+    const unavailable = !data?.error?.code && (response.ok || response.status >= 500);
+    throw new RenewalError(
+      data?.error?.code ?? (unavailable ? 'BACKEND_UNAVAILABLE' : 'REQUEST_FAILED'),
+      data?.error?.message ??
+        (unavailable
+          ? 'harbor0 is temporarily unavailable. Try again in a moment.'
+          : 'Could not renew your session. Try again.'),
+      response.ok ? 502 : response.status,
+    );
+  }
+  return data;
+}
+
 export function isSessionError(error: unknown) {
   return (
     error instanceof ApiError &&

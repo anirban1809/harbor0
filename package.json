@@ -22,6 +22,7 @@
     "openapi": "tsx scripts/openapi.ts",
     "infra:synth": "cdk synth --app 'npx tsx infra/app.ts'",
     "local:setup": "tsx --env-file=.env scripts/local-setup.ts",
+    "local:token": "tsx --env-file=.env scripts/local-access-token.ts",
     "test:integration": "RUN_INTEGRATION=true vitest run",
     "test:e2e": "playwright test",
     "test:desktop": "npm run build -w @harbor/desktop && tsx scripts/desktop-smoke.ts",

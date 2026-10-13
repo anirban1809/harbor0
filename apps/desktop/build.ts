@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const main: BuildOptions = {
-  entryPoints: ['src/main.ts'],
+  entryPoints: ['src/entry.ts'],
   outfile: 'dist/main.cjs',
   bundle: true,
   platform: 'node',

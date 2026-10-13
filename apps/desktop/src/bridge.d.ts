@@ -4,6 +4,22 @@ type TwoFactorStep = {
   twoFactor?: import('@harbor/contracts').TwoFactorChallenge;
   failed?: { code?: string; message: string; session?: string };
 };
+/** The local WebDAV server, as Settings shows it. */
+type WebdavState = {
+  enabled: boolean;
+  running: boolean;
+  /** End-to-end encrypted: served from inside the app, which decrypts on this computer. */
+  encrypted: boolean;
+  url: string;
+  username: string;
+  /** Shown only while the server runs. */
+  password: string | null;
+  /** Connected in Finder or File Explorer; undefined where neither exists. */
+  mount?: { kind: 'finder' | 'explorer'; location: string } | null;
+  error: string | null;
+  /** How to start it from a terminal; null for encrypted accounts, which can't. */
+  command: string | null;
+};
 declare global {
   interface Window {
     harbor: {
@@ -99,6 +115,13 @@ declare global {
       checkForUpdate: () => Promise<import('./updater').UpdateStatus>;
       /** Downloads and installs the available update, then restarts the app. */
       installUpdate: () => Promise<{ restarting: boolean }>;
+      webdav: () => Promise<WebdavState>;
+      setWebdav: (input: { enabled: boolean }) => Promise<WebdavState>;
+      /** Connects the server as a drive in Finder or File Explorer and opens it. */
+      openWebdavDrive: () => Promise<WebdavState>;
+      disconnectWebdavDrive: () => Promise<WebdavState>;
+      copyText: (input: { text: string }) => Promise<void>;
+      onWebdav: (callback: (state: WebdavState) => void) => () => void;
       onUpdate: (callback: (status: import('./updater').UpdateStatus) => void) => () => void;
       onStatus: (callback: (state: any) => void) => () => void;
       /** Live updates connection changes and pushed hints to refresh. */

@@ -8,6 +8,7 @@ export const platformNames: Record<string, string> = {
   LINUX: 'Linux computer',
   IOS: 'iPhone or iPad',
   ANDROID: 'Android device',
+  CLI: 'Access token',
 };
 export const isPhone = (device: Pick<Device, 'platform'>) =>
   device.platform === 'IOS' || device.platform === 'ANDROID';

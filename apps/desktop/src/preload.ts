@@ -38,6 +38,11 @@ const channels = [
   'updateStatus',
   'checkForUpdate',
   'installUpdate',
+  'webdav',
+  'setWebdav',
+  'openWebdavDrive',
+  'disconnectWebdavDrive',
+  'copyText',
 ] as const;
 const bridge = Object.fromEntries(
   channels.map((name) => [
@@ -104,6 +109,11 @@ contextBridge.exposeInMainWorld('harbor', {
     const listener = () => callback();
     ipcRenderer.on('harbor:send', listener);
     return () => ipcRenderer.removeListener('harbor:send', listener);
+  },
+  onWebdav: (callback: (state: unknown) => void) => {
+    const listener = (_: unknown, state: unknown) => callback(state);
+    ipcRenderer.on('harbor:webdav', listener);
+    return () => ipcRenderer.removeListener('harbor:webdav', listener);
   },
   onAuthenticated: (callback: () => void) => {
     const listener = () => callback();

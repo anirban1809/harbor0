@@ -2,6 +2,19 @@
 
 rclone is an open-source command-line tool, written in Go, that copies, syncs and mounts files across more than 70 storage services. Adding a `harbor0` backend to it lets people use harbor0 from Linux, NAS boxes (Synology, Unraid, TrueNAS), servers and scripts. None of these have a harbor0 client today, and the Windows app isn't ready.
 
+## Status (2026-10-10)
+
+Built on branch `feat/rclone`: Phases 1–3, the web Settings card, the `rclone` flag, and the build script for the harbor0 build of rclone (now its own repo, [anirban1809/harbor0-rclone](https://github.com/anirban1809/harbor0-rclone), checked out next to this one). rclone's integration suite (`fstests`) passes against a local API. Not built yet: the admin console views, goreleaser releases (Phase 4a), the upstream pull request (Phase 4b), and the hash backfill for old files (the backend falls back to reading the version's hash).
+
+Changes from the plan below:
+- `POST /v1/tokens` returns `{ token, item }`, not `accessToken`, because the web session proxy strips any `accessToken` field from responses.
+- Instead of `GET /v1/drive/resolve`, there is `GET /v1/drive/folders/:id/lookup?name=`, which finds one child by name. rclone's directory cache walks paths with it.
+- `POST /v1/drive/items/:id/move` takes an optional `name`, so rclone moves and renames in one request.
+- Token clients reach only My Drive, uploads, downloads, search and `GET /v1/users/me`; every other route answers `403 TOKEN_NOT_ALLOWED`.
+- Server-side copy is not supported yet (Phase 2 item 4).
+- `upload_concurrency` defaults to 2, because harbor0 parts are 64 MiB and each is held in memory.
+- `npm run local:token -- <email>` makes a token for an account in the local DynamoDB table without signing in.
+
 ## What exists today
 
 - Every API route except the public ones needs a Cognito access token in `Authorization: Bearer`. `route()` (`api.ts:216`) also requires a registered device: `identity.deviceId` comes from the token's `origin_jti` (`auth.ts:175`) and is checked with `service.checkDevice`.

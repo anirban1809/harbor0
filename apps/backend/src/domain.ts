@@ -172,6 +172,8 @@ export type Upload = {
     contentHash: string | null;
     /** The client encrypted the bytes; see e2ee.ts. */
     encrypted?: boolean;
+    /** The client's own modification time for the file, when it sent one. */
+    modifiedAt?: string | null;
     state: 'CREATED' | 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'FAILED' | 'ABORTED' | 'EXPIRED';
     multipart: true;
     partSizeBytes: number;
@@ -823,6 +825,52 @@ export class StorageService {
             ),
         };
     }
+    /** The live item called `name` in a folder, matched the way names are kept unique. */
+    async findChild(userId: string, parentId: string | null, name: string) {
+        const tx = new Transaction(this.repo);
+        const owner = parentId ? (await this.authorized(tx, userId, parentId)).owner : userId;
+        await this.parent(tx, owner, parentId);
+        const claim = await tx.get<{ id: string; }>(userPK(owner), nameKey(parentId, name));
+        assert(claim, 'ITEM_NOT_FOUND', 'Item was not found.', 404);
+        const { item } = await this.metadata(userId, claim.id);
+        assert(
+            !item.deletedAt && !(item as StagedItem).stagingId,
+            'ITEM_NOT_FOUND',
+            'Item was not found.',
+            404,
+        );
+        return { item };
+    }
+    /**
+     * Sets a file's modification time as its uploading client sees it. Only the timestamp
+     * changes: the revision stays, so other devices don't treat it as new content.
+     */
+    async setModified(
+        userId: string,
+        itemId: string,
+        input: { baseRevision: number; modifiedAt: string; },
+    ) {
+        const item = await transact(this.repo, async (tx) => {
+            const { item, owner } = await this.authorized(tx, userId, itemId, true);
+            assert(item.type === 'FILE' && !item.deletedAt, 'ITEM_NOT_FOUND', 'File was not found.', 404);
+            assert(
+                item.revision === input.baseRevision,
+                'REVISION_CONFLICT',
+                'This item changed on another device.',
+                409,
+                { serverItem: item, serverRevision: item.revision },
+            );
+            const changed = { ...item, modifiedAt: input.modifiedAt };
+            await tx.put(userPK(owner), `ITEM#${item.id}`, changed);
+            if (item.currentVersionId) {
+                const key = `VERSION#${item.id}#${item.currentVersionId}`;
+                const version = await tx.get<FileVersion>(userPK(owner), key);
+                if (version) await tx.put(userPK(owner), key, { ...version, modifiedAt: input.modifiedAt });
+            }
+            return changed;
+        });
+        return { item: await this.viewed(userId, item) };
+    }
     async browseSpecial(
         userId: string,
         filter: Record<string, string>,
@@ -995,6 +1043,7 @@ export class StorageService {
                     mimeType: input.mimeType,
                     contentHash: input.contentHash ?? null,
                     ...(input.encrypted ? { encrypted: true } : {}),
+                    modifiedAt: input.modifiedAt ?? null,
                     state: 'CREATED',
                     multipart: true,
                     partSizeBytes: Math.max(
@@ -1188,6 +1237,8 @@ export class StorageService {
             item.sizeBytes = u.expectedSizeBytes;
             item.mimeType = u.mimeType;
             item.currentVersionId = u.versionId;
+            item.contentHash = contentHash;
+            item.modifiedAt = u.modifiedAt ?? null;
             item.cloudState = 'AVAILABLE';
             if (u.encrypted) item.encrypted = true;
             else delete item.encrypted;
@@ -1204,6 +1255,7 @@ export class StorageService {
                 contentHashAlgorithm: 'SHA256',
                 sourceDeviceId: u.deviceId,
                 ...(u.encrypted ? { encrypted: true } : {}),
+                modifiedAt: u.modifiedAt ?? null,
                 createdAt: now(),
             };
             await tx.put(userPK(owner), `VERSION#${item.id}#${version.id}`, version);
@@ -1275,8 +1327,14 @@ export class StorageService {
             const current = await tx.get<StoredObject>('OBJECT', object.id);
             if (current) await tx.put('OBJECT', object.id, { ...current, contentHash: actual });
             const version = await tx.get<FileVersion>(userPK(job.userId!), job.key!);
-            if (version?.storageObjectId === object.id)
+            if (version?.storageObjectId === object.id) {
                 await tx.put(userPK(job.userId!), job.key!, { ...version, contentHash: actual });
+                // Listings carry the current version's hash, which must be corrected too.
+                const itemKey = `ITEM#${version.driveItemId}`;
+                const item = await tx.get<DriveItem>(userPK(job.userId!), itemKey);
+                if (item?.currentVersionId === version.id)
+                    await tx.put(userPK(job.userId!), itemKey, { ...item, contentHash: actual });
+            }
         });
         console.warn(JSON.stringify({ event: 'upload_hash_corrected', objectId: object.id }));
         return true;
@@ -1742,6 +1800,8 @@ export class StorageService {
                     await tx.put(userPK(owner), `VERSION#${itemId}#${v.id}`, v);
                     await this.reference(tx, v.storageObjectId, 1);
                     item.currentVersionId = v.id;
+                    item.contentHash = v.contentHash;
+                    item.modifiedAt = v.modifiedAt ?? null;
                     item.cloudState = 'AVAILABLE';
                     item.sizeBytes = v.sizeBytes;
                     if (v.encrypted) item.encrypted = true;
@@ -2243,6 +2303,7 @@ export class StorageService {
                         item.sizeBytes = e.sizeBytes;
                         item.mimeType = e.mimeType;
                         item.currentVersionId = v.id;
+                        item.contentHash = v.contentHash;
                         await this.reference(tx, v.storageObjectId, 1);
                         await tx.put(userPK(userId), `VERSION#${item.id}#${v.id}`, v);
                     }

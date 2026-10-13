@@ -73,6 +73,7 @@ import { EmptyState, FileEmptyState, LoadError } from '../components/empty-state
 import { AppearanceSettings } from '../components/appearance-settings';
 import { DeleteAccount } from '../components/delete-account';
 import { TwoFactorSettings } from '../components/two-factor-settings';
+import { AccessTokenSettings } from '../components/access-token-settings';
 import { EmailSettings } from '../components/email-settings';
 import { useAccountAppearance } from '../lib/appearance';
 import {
@@ -2010,6 +2011,7 @@ function Workspace() {
               </Card>
               <E2eeSettings api={api} encrypted={!!user.e2ee} usedBytes={usage.usedBytes} />
               <TwoFactorSettings api={api} email={user.email} />
+              <AccessTokenSettings api={api} />
               <EmailSettings
                 productUpdates={user.emailPreferences?.productUpdates !== false}
                 busy={busy}
