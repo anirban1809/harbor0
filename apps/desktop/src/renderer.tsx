@@ -215,6 +215,7 @@ function App() {
   const [storageError, setStorageError] = useState(false);
   const [account, setAccount] = useState<any>();
   const [pdfPreview, setPdfPreview] = useState(false);
+  const [flags, setFlags] = useState<Record<string, boolean>>();
   const [query, setQuery] = useState('');
   const [driveRevision, setDriveRevision] = useState(0);
   const trailId = trail.at(-1)?.id ?? null;
@@ -383,6 +384,7 @@ function App() {
           .then(({ storage: usage, user, flags }) => {
             if (!current()) return;
             setAccount(user);
+            setFlags(flags);
             setPdfPreview(flags?.['pdf-preview'] === true);
             if (!usage) {
               setStorageError(true);
@@ -1621,7 +1623,7 @@ function App() {
                   </dl>
                 </Card>
               )}
-              {e2ee && (
+              {(e2ee || flags?.e2ee) && (
                 <EncryptionPanel
                   state={e2ee}
                   busy={busy}
