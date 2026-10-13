@@ -1,5 +1,7 @@
 import { build, type BuildOptions } from 'esbuild';
-import { mkdir, writeFile, copyFile, rm } from 'node:fs/promises';
+import { cp, mkdir, writeFile, copyFile, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const main: BuildOptions = {
@@ -49,12 +51,22 @@ export async function prepare() {
   await mkdir('dist/renderer', { recursive: true });
   await writeFile(
     'dist/renderer/index.html',
-    `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; media-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>harbor0</title><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; media-src 'self' https://*.r2.cloudflarestorage.com http://127.0.0.1:9100; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>harbor0</title><link rel="stylesheet" href="app.css"></head><body><div id="root"></div><script type="module" src="app.js"></script></body></html>`,
   );
   // Shared harbor0 artwork is also used by the web favicon and app installers.
   await copyFile('assets/icon.png', 'dist/icon.png');
   await copyFile('assets/trayTemplate.png', 'dist/trayTemplate.png');
   await copyFile('assets/trayTemplate@2x.png', 'dist/trayTemplate@2x.png');
+  // pdf.js's worker runs from the renderer; its data files are read by the main process.
+  const pdfjs = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
+  await copyFile(`${pdfjs}/build/pdf.worker.min.mjs`, 'dist/renderer/pdf.worker.min.mjs');
+  await rm('dist/pdfjs', { recursive: true, force: true });
+  for (const dir of ['cmaps', 'standard_fonts', 'wasm'])
+    await cp(`${pdfjs}/${dir}`, `dist/pdfjs/${dir}`, {
+      recursive: true,
+      // The scripting sandbox is never enabled, so its interpreter is not needed.
+      filter: (file) => !path.basename(file).startsWith('quickjs'),
+    });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]!).href) {

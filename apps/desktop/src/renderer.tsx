@@ -8,6 +8,7 @@ import {
   type ZipDownloadStatus,
 } from '../../web/components/zip-download-status';
 import { previewKind, type PreviewLoader } from '../../web/lib/file-preview';
+import { setPdfViewerHost } from '../../web/lib/pdf-viewer-host';
 import { UploadTray } from '../../web/components/upload-tray';
 import { finishedKeys, mergeUploads, type FileUpload } from '../../web/lib/upload-activity';
 import { Input, InputGroup, PasswordInput, Textarea } from '../../web/components/ui/input';
@@ -108,12 +109,23 @@ const UNAVAILABLE: Partial<Record<SyncIssueCode, string>> = {
   PERMISSION_DENIED: 'Can’t read folder',
 };
 const bridge = window.harbor;
+// The renderer loads from local files and may not fetch: pdf.js's worker is copied next to it,
+// and its data files and the PDFs themselves (see loadPreview) are read by the main process.
+setPdfViewerHost({
+  worker: () => new Worker(new URL('pdf.worker.min.mjs', location.href), { type: 'module' }),
+  readAsset: (path) => bridge.pdfAsset({ path }),
+});
 const request = (path: string, method = 'GET', body?: unknown) =>
   bridge.request({ path, method, body });
 const appearanceRequest: Transport = (path, init) => request(path, init?.method, init?.body);
 const backupApi = new ApiClient(appearanceRequest);
 const loadPreview: PreviewLoader = async (item, signal) => {
   if (previewKind(item) === 'text') return bridge.previewText({ driveItemId: item.id });
+  if (previewKind(item) === 'pdf') {
+    const driveItemId = item.id;
+    const { size } = await bridge.previewPdf({ driveItemId });
+    return { size, read: (begin, end) => bridge.previewRange({ driveItemId, begin, end }) };
+  }
   const result = await request('/v1/downloads', 'POST', { driveItemId: item.id });
   signal.throwIfAborted();
   return { url: result.downloadUrl };
@@ -202,6 +214,7 @@ function App() {
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [storageError, setStorageError] = useState(false);
   const [account, setAccount] = useState<any>();
+  const [pdfPreview, setPdfPreview] = useState(false);
   const [query, setQuery] = useState('');
   const [driveRevision, setDriveRevision] = useState(0);
   const trailId = trail.at(-1)?.id ?? null;
@@ -367,9 +380,10 @@ function App() {
       {
         // Storage failure should not block browsing files.
         void request('/v1/users/me')
-          .then(({ storage: usage, user }) => {
+          .then(({ storage: usage, user, flags }) => {
             if (!current()) return;
             setAccount(user);
+            setPdfPreview(flags?.['pdf-preview'] === true);
             if (!usage) {
               setStorageError(true);
               return;
@@ -1147,6 +1161,7 @@ function App() {
           )}
           {section === 'My Drive' && !(place && !trail.length && !query) && (
             <DriveWorkspace
+              preloadPdf={pdfPreview}
               onActivity={activity.publish}
               request={appearanceRequest}
               parentId={parentId}
@@ -1718,6 +1733,7 @@ function App() {
       </div>
       {modal?.mode === 'preview' && (
         <FilePreview
+          pdf={pdfPreview}
           cacheScope={status.accountId ?? 'desktop-session'}
           item={modal.item}
           load={loadPreview}

@@ -77,6 +77,13 @@ declare global {
       previewText: (input: {
         driveItemId: string;
       }) => Promise<{ text: string; truncated: boolean }>;
+      previewPdf: (input: { driveItemId: string }) => Promise<{ size: number }>;
+      previewRange: (input: {
+        driveItemId: string;
+        begin: number;
+        end: number;
+      }) => Promise<Uint8Array>;
+      pdfAsset: (input: { path: string }) => Promise<Uint8Array>;
       download: (input: {
         name: string;
         folder?: boolean;

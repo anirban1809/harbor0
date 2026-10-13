@@ -414,6 +414,44 @@ function encryptedPreview(driveItemId: string) {
   }
   return reader;
 }
+/**
+ * PDFs being previewed, read a range at a time because the renderer may not fetch: decrypted
+ * ranges of an encrypted file, or ranges of its download link, signed again once it expires.
+ */
+const pdfPreviews = new Map<string, Promise<PlainReader>>();
+function openPdfPreview(driveItemId: string) {
+  const reader = (async (): Promise<PlainReader> => {
+    let link: { downloadUrl: string; sizeBytes: number; encrypted?: boolean } = await api.download({
+      driveItemId,
+    });
+    if (link.encrypted) {
+      // Opened afresh, in case the file changed since an earlier preview.
+      encryptedPreviews.delete(driveItemId);
+      return encryptedPreview(driveItemId);
+    }
+    const read = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
+      const response = await fetch(link.downloadUrl, {
+        headers: { Range: `bytes=${begin}-${end - 1}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if ((response.status === 403 || response.status === 400) && retry) {
+        await response.body?.cancel();
+        link = await api.download({ driveItemId });
+        return read(begin, end, false);
+      }
+      if (!response.ok) throw new Error(`Could not read the file (${response.status}).`);
+      const data = new Uint8Array(await response.arrayBuffer());
+      // Storage that ignores Range sends the whole file.
+      return response.status === 206 ? data : data.slice(begin, end);
+    };
+    return { size: link.sizeBytes, read: (begin, end) => read(begin, end) };
+  })();
+  reader.catch(() => pdfPreviews.delete(driveItemId));
+  pdfPreviews.delete(driveItemId);
+  pdfPreviews.set(driveItemId, reader);
+  while (pdfPreviews.size > 10) pdfPreviews.delete(pdfPreviews.keys().next().value!);
+  return reader;
+}
 function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<unknown>) {
   ipcMain.handle('harbor:' + name, async (event, input) => {
     if (
@@ -777,6 +815,31 @@ app
         }
         return fetchTextPreview(result.downloadUrl, result.sizeBytes, AbortSignal.timeout(30_000));
       },
+    );
+    // The renderer may not fetch, so PDF previews read their bytes here, a range at a time.
+    ipc(
+      'previewPdf',
+      z.object({ driveItemId: z.string().min(1).max(256) }).strict(),
+      async ({ driveItemId }) => ({ size: (await openPdfPreview(driveItemId)).size }),
+    );
+    ipc(
+      'previewRange',
+      z
+        .object({
+          driveItemId: z.string().min(1).max(256),
+          begin: z.number().int().min(0),
+          end: z.number().int().positive(),
+        })
+        .strict()
+        .refine((range) => range.end > range.begin && range.end - range.begin <= 16 * 1024 * 1024),
+      async ({ driveItemId, begin, end }) =>
+        (await (pdfPreviews.get(driveItemId) ?? openPdfPreview(driveItemId))).read(begin, end),
+    );
+    // pdf.js's fonts, CMaps and image decoders, which build.ts copies next to this file.
+    ipc(
+      'pdfAsset',
+      z.object({ path: z.string().regex(/^(cmaps|standard_fonts|wasm)\/[\w.+-]+$/) }).strict(),
+      async (input) => new Uint8Array(await readFile(path.join(__dirname, 'pdfjs', input.path))),
     );
     ipc('chooseRoot', z.object({ mode: z.enum(['sync', 'backup']) }).strict(), async (input) => {
       if (!engine) throw new Error('Sign in first.');
@@ -1346,6 +1409,7 @@ app
       await vault.lock(api.request).catch(() => {});
       vault.reset();
       encryptedPreviews.clear();
+      pdfPreviews.clear();
       try {
         await api.request('/v1/auth/logout', {
           method: 'POST',

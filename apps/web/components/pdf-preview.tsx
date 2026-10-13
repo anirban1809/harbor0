@@ -4,6 +4,7 @@ import { Minus, Plus } from 'lucide-react';
 import type { PDFDocumentProxy, PDFWorker } from 'pdfjs-dist';
 import { Button } from './ui/button';
 import type { ReadRange } from '../lib/file-preview';
+import { pdfViewerHost } from '../lib/pdf-viewer-host';
 
 // Fonts, CMaps and decoders are copied to /pdfjs by scripts/copy-pdfjs.mjs.
 const assets = '/pdfjs/';
@@ -28,9 +29,11 @@ async function pdfjs() {
   // One worker is shared by every preview. Documents given an existing worker do not
   // own it, so closing a preview leaves it running for the next one.
   worker ??= module.PDFWorker.create({
-    port: new Worker(new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url), {
-      type: 'module',
-    }),
+    port: pdfViewerHost
+      ? pdfViewerHost.worker()
+      : new Worker(new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url), {
+          type: 'module',
+        }),
   });
   return { ...module, worker };
 }
@@ -40,15 +43,43 @@ export function preloadPdfViewer() {
   void pdfjs().catch(() => {});
 }
 
+// Where pdf.js's data files live, by the option that names them.
+const assetDirectories = {
+  cMapUrl: 'cmaps/',
+  standardFontDataUrl: 'standard_fonts/',
+  wasmUrl: 'wasm/',
+} as const;
+/** pdf.js options for its fonts, CMaps and decoders: fetched from /pdfjs, or read by the host. */
+function assetOptions() {
+  const host = pdfViewerHost;
+  const urls = {
+    cMapUrl: `${assets}${assetDirectories.cMapUrl}`,
+    standardFontDataUrl: `${assets}${assetDirectories.standardFontDataUrl}`,
+    wasmUrl: `${assets}${assetDirectories.wasmUrl}`,
+  };
+  if (!host) return { ...urls, iccUrl: `${assets}iccs/`, cMapPacked: true };
+  return {
+    ...urls,
+    cMapPacked: true,
+    // The worker cannot fetch these itself, so it asks this page, which asks the host.
+    useWorkerFetch: false,
+    BinaryDataFactory: class {
+      fetch({ kind, filename }: { kind: keyof typeof assetDirectories; filename: string }) {
+        return host.readAsset(`${assetDirectories[kind]}${filename}`);
+      }
+    },
+  };
+}
+
 /**
- * Reads byte ranges of the file. pdf.js only asks for ranges itself when it can read
- * `Accept-Ranges`, which the storage CORS rules do not expose, so ranges are fetched here.
+ * Reads byte ranges through a download link. pdf.js only asks for ranges itself when it can
+ * read `Accept-Ranges`, which the storage CORS rules do not expose, so ranges are fetched here.
  * Download links expire after a few minutes; an expired link is renewed once and retried.
  */
-function linkRanges(initialUrl: string, renew: () => Promise<string>): ReadRange {
+export function linkRanges(initialUrl: string, renew: () => Promise<string>): ReadRange {
   let url = initialUrl;
   let renewing: Promise<string> | undefined;
-  const fetchRange = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
+  const read = async (begin: number, end: number, retry = true): Promise<Uint8Array> => {
     const used = url;
     const response = await fetch(used, {
       headers: { Range: `bytes=${begin}-${end - 1}` },
@@ -60,17 +91,17 @@ function linkRanges(initialUrl: string, renew: () => Promise<string>): ReadRange
         url = await (renewing ??= renew().finally(() => {
           renewing = undefined;
         }));
-      return fetchRange(begin, end, false);
+      return read(begin, end, false);
     }
     if (!response.ok) throw new Error(`Range request failed with ${response.status}`);
     const data = new Uint8Array(await response.arrayBuffer());
     // A server that ignores Range sends the whole file.
     return response.status === 206 ? data : data.subarray(begin, end);
   };
-  return (begin, end) => fetchRange(begin, end);
+  return (begin, end) => read(begin, end);
 }
 
-/** Reads ahead of pdf.js, from a link or from decrypted ranges of an encrypted file. */
+/** Decides how much to read for each request pdf.js makes, so few round trips are needed. */
 function rangeReader(fetchRange: ReadRange, size: number) {
   // Ranges fetched before or beyond what pdf.js asked for; reused when one covers a request.
   const ahead: { begin: number; end: number; data: Promise<Uint8Array> }[] = [];
@@ -104,21 +135,15 @@ function rangeReader(fetchRange: ReadRange, size: number) {
 }
 
 export function PdfPreview({
-  url,
   read,
   size,
-  renew,
   name,
   onReady,
   onError,
 }: {
-  /** Undefined while the download link is still being fetched. */
-  url: string | undefined;
-  /** Reads the file's bytes instead of a link: an encrypted file's decrypted ranges. */
-  read?: ReadRange;
+  /** Undefined until the file can be read, e.g. while its download link is fetched. */
+  read: ReadRange | undefined;
   size: number;
-  /** A fresh download link for the same file, once `url` has expired. */
-  renew: () => Promise<string>;
   name: string;
   onReady: () => void;
   onError: (message?: string) => void;
@@ -129,22 +154,14 @@ export function PdfPreview({
   const [width, setWidth] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!url && !read) return;
+    if (!read) return;
     let cancelled = false;
     let destroy = () => {};
-    // Start downloading before pdf.js has loaded, in case it was not preloaded.
-    const ranges =
-      size > wholeFileBytes ? rangeReader(read ?? linkRanges(url!, renew), size) : undefined;
-    const whole = ranges
-      ? undefined
-      : read
-        ? read(0, size)
-        : fetch(url!, { credentials: 'omit', referrerPolicy: 'no-referrer' }).then((response) => {
-            if (!response.ok) throw new Error(`Download failed with ${response.status}`);
-            return response.arrayBuffer();
-          });
-    whole?.catch(() => {});
-    if (ranges) {
+    // Start reading before pdf.js has loaded, in case it was not preloaded.
+    const ranges = rangeReader(read, size);
+    if (size <= wholeFileBytes) {
+      if (size > 0) ranges.prefetch(0, size);
+    } else {
       const tail = Math.floor((size - tailBytes) / rangeChunkBytes) * rangeChunkBytes;
       ranges.prefetch(0, rangeChunkBytes);
       ranges.prefetch(tail, size);
@@ -152,32 +169,34 @@ export function PdfPreview({
     void pdfjs()
       .then(async ({ getDocument, PasswordException, PDFDataRangeTransport, worker }) => {
         let source;
-        if (ranges) {
+        if (size > wholeFileBytes) {
           const transport = new PDFDataRangeTransport(size, null);
           transport.requestDataRange = (begin, end) =>
             void ranges.read(begin, end).then(
-              (chunk) => transport.onDataRange(begin, chunk),
+              (chunk) => {
+                // pdf.js throws for a request it has since dropped, e.g. once the tray closed.
+                if (cancelled) return;
+                try {
+                  transport.onDataRange(begin, chunk);
+                } catch {}
+              },
               () => {
                 if (!cancelled) onError();
               },
             );
           source = { range: transport };
         } else {
-          source = { data: new Uint8Array(await whole!) };
+          source = { data: size > 0 ? await ranges.read(0, size) : new Uint8Array() };
         }
         if (cancelled) return;
         const task = getDocument({
           ...source,
+          ...assetOptions(),
           rangeChunkSize: rangeChunkBytes,
           // Fetch only what the visible pages need instead of the rest in the background.
           disableAutoFetch: true,
           disableStream: true,
           worker,
-          cMapUrl: `${assets}cmaps/`,
-          cMapPacked: true,
-          standardFontDataUrl: `${assets}standard_fonts/`,
-          wasmUrl: `${assets}wasm/`,
-          iccUrl: `${assets}iccs/`,
           enableXfa: false,
         });
         destroy = () => void task.destroy();
@@ -205,8 +224,8 @@ export function PdfPreview({
       cancelled = true;
       destroy();
     };
-    // The callbacks only report status; a new URL or reader is what restarts loading.
-  }, [url, read]);
+    // The callbacks only report status; a new reader is what restarts loading.
+  }, [read]);
   useEffect(() => {
     const element = scroller.current;
     if (!element) return;

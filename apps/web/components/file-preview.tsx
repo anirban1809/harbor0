@@ -1,12 +1,17 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, FileQuestion, LoaderCircle, Music } from 'lucide-react';
 import { fileDate, fileKind, fileSize, type FileEntry } from '../lib/file-metadata';
-import { previewKind, type PreviewContent, type PreviewLoader } from '../lib/file-preview';
+import {
+  previewKind,
+  type PreviewContent,
+  type PreviewLoader,
+  type ReadRange,
+} from '../lib/file-preview';
 import { Drawer } from './ui/dialog';
 import { previewCache, previewCacheKey } from '../lib/preview-cache';
 import { Button } from './ui/button';
-import { PdfPreview } from './pdf-preview';
+import { linkRanges, PdfPreview } from './pdf-preview';
 
 export function FilePreview({
   item,
@@ -19,7 +24,7 @@ export function FilePreview({
   item: FileEntry;
   cacheScope: string;
   load: PreviewLoader;
-  /** Show PDFs with pdf.js; off in the desktop app, whose renderer cannot fetch the file. */
+  /** Show PDFs with pdf.js, while the pdf-preview flag is on. */
   pdf?: boolean;
   onDownload: () => void;
   onClose: () => void;
@@ -134,6 +139,18 @@ function PreviewBody({
         });
     return () => controller.abort();
   }, [item.id, item.name, item.mimeType, item.sizeBytes, load, kind, attempt, cache, key]);
+  const readPdfRange = useMemo<ReadRange | undefined>(() => {
+    if (kind !== 'pdf') return;
+    // An encrypted file, or one the desktop app reads for this page, comes with its own reader.
+    if (content && 'read' in content) return content.read;
+    if (!content || !('url' in content)) return;
+    return linkRanges(content.url, async () => {
+      const fresh = await load(item, new AbortController().signal);
+      if (!('url' in fresh)) throw new Error('Expected a download link.');
+      return fresh.url;
+    });
+    // A new item or link is what starts a new read; the item's other fields do not.
+  }, [kind, content, item.id]);
   const mediaError = () =>
     setError(
       'This file could not be displayed. Its format may not be supported, or the preview link may have expired. Try again or download the file.',
@@ -207,14 +224,8 @@ function PreviewBody({
           {kind === 'pdf' && (
             // Shown at once as a blank page, then filled in once the link arrives.
             <PdfPreview
-              url={content && 'url' in content ? content.url : undefined}
-              read={content && 'read' in content ? content.read : undefined}
-              size={item.sizeBytes}
-              renew={async () => {
-                const fresh = await load(item, new AbortController().signal);
-                if (!('url' in fresh)) throw new Error('Expected a download link.');
-                return fresh.url;
-              }}
+              read={readPdfRange}
+              size={content && 'read' in content ? content.size : item.sizeBytes}
               name={item.name}
               onReady={() => setReady(true)}
               onError={(message) => (message ? setError(message) : mediaError())}
