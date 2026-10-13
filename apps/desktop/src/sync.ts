@@ -94,6 +94,8 @@ export class SyncEngine {
   // Folders, by root id, to check for synced items that disappeared without being reported.
   private siblingChecks = new Map<string, Set<string>>();
   private siblingTimer?: ReturnType<typeof setTimeout>;
+  // The sibling check under way, which stopping waits for before the journal can close.
+  private siblingWork = Promise.resolve();
   private pendingWake = false;
   private lastProgressEmit = 0;
   private running = false;
@@ -230,6 +232,7 @@ export class SyncEngine {
     this.scannedAt.clear();
     await this.work;
     await this.publishWork;
+    await this.siblingWork.catch(() => {});
   }
   private ignored(root: Root, relative: string) {
     return (
@@ -278,7 +281,9 @@ export class SyncEngine {
     const folders = this.siblingChecks.get(rootId) ?? new Set<string>();
     folders.add(folder);
     this.siblingChecks.set(rootId, folders);
-    this.siblingTimer ??= setTimeout(() => void this.findVanished(), 100);
+    this.siblingTimer ??= setTimeout(() => {
+      this.siblingWork = this.findVanished();
+    }, 100);
   }
   private async findVanished() {
     this.siblingTimer = undefined;
@@ -297,6 +302,7 @@ export class SyncEngine {
         } catch {
           continue; // Gone or unreadable itself: its own report or the next scan covers it.
         }
+        if (this.stopped) return;
         for (const file of this.journal.children(rootId, folder === '.' ? '' : folder))
           if (
             !listed.includes(path.posix.basename(file.relativePath)) &&
