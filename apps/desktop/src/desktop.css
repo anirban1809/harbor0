@@ -211,6 +211,58 @@
   width: 100%;
 }
 
+/* Settings rows: an icon, what the setting is and its state, then its actions on the right. */
+.setting-rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.setting-rows > .setting-row {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.setting-rows > .setting-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.setting-rows > .setting-row:last-child {
+  padding-bottom: 0;
+}
+.setting-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.setting-row > div:first-of-type {
+  flex: 1;
+  min-width: 200px;
+}
+.setting-row strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.setting-row p {
+  margin-top: 2px;
+  font-size: var(--text-sm);
+}
+.setting-row-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius);
+  background: var(--fill-1);
+  color: var(--text-2);
+}
+.setting-row-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* The unlock form for an encrypted account, in place of a file list. */
 .e2ee-unlock .form {
   width: min(360px, 100%);

@@ -1644,46 +1644,69 @@ function App() {
               <Card
                 className="panel"
                 title="Sync & backups"
-                description="Choose folders to sync or back up in My Drive, under Synced Folders and Backups. Open a folder there to see its status, pause it or change its settings."
+                description="Choose folders to sync or back up from My Drive. Open a folder there to see its status, pause it or change its settings."
               >
-                <dl className="details">
-                  <dt>On this computer</dt>
-                  <dd>
-                    {sync?.paused
-                      ? 'Paused. Changes wait until you resume.'
-                      : `${syncRoots.length} synced, ${backupRoots.length} backed up`}
-                  </dd>
-                  <dt>Backups</dt>
-                  <dd>A new version is saved about an hour after you stop editing a file.</dd>
-                </dl>
-                <div className="settings-actions">
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      void act(
-                        () => bridge.pause({ paused: !sync?.paused }),
-                        sync?.paused ? 'Sync and backups resumed.' : 'Sync and backups paused.',
-                      )
-                    }
-                  >
-                    {sync?.paused ? <Play /> : <Pause />}
-                    {sync?.paused ? 'Resume sync and backups' : 'Pause sync and backups'}
-                  </Button>
+                <ul className="setting-rows">
+                  <li className="setting-row">
+                    <span className="setting-row-icon">
+                      {sync?.paused ? (
+                        <Pause aria-hidden="true" />
+                      ) : (
+                        <RefreshCw aria-hidden="true" />
+                      )}
+                    </span>
+                    <div>
+                      <strong>
+                        On this computer
+                        {sync?.paused && <Badge tone="warning">Paused</Badge>}
+                      </strong>
+                      <p className="muted">
+                        {sync?.paused
+                          ? 'Changes wait until you resume.'
+                          : `${syncRoots.length} ${syncRoots.length === 1 ? 'folder' : 'folders'} synced, ${backupRoots.length} backed up.`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void act(
+                          () => bridge.pause({ paused: !sync?.paused }),
+                          sync?.paused ? 'Sync and backups resumed.' : 'Sync and backups paused.',
+                        )
+                      }
+                    >
+                      {sync?.paused ? <Play /> : <Pause />}
+                      {sync?.paused ? 'Resume' : 'Pause'}
+                    </Button>
+                  </li>
                   {(['synced', 'backups'] as const).map((target) => {
                     const Icon = drivePlaces[target].icon;
                     return (
-                      <Button
-                        key={target}
-                        variant="outline"
-                        onClick={() => openPlace(target, status.deviceId ?? undefined)}
-                      >
-                        <Icon />
-                        {drivePlaces[target].name}
-                      </Button>
+                      <li key={target} className="setting-row">
+                        <span className="setting-row-icon">
+                          <Icon aria-hidden="true" />
+                        </span>
+                        <div>
+                          <strong>{drivePlaces[target].name}</strong>
+                          <p className="muted">
+                            {target === 'synced'
+                              ? 'Kept the same on this computer and in harbor0, both ways.'
+                              : 'A new version is saved about an hour after you stop editing a file.'}
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openPlace(target, status.deviceId ?? undefined)}
+                        >
+                          Open
+                        </Button>
+                      </li>
                     );
                   })}
-                </div>
+                </ul>
               </Card>
               <Card
                 className="panel"
