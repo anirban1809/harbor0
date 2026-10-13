@@ -31,7 +31,7 @@ export function E2eeUnlock({
   const state = useQuery(e2eeQuery(api));
   const [mode, setMode] = useState<'passphrase' | 'recovery'>('passphrase');
   const [passphrase, setPassphrase] = useState('');
-  const [remember, setRemember] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [recovery, setRecovery] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');

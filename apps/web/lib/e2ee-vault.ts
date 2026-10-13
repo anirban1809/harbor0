@@ -183,8 +183,13 @@ export async function unlockWithRecovery(
   await keepCopy(request, keys, remember);
 }
 
-/** Turns encryption on for good, with a new key, and unlocks this browser for this session. */
-export async function enroll(request: Transport, passphrase: string, recovery: Uint8Array) {
+/** Turns encryption on with a new key and unlocks this browser, remembered or for this tab. */
+export async function enroll(
+  request: Transport,
+  passphrase: string,
+  recovery: Uint8Array,
+  remember: boolean,
+) {
   const master = newMasterKey();
   const keys = await accountKeys(master);
   await request('/v1/e2ee/enroll', {
@@ -196,7 +201,15 @@ export async function enroll(request: Transport, passphrase: string, recovery: U
     },
   });
   set({ enabled: true });
-  await keepCopy(request, keys, false);
+  await keepCopy(request, keys, remember);
+}
+
+/** Keeps this browser unlocked after the tab closes: a remembered copy replaces this tab's. */
+export async function rememberBrowser(request: Transport) {
+  const keys = requireKeys();
+  const previous = vault.deviceRecordId;
+  await keepCopy(request, keys, true);
+  if (previous) await request(`/v1/e2ee/devices/${previous}`, { method: 'DELETE' }).catch(() => {});
 }
 
 export async function changePassphrase(request: Transport, passphrase: string) {

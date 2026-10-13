@@ -23,6 +23,7 @@ import {
   changePassphrase,
   enroll,
   lock,
+  rememberBrowser,
   replaceRecovery,
   startTurningOff,
   useVault,
@@ -150,6 +151,18 @@ function E2eeOn({ api }: { api: ApiClient }) {
     (live?.direction === (decrypting ? 'decrypt' : 'encrypt') ? live : null) ??
     (decrypting ? s.decryption : s.migration);
   const percent = m && m.totalFiles ? Math.floor((m.doneFiles / m.totalFiles) * 100) : 100;
+  async function remember(device: E2eeDevice) {
+    setBusy(device.id);
+    setError('');
+    try {
+      await rememberBrowser(api.request);
+      await queries.invalidateQueries({ queryKey: ['e2ee'] });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(undefined);
+    }
+  }
   async function remove(device: E2eeDevice) {
     setBusy(device.id);
     setError('');
@@ -286,15 +299,27 @@ function E2eeOn({ api }: { api: ApiClient }) {
                   </>
                 }
                 action={
-                  <Button
-                    variant={here ? 'outline' : 'danger'}
-                    size="sm"
-                    disabled={busy === d.id}
-                    onClick={() => void remove(d)}
-                  >
-                    {busy === d.id && <Loader2 className="spin" aria-hidden="true" />}
-                    {here ? 'Lock now' : 'Remove'}
-                  </Button>
+                  <>
+                    {here && !d.remember && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy === d.id}
+                        onClick={() => void remember(d)}
+                      >
+                        Remember
+                      </Button>
+                    )}
+                    <Button
+                      variant={here ? 'outline' : 'danger'}
+                      size="sm"
+                      disabled={busy === d.id}
+                      onClick={() => void remove(d)}
+                    >
+                      {busy === d.id && <Loader2 className="spin" aria-hidden="true" />}
+                      {here ? 'Lock now' : 'Remove'}
+                    </Button>
+                  </>
                 }
               >
                 {d.remember
@@ -567,6 +592,7 @@ export function E2eeSetup({
   const [saved, setSaved] = useState(false);
   const group = useMemo(() => 2 + Math.floor(Math.random() * 6), []);
   const [typed, setTyped] = useState('');
+  const [remember, setRemember] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const matches = typed.trim().toUpperCase() === recoveryText.split('-')[group];
@@ -577,7 +603,7 @@ export function E2eeSetup({
     setBusy(true);
     setError('');
     try {
-      await enroll(api.request, passphrase, recovery);
+      await enroll(api.request, passphrase, recovery, remember);
       await queries.invalidateQueries({ queryKey: ['me'] });
       await queries.invalidateQueries({ queryKey: ['e2ee'] });
       onDone?.();
@@ -736,6 +762,13 @@ export function E2eeSetup({
               <li>Other browsers ask for your passphrase once.</li>
             </ol>
           </div>
+          <Field
+            label="Remember this browser"
+            hint="Stay unlocked until you sign out. Leave this off on shared computers."
+            inline
+          >
+            <Checkbox checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          </Field>
           {error && <Alert tone="error">{error}</Alert>}
           <DialogActions>
             <Button variant="outline" type="button" disabled={busy} onClick={() => setStep(3)}>
