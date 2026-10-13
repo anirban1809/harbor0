@@ -2,7 +2,7 @@ import { parentPort } from 'node:worker_threads';
 import { ApiClient, ApiError, createTransport } from '@harbor/api-client';
 import { e2eeTransport, type E2eeVaultView } from '../../../packages/api-client/src/e2ee-transport';
 import { DriveDav } from './drive-dav';
-import { apiDrive } from './drive-dav-api';
+import { apiDrive, davEntry } from './drive-dav-api';
 import { retrying } from './retry';
 import { transferKeys } from './transfers';
 import type { DavHostMessage, DavWorkerConfig, DavWorkerMessage } from './dav-host';
@@ -56,6 +56,7 @@ async function start(config: DavWorkerConfig) {
     ...config,
     drive: apiDrive(api),
     onError: (error) => send({ type: 'error', message: describe(error) }),
+    onUploads: (uploads) => send({ type: 'uploads', uploads }),
   });
   await dav.start();
 }
@@ -86,6 +87,12 @@ port.on('message', (message: DavHostMessage) => {
     case 'forget':
       // A change elsewhere, or this server's own upload coming back: read again behind.
       dav?.refresh();
+      break;
+    case 'app-uploads':
+      dav?.setAppUploads(message.files);
+      break;
+    case 'landed':
+      dav?.landed(davEntry(message.item));
       break;
     case 'stop':
       // Empty files still waiting for content are uploaded before the thread ends.

@@ -7,6 +7,8 @@ export type SyncDriveItem = FileEntry & {
   syncStatus?: 'Pending' | 'Syncing';
   syncDetail?: string;
   syncProgress?: number;
+  /** The tab it shows in; Sync unless it says otherwise. */
+  location?: 'Cloud' | 'Sync';
 };
 
 export const localSyncId = (rootId: string, relativePath: string) =>

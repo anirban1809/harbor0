@@ -72,6 +72,8 @@ import {
 } from './local-webdav';
 import { isWebdavKeyRequest } from './webdav-cli';
 import { DavHost } from './dav-host';
+import type { AppUpload, DavUploadView } from './drive-dav';
+import type { SyncDriveItem } from './sync-drive';
 import {
   canMount,
   mapInExplorer,
@@ -130,6 +132,11 @@ const webdav = new DavHost({
   },
   vault: () => vault.current(),
   onError: (message) => console.error('WebDAV request failed:', message),
+  onUploads(uploads) {
+    davUploads = uploads;
+    if (engine && accountReady)
+      window?.webContents.send('harbor:status', statusView(journal, engine.state));
+  },
   onExit(reason) {
     webdavError = reason;
     void disconnectWebdav().then(sendWebdav);
@@ -325,11 +332,39 @@ function setE2eeBlocked(blocked: boolean) {
   if (engine && accountReady)
     window?.webContents.send('harbor:status', statusView(journal, engine.state));
 }
-const statusView = (activeJournal: Journal, state: SyncRuntime) => ({
-  ...syncView(activeJournal, state),
-  e2eeBlocked,
-  e2ee: e2eeView(),
-});
+/** What Finder or File Explorer is uploading through the local WebDAV server. */
+let davUploads: DavUploadView[] = [];
+const davApp = process.platform === 'win32' ? 'File Explorer' : 'Finder';
+/** Those uploads as rows in My Drive, until a listing has the stored file. */
+const davDriveItems = (): SyncDriveItem[] =>
+  davUploads.map((upload) => ({
+    id: upload.id,
+    parentId: upload.parentId,
+    name: upload.name,
+    type: 'FILE',
+    sizeBytes: upload.size,
+    location: 'Cloud',
+    ...(upload.done
+      ? {}
+      : {
+          localOnly: true,
+          syncStatus: 'Syncing',
+          syncDetail: `Uploading from ${davApp}`,
+          syncProgress: upload.size ? Math.round((upload.loaded / upload.size) * 100) : 0,
+        }),
+  }));
+/** Files this app is uploading, which the WebDAV server lists until they land. */
+const appUploads = new Map<string, AppUpload>();
+const sendAppUploads = () => webdav.appUploads([...appUploads.values()]);
+const statusView = (activeJournal: Journal, state: SyncRuntime) => {
+  const view = syncView(activeJournal, state);
+  return {
+    ...view,
+    driveItems: [...view.driveItems, ...davDriveItems()],
+    e2eeBlocked,
+    e2ee: e2eeView(),
+  };
+};
 // Names are encrypted on the way out and decrypted on the way back; while the account is
 // locked, file requests are refused rather than handing sync encrypted names.
 const sealed = e2eeTransport(transport, {
@@ -1285,6 +1320,17 @@ app
           if (!window.isDestroyed()) window.webContents.send('harbor:upload-progress', changed);
         };
         send(uploads);
+        // Files going straight into the target folder are listed over WebDAV at once; those in
+        // dropped folders once their folder exists.
+        for (const [i, { path: filename, folders }] of files.entries())
+          if (!folders.length)
+            appUploads.set(uploads[i].key, {
+              parentId: input.parentId,
+              name: uploads[i].name,
+              size: uploads[i].size,
+              path: filename,
+            });
+        sendAppUploads();
         const items = [];
         // Folders created for this drop, keyed by their path under the drop target. A folder
         // that can't be created fails every file in it without retrying.
@@ -1304,6 +1350,15 @@ app
               }
               parentId = await folderIds.get(folderPath)!;
             }
+            if (folders.length) {
+              appUploads.set(upload.key, {
+                parentId,
+                name: upload.name,
+                size: upload.size,
+                path: filename,
+              });
+              sendAppUploads();
+            }
             report({ phase: 'hashing' });
             const key = 'manual-upload:' + createHash('sha256').update(filename).digest('hex');
             const state = journal.get<UploadState>(key) ?? { operationId: crypto.randomUUID() };
@@ -1319,9 +1374,13 @@ app
             );
             journal.set(key, null);
             items.push(item);
+            appUploads.delete(upload.key);
+            webdav.landed(item);
             report({ phase: 'done', loaded: upload.size });
           } catch (error) {
             report({ phase: 'failed', error: (error as Error).message });
+          } finally {
+            if (appUploads.delete(upload.key)) sendAppUploads();
           }
         }
         const failed = files.length - items.length;

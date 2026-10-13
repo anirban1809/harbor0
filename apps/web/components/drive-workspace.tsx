@@ -674,7 +674,7 @@ export function DriveWorkspace({
         (item) =>
           item.id === pending.id || (item.name === pending.name && item.type === pending.type),
       );
-      if (index < 0) merged.push({ ...pending, location: 'Sync' });
+      if (index < 0) merged.push({ ...pending, location: pending.location ?? 'Sync' });
       else
         merged[index] = {
           ...merged[index],

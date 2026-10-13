@@ -6,7 +6,7 @@ import { openEncryptedFile, openPlainFile } from './e2ee-reader';
 import { transferKeys, uploadFile } from './transfers';
 import type { DavDrive, DavEntry } from './drive-dav';
 
-const davEntry = (item: DriveItem): DavEntry => ({
+export const davEntry = (item: DriveItem): DavEntry => ({
   id: item.id,
   parentId: item.parentId,
   name: item.name,
@@ -47,7 +47,7 @@ export function apiDrive(api: ApiClient): DavDrive {
       if (!keys) throw new ApiError('E2EE_LOCKED', 'Unlock your files to continue.', 423);
       return openEncryptedFile(api, file.id, keys);
     },
-    async write(parentId, name, source, existing, modifiedAt) {
+    async write(parentId, name, source, existing, modifiedAt, progress) {
       const base = existing && (await current(existing.id));
       let item = await uploadFile(
         api,
@@ -57,6 +57,7 @@ export function apiDrive(api: ApiClient): DavDrive {
         { operationId: randomUUID() },
         () => {},
         base && { itemId: base.id, revision: base.revision },
+        progress,
       );
       if (modifiedAt)
         ({ item } = await api.request(`/v1/drive/items/${encodeURIComponent(item.id)}/modified`, {

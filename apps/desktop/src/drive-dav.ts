@@ -44,6 +44,7 @@ export interface DavDrive {
     source: string,
     existing?: DavEntry,
     modifiedAt?: Date,
+    progress?: (loaded: number) => void,
   ): Promise<DavEntry>;
   mkdir(parentId: string | null, name: string): Promise<DavEntry>;
   /** Moves and renames; an unchanged parent is a rename. */
@@ -53,6 +54,20 @@ export interface DavDrive {
   /** The account's storage, which Finder shows as the drive's capacity. */
   quota?(): Promise<{ usedBytes: number; availableBytes: number }>;
 }
+/**
+ * An upload this server is doing, for the app's own drive view; `done` ones have just finished
+ * and carry the stored item's id.
+ */
+export type DavUploadView = {
+  id: string;
+  parentId: string | null;
+  name: string;
+  size: number;
+  loaded: number;
+  done?: boolean;
+};
+/** A file the app itself is uploading, listed here from where it is on this computer. */
+export type AppUpload = { parentId: string | null; name: string; size: number; path: string };
 export type DriveDavOptions = {
   drive: DavDrive;
   username: string;
@@ -71,6 +86,8 @@ export type DriveDavOptions = {
   tempDir: string;
   /** The first wait before an upload that failed for a moment is tried again; it doubles. */
   uploadRetryMs?: number;
+  /** Uploads under way and just finished, whenever they change; at most a few times a second. */
+  onUploads?: (uploads: DavUploadView[]) => void;
   onError?: (error: unknown) => void;
 };
 
@@ -109,6 +126,7 @@ const EMPTY_FILE_WAIT_MS = 30_000;
 type Upload = {
   entry: DavEntry;
   temp: string;
+  loaded: number;
   modifiedAt?: Date;
   /** A newer version of the file arrived before this one started; only that one goes up. */
   superseded?: boolean;
@@ -116,6 +134,9 @@ type Upload = {
   done: Promise<void>;
 };
 const UPLOAD_CONCURRENCY = 3;
+/** How often uploads are reported, and how long a finished one stays in the report. */
+const UPLOAD_REPORT_MS = 250;
+const FINISHED_UPLOAD_MS = 15_000;
 const UPLOAD_RETRIES = 8;
 const UPLOAD_RETRY_MS = 2_000;
 const UPLOAD_RETRY_MAX_MS = 60_000;
@@ -206,6 +227,10 @@ export class DriveDav {
   private stopping = false;
   /** Wakes uploads waiting to try again, so stopping doesn't wait out the pause. */
   private wakers = new Set<() => void>();
+  private finished: { view: DavUploadView; at: number }[] = [];
+  private reportTimer?: NodeJS.Timeout;
+  /** Files the app is uploading, by folder and name. */
+  private appUploads = new Map<string, Map<string, { entry: DavEntry; path: string }>>();
   private quota?: { at: number; value: Promise<{ usedBytes: number; availableBytes: number }> };
   constructor(private options: DriveDavOptions) {}
 
@@ -272,6 +297,35 @@ export class DriveDav {
    */
   refresh() {
     for (const listing of this.folders.values()) listing.stale = true;
+  }
+  /** The files the app is uploading now, which are listed until they land. */
+  setAppUploads(files: AppUpload[]) {
+    this.appUploads.clear();
+    for (const file of files) {
+      const key = folderKey(file.parentId);
+      if (!this.appUploads.has(key)) this.appUploads.set(key, new Map());
+      const id = `app-upload-${randomUUID()}`;
+      const now = new Date().toISOString();
+      this.appUploads.get(key)!.set(normalizeName(file.name), {
+        path: file.path,
+        entry: {
+          id,
+          parentId: file.parentId,
+          name: file.name,
+          folder: false,
+          size: file.size,
+          mimeType: 'application/octet-stream',
+          created: now,
+          modified: now,
+          etag: id,
+        },
+      });
+    }
+  }
+  /** A file the app uploaded is stored: it's listed at once, without reading its folder again. */
+  landed(entry: DavEntry) {
+    this.appUploads.get(folderKey(entry.parentId))?.delete(normalizeName(entry.name));
+    this.added(entry);
   }
   /** Waits for every upload under way. */
   async settled() {
@@ -425,13 +479,32 @@ export class DriveDav {
 
   /** A folder's items, with files still going up in place of what they replace. */
   private async children(folderId: string | null) {
-    const entries = await this.stored(folderId);
+    let entries = await this.stored(folderId);
+    // The app's uploads are new files; one named like a stored file waits until it lands.
+    const fromApp = this.appUploads.get(folderKey(folderId));
+    if (fromApp?.size) {
+      const names = new Set(entries.map((e) => normalizeName(e.name)));
+      entries = [
+        ...entries,
+        ...[...fromApp].filter(([key]) => !names.has(key)).map(([, file]) => file.entry),
+      ];
+    }
     const uploads = this.uploads.get(folderKey(folderId));
     if (!uploads?.size) return entries;
     return [
       ...entries.filter((e) => !uploads.has(normalizeName(e.name))),
       ...[...uploads.values()].map((upload) => upload.entry),
     ];
+  }
+  /** A file the app is still uploading can be read, but not changed until it lands. */
+  private notFromApp(entry: DavEntry) {
+    if (this.appUploadOf(entry))
+      throw new DavError(423, `${entry.name} is still uploading in the harbor0 app.`);
+  }
+  /** The app's upload a listed entry stands for, while it's going up. */
+  private appUploadOf(entry: DavEntry) {
+    const file = this.appUploads.get(folderKey(entry.parentId))?.get(normalizeName(entry.name));
+    return file?.entry === entry ? file : undefined;
   }
   /** A folder's items as the drive has them. */
   private stored(folderId: string | null) {
@@ -621,8 +694,8 @@ export class DriveDav {
       res.writeHead(range ? 206 : 200, headers);
       return void res.end();
     }
-    const upload = this.uploadOf(found);
-    const reader = upload ? fileReader(upload.temp, found.size) : await this.reader(found);
+    const local = this.uploadOf(found)?.temp ?? this.appUploadOf(found)?.path;
+    const reader = local ? fileReader(local, found.size) : await this.reader(found);
     // The first chunk is read before answering, so a file that can't be read gets an error.
     let next: Promise<Uint8Array> = reader.read(start, Math.min(end, start + READ_CHUNK));
     await next;
@@ -735,6 +808,7 @@ export class DriveDav {
         etag: id,
       },
       temp,
+      loaded: 0,
       modifiedAt,
       done: Promise.resolve(),
     };
@@ -742,7 +816,14 @@ export class DriveDav {
       await previous?.done;
       await this.uploadSlot();
       try {
-        if (!upload.superseded) this.added(await this.send(upload));
+        if (!upload.superseded) {
+          const stored = await this.send(upload);
+          this.added(stored);
+          this.finished.push({
+            view: { id: stored.id, parentId, name: stored.name, size, loaded: size, done: true },
+            at: Date.now(),
+          });
+        }
       } catch (error) {
         this.options.onError?.(error);
         this.changed(parentId);
@@ -751,9 +832,33 @@ export class DriveDav {
         this.waitingToUpload.shift()?.();
         if (files.get(key) === upload) files.delete(key);
         await rm(temp, { force: true });
+        this.reportUploads();
       }
     })();
     files.set(key, upload);
+    this.reportUploads();
+  }
+  /** Tells the app what's uploading, a few times a second at most. */
+  private reportUploads() {
+    if (!this.options.onUploads || this.reportTimer) return;
+    this.reportTimer = setTimeout(() => {
+      this.reportTimer = undefined;
+      const now = Date.now();
+      this.finished = this.finished.filter((f) => now - f.at < FINISHED_UPLOAD_MS);
+      const going = [...this.uploads.values()].flatMap((files) =>
+        [...files.values()].map(({ entry, loaded }) => ({
+          id: entry.id,
+          parentId: entry.parentId,
+          name: entry.name,
+          size: entry.size,
+          loaded,
+        })),
+      );
+      this.options.onUploads?.([...going, ...this.finished.map((f) => f.view)]);
+      // Finished uploads drop out of the report once they're old.
+      if (this.finished.length) setTimeout(() => this.reportUploads(), FINISHED_UPLOAD_MS).unref();
+    }, UPLOAD_REPORT_MS);
+    this.reportTimer.unref();
   }
   private async uploadSlot() {
     if (this.uploading >= UPLOAD_CONCURRENCY)
@@ -761,7 +866,8 @@ export class DriveDav {
     this.uploading++;
   }
   /** Writes an upload to the drive, trying again after failures that pass. */
-  private async send({ entry, temp, modifiedAt }: Upload) {
+  private async send(upload: Upload) {
+    const { entry, temp, modifiedAt } = upload;
     for (let attempt = 0; ; attempt++) {
       try {
         // What it replaces is looked up now: an earlier upload of the name may have just finished.
@@ -774,6 +880,10 @@ export class DriveDav {
           temp,
           existing,
           modifiedAt,
+          (loaded) => {
+            upload.loaded = loaded;
+            this.reportUploads();
+          },
         );
       } catch (error) {
         if (this.stopping || !retryable(error) || attempt >= UPLOAD_RETRIES) throw error;
@@ -829,6 +939,7 @@ export class DriveDav {
       found = await this.find(segments);
     }
     if (!found) throw new DavError(404, 'Not found.');
+    this.notFromApp(found);
     try {
       await this.options.drive.remove(found);
     } finally {
@@ -891,6 +1002,7 @@ export class DriveDav {
       source = await this.find(segments);
     }
     if (!source) throw new DavError(404, 'Not found.');
+    this.notFromApp(source);
     // Moving onto itself only changes the name's case; anything else onto itself is an error.
     if (sameItem && (!move || source.name === name))
       throw new DavError(403, 'The source and destination are the same.');
@@ -900,6 +1012,7 @@ export class DriveDav {
       : (await this.children(parentId)).find((e) => same(e.name, name));
     if (existing && header(req, 'overwrite')?.toUpperCase() === 'F')
       throw new DavError(412, 'Something already has that name.');
+    if (existing) this.notFromApp(existing);
     const from = source.parentId;
     try {
       if (existing) await this.options.drive.remove(existing);

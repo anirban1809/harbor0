@@ -1,21 +1,27 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import type { E2eeVaultView } from '../../../packages/api-client/src/e2ee-transport';
-import type { DriveDavOptions } from './drive-dav';
+import type { DriveItem } from '@harbor/contracts';
+import type { AppUpload, DavUploadView, DriveDavOptions } from './drive-dav';
 
 /** What the WebDAV thread needs to start; the drive itself it builds there. */
-export type DavWorkerConfig = Omit<DriveDavOptions, 'drive' | 'onError'> & { apiUrl: string };
+export type DavWorkerConfig = Omit<DriveDavOptions, 'drive' | 'onError' | 'onUploads'> & {
+  apiUrl: string;
+};
 export type DavHostMessage =
   | { type: 'start'; config: DavWorkerConfig; vault: E2eeVaultView }
   | { type: 'vault'; vault: E2eeVaultView }
   | { type: 'token'; id: number; token?: string; error?: string }
   | { type: 'forget' }
+  | { type: 'app-uploads'; files: AppUpload[] }
+  | { type: 'landed'; item: DriveItem }
   | { type: 'stop' };
 export type DavWorkerMessage =
   | { type: 'started' }
   | { type: 'failed'; message: string }
   | { type: 'token'; id: number; refresh: boolean }
   | { type: 'error'; message: string }
+  | { type: 'uploads'; uploads: DavUploadView[] }
   | { type: 'stopped' };
 
 const STOP_TIMEOUT_MS = 15_000;
@@ -33,6 +39,8 @@ export class DavHost {
       token: (refresh: boolean) => Promise<string>;
       vault: () => E2eeVaultView;
       onError: (message: string) => void;
+      /** What the server is uploading, for the drive view. */
+      onUploads?: (uploads: DavUploadView[]) => void;
       /** The thread ended without stop() being called. */
       onExit: (reason: string) => void;
       /** The bundled worker; dav-worker.cjs beside the main bundle. */
@@ -65,6 +73,8 @@ export class DavHost {
             return;
           case 'error':
             return this.hooks.onError(message.message);
+          case 'uploads':
+            return this.hooks.onUploads?.(message.uploads);
         }
       });
       worker.once('error', (error) => reject(error));
@@ -91,6 +101,15 @@ export class DavHost {
   /** Something changed elsewhere: listings are read again. */
   forget() {
     this.worker?.postMessage({ type: 'forget' } satisfies DavHostMessage);
+  }
+
+  /** The files the app is uploading, for the server to list until they land. */
+  appUploads(files: AppUpload[]) {
+    this.worker?.postMessage({ type: 'app-uploads', files } satisfies DavHostMessage);
+  }
+  /** A file the app uploaded is stored. */
+  landed(item: DriveItem) {
+    this.worker?.postMessage({ type: 'landed', item } satisfies DavHostMessage);
   }
 
   async stop() {

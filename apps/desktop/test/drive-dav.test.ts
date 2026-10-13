@@ -1,9 +1,16 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@harbor/api-client';
-import { DriveDav, davSegments, parseRange, type DavDrive, type DavEntry } from '../src/drive-dav';
+import {
+  DriveDav,
+  davSegments,
+  parseRange,
+  type DavDrive,
+  type DavEntry,
+  type DavUploadView,
+} from '../src/drive-dav';
 
 /** My Drive in memory; contents are plain bytes, as the API client hands them over decrypted. */
 function memoryDrive() {
@@ -384,7 +391,11 @@ describe('WebDAV uploads in the background', () => {
     };
     return release;
   }
-  async function restart(options: { uploadRetryMs?: number; onError?: (e: unknown) => void }) {
+  async function restart(options: {
+    uploadRetryMs?: number;
+    onError?: (e: unknown) => void;
+    onUploads?: (uploads: DavUploadView[]) => void;
+  }) {
     await dav.stop();
     dav = new DriveDav({
       drive: memory.drive,
@@ -478,6 +489,49 @@ describe('WebDAV uploads in the background', () => {
     release();
     await stopped;
     expect(writes()).toEqual(['write last.txt']);
+  });
+
+  it('reports uploads to the app, and each finished one with its stored id', async () => {
+    const reports: DavUploadView[][] = [];
+    await restart({ onUploads: (uploads) => reports.push(uploads) });
+    const release = holdWrites();
+    await request('/Docs/report.pdf', { method: 'PUT', body: 'pdf bytes' });
+    await vi.waitFor(() => expect(reports.length).toBeGreaterThan(0));
+    expect(reports.at(-1)).toEqual([
+      expect.objectContaining({ name: 'report.pdf', size: 9, loaded: 0 }),
+    ]);
+    expect(reports.at(-1)![0]!.done).toBeUndefined();
+    release();
+    await dav.settled();
+    const stored = [...memory.entries.values()].find((e) => e.name === 'report.pdf')!;
+    await vi.waitFor(() =>
+      expect(reports.at(-1)).toEqual([
+        expect.objectContaining({ id: stored.id, name: 'report.pdf', done: true }),
+      ]),
+    );
+  });
+
+  it('lists the app’s own uploads from where they are, until they land', async () => {
+    const folder = await mkdtemp(path.join(os.tmpdir(), 'app-upload-'));
+    const source = path.join(folder, 'photo.jpg');
+    await writeFile(source, 'jpeg bytes');
+    const docs = [...memory.entries.values()].find((e) => e.name === 'Docs')!;
+    await listing('/Docs/');
+    dav.setAppUploads([{ parentId: docs.id, name: 'photo.jpg', size: 10, path: source }]);
+    const during = await listing('/Docs/');
+    expect(during).toContain('/harbor0/Docs/photo.jpg');
+    expect(during).toContain('<D:getcontentlength>10</D:getcontentlength>');
+    expect(await (await request('/Docs/photo.jpg')).text()).toBe('jpeg bytes');
+    const refused = await request('/Docs/photo.jpg', { method: 'DELETE' });
+    expect(refused.status).toBe(423);
+    // It lands: the stored file is listed at once, without reading the folder again.
+    const lists = memory.calls.filter((c) => c.startsWith('list')).length;
+    const stored = memory.add(docs.id, 'photo.jpg', Buffer.from('jpeg bytes'));
+    dav.landed(stored);
+    expect(await listing('/Docs/')).toContain('/harbor0/Docs/photo.jpg');
+    expect(await (await request('/Docs/photo.jpg', { method: 'DELETE' })).status).toBe(204);
+    expect(memory.calls).toContain(`remove ${stored.id}`);
+    expect(memory.calls.filter((c) => c.startsWith('list')).length).toBe(lists);
   });
 
   it('serves listings held while reading them again after refresh()', async () => {
