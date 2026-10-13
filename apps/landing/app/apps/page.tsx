@@ -18,7 +18,7 @@ const windows: Download | null = {
   version: '0.1.8',
   size: '115 MB',
   url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.8/harbor0-0.1.8-win-x64.exe',
-  sha256: 'cb01c118a96205461d08e9057d84c5b0c264bf3a3b4086a80c2ecb7886fbbb8e',
+  sha256: '19461865d862d92a1b513ec75e6fc907347b2af01ec59cca0e443f905db0199f',
 };
 
 const computers = windows ? 'on Mac and Windows' : 'on your Mac';
