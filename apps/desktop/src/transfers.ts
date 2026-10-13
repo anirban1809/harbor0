@@ -9,6 +9,26 @@ import {
   prepareFolderDownload,
   type FolderDownloadProgress,
 } from '../../../packages/api-client/src/archive-download';
+import {
+  FileCipher,
+  HEADER_SIZE,
+  b64url,
+  encryptedSize,
+  fromB64url,
+  plainSize,
+  type AccountKeys,
+} from '../../../packages/api-client/src/e2ee';
+
+/**
+ * The account's keys on an end-to-end encrypted account, once this app is unlocked: uploads are
+ * encrypted with `upload` keys, and encrypted downloads are decrypted with `read` keys (still
+ * there while encryption is being turned off, when uploads go up unencrypted).
+ */
+export const transferKeys: {
+  upload: () => AccountKeys | undefined;
+  read: () => AccountKeys | undefined;
+} = { upload: () => undefined, read: () => undefined };
+const lockedError = () => new ApiError('E2EE_LOCKED', 'Unlock your files to continue.', 423);
 
 export async function downloadFolderZip(
   api: ApiClient,
@@ -79,10 +99,15 @@ export type UploadState = {
   operationId: string;
   uploadId?: string;
   partSize?: number;
+  /** SHA-256 of the file on disk. */
   hash?: string;
   size?: number;
   mtime?: number;
   parts?: CompletedPart[];
+  /** An encrypted upload's H0E1 header: resuming re-seals the same bytes with it. */
+  header?: string;
+  /** SHA-256 of the encrypted bytes as stored, once every part is sealed. */
+  storedHash?: string;
 };
 export async function uploadFile(
   api: ApiClient,
@@ -138,7 +163,12 @@ async function upload(
 ): Promise<DriveItem> {
   at.stage = 'hash';
   const info = await stat(filename);
-  if (state.mtime !== undefined && (state.mtime !== info.mtimeMs || state.size !== info.size)) {
+  const keys = transferKeys.upload();
+  // A changed file, or encryption turned on or off since the upload started, starts over.
+  if (
+    (state.mtime !== undefined && (state.mtime !== info.mtimeMs || state.size !== info.size)) ||
+    (state.uploadId && !!state.header !== !!keys)
+  ) {
     if (state.uploadId) await cancelUpload(api, state.uploadId);
     Object.assign(state, {
       operationId: crypto.randomUUID(),
@@ -146,6 +176,8 @@ async function upload(
       partSize: undefined,
       hash: undefined,
       parts: undefined,
+      header: undefined,
+      storedHash: undefined,
     });
   }
   state.mtime = info.mtimeMs;
@@ -155,14 +187,21 @@ async function upload(
   at.stage = 'create';
   // A freshly created upload has no parts yet; only a resumed one needs its server status.
   let created = false;
+  let cipher: FileCipher | undefined;
   if (!state.uploadId) {
+    if (keys) {
+      cipher = await FileCipher.create(keys);
+      state.header = b64url(cipher.header);
+    }
     const input = {
       operationId: state.operationId,
       parentId,
       name,
-      sizeBytes: info.size,
+      // The server only ever sees the encrypted size and hash of an encrypted file.
+      ...(cipher
+        ? { sizeBytes: encryptedSize(info.size), encrypted: true }
+        : { sizeBytes: info.size, contentHash: state.hash }),
       mimeType: 'application/octet-stream',
-      contentHash: state.hash,
       ...(existing ? { driveItemId: existing.itemId, baseRevision: existing.revision } : {}),
     };
     const result = backup
@@ -181,6 +220,8 @@ async function upload(
   if (status && ['ABORTED', 'FAILED', 'EXPIRED'].includes(status.upload.state)) {
     state.uploadId = undefined;
     state.operationId = crypto.randomUUID();
+    state.header = undefined;
+    state.storedHash = undefined;
     persist();
     return upload(
       api,
@@ -198,6 +239,22 @@ async function upload(
   }
   const parts: CompletedPart[] =
     status?.upload.state === 'COMPLETING' ? (state.parts ?? []) : (status?.parts ?? []);
+  if (state.header) {
+    if (!keys) throw lockedError();
+    cipher ??= await FileCipher.open(keys, fromB64url(state.header));
+    return uploadEncrypted(
+      api,
+      filename,
+      info,
+      state,
+      persist,
+      parts,
+      cipher,
+      progress,
+      beforeComplete,
+      at,
+    );
+  }
   const count = Math.max(1, Math.ceil(info.size / state.partSize!));
   const completed = new Set(parts.map((part) => part.partNumber));
   const missing = Array.from({ length: count }, (_, i) => i + 1).filter((n) => !completed.has(n));
@@ -231,42 +288,15 @@ async function upload(
               throw new Error('File changed during upload. Retry to preserve the latest content.');
             offset += result.bytesRead;
           }
-          let url = urls.parts.find((part) => part.partNumber === n)!.uploadUrl;
-          let etag: string | null = null;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              if (attempt) url = (await api.parts(state.uploadId!, [n])).parts[0].uploadUrl;
-              const response = await fetch(url, {
-                method: 'PUT',
-                body: buffer,
-                signal: sizedTimeout(size),
-              });
-              etag = response.ok ? response.headers.get('etag') : null;
-              await response.body?.cancel();
-              if (!etag)
-                throw Object.assign(
-                  new Error('Storage upload failed. It will resume automatically.'),
-                  {
-                    code: response.ok ? 'NO_ETAG' : 'STORAGE_REJECTED',
-                    httpStatus: response.status,
-                  },
-                );
-              break;
-            } catch (error) {
-              api.reportProblem({
-                kind: 'UPLOAD_PART_RETRY',
-                // Signing the URL is an API call; the PUT itself goes to storage.
-                stage: error instanceof ApiError ? 'parts' : 'storage',
-                uploadId: state.uploadId,
-                sizeBytes: info.size,
-                partNumber: n,
-                attempt,
-                ...describeProblem(error),
-              });
-              if (attempt === 2) throw error;
-            }
-          }
-          parts.push({ partNumber: n, etag: etag! });
+          const etag = await putPart(
+            api,
+            state,
+            n,
+            buffer,
+            urls.parts.find((part) => part.partNumber === n)!.uploadUrl,
+            info.size,
+          );
+          parts.push({ partNumber: n, etag });
           state.parts = parts;
           persist();
           loaded += size;
@@ -292,6 +322,175 @@ async function upload(
     )
   ).item;
 }
+/** PUTs one part to storage, signing a new link for each retry; returns its ETag. */
+async function putPart(
+  api: ApiClient,
+  state: UploadState,
+  n: number,
+  buffer: Uint8Array,
+  firstUrl: string | undefined,
+  fileSize: number,
+) {
+  let url = firstUrl;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (!url || attempt) url = (await api.parts(state.uploadId!, [n])).parts[0].uploadUrl;
+      const response = await fetch(url, {
+        method: 'PUT',
+        body: buffer as Uint8Array<ArrayBuffer>,
+        signal: sizedTimeout(buffer.length),
+      });
+      const etag = response.ok ? response.headers.get('etag') : null;
+      await response.body?.cancel();
+      if (!etag)
+        throw Object.assign(new Error('Storage upload failed. It will resume automatically.'), {
+          code: response.ok ? 'NO_ETAG' : 'STORAGE_REJECTED',
+          httpStatus: response.status,
+        });
+      return etag;
+    } catch (error) {
+      api.reportProblem({
+        kind: 'UPLOAD_PART_RETRY',
+        // Signing the URL is an API call; the PUT itself goes to storage.
+        stage: error instanceof ApiError ? 'parts' : 'storage',
+        uploadId: state.uploadId,
+        sizeBytes: fileSize,
+        partNumber: n,
+        attempt,
+        ...describeProblem(error),
+      });
+      if (attempt === 2) throw error;
+    }
+  }
+}
+
+/**
+ * The parts of an encrypted upload. They are sealed in order, so the stored bytes' SHA-256 is
+ * known at the end without reading the file twice, and upload a few at a time while the next is
+ * sealed. Sealing is deterministic for the saved header, so a resumed upload re-seals the parts
+ * storage already has only to hash them.
+ */
+async function uploadEncrypted(
+  api: ApiClient,
+  filename: string,
+  info: { size: number },
+  state: UploadState,
+  persist: () => void,
+  parts: CompletedPart[],
+  cipher: FileCipher,
+  progress: ((loaded: number, total: number) => void) | undefined,
+  beforeComplete: (() => Promise<void>) | undefined,
+  at: { stage: ClientEventStage },
+): Promise<DriveItem> {
+  const stored = encryptedSize(info.size);
+  const partSize = state.partSize!;
+  const count = Math.max(1, Math.ceil(stored / partSize));
+  const partBytes = (n: number) => Math.min(partSize, stored - (n - 1) * partSize);
+  const completed = new Set(parts.map((part) => part.partNumber));
+  // Progress is shown against the file's own size.
+  const shown = (bytes: number) => Math.round((bytes / stored) * info.size);
+  let loaded = parts.reduce((sum, part) => sum + partBytes(part.partNumber), 0);
+  progress?.(shown(loaded), info.size);
+  if (!state.storedHash || parts.length < count) {
+    at.stage = 'storage';
+    const hash = createHash('sha256');
+    const concurrency = Math.max(
+      1,
+      Math.min(TRANSFER_CONCURRENCY, Math.floor(UPLOAD_BUFFER_BUDGET / partSize)),
+    );
+    const handle = await open(filename, 'r');
+    const read = async (begin: number, end: number) => {
+      const buffer = Buffer.alloc(end - begin);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const result = await handle.read(buffer, offset, buffer.length - offset, begin + offset);
+        if (!result.bytesRead)
+          throw new Error('File changed during upload. Retry to preserve the latest content.');
+        offset += result.bytesRead;
+      }
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
+    };
+    const running = new Set<Promise<void>>();
+    let failure: unknown;
+    try {
+      for (let n = 1; n <= count; n++) {
+        if (failure) break;
+        const start = (n - 1) * partSize;
+        const bytes = await cipher.encryptedRange(info.size, start, start + partBytes(n), read);
+        hash.update(bytes);
+        if (completed.has(n)) continue;
+        while (running.size >= concurrency) await Promise.race(running);
+        if (failure) break;
+        const job = putPart(api, state, n, bytes, undefined, stored).then(
+          (etag) => {
+            parts.push({ partNumber: n, etag });
+            state.parts = parts;
+            persist();
+            loaded += bytes.length;
+            progress?.(shown(loaded), info.size);
+          },
+          (error) => {
+            failure ??= error;
+          },
+        );
+        running.add(job);
+        void job.finally(() => running.delete(job));
+      }
+      await Promise.all(running);
+    } finally {
+      await handle.close();
+    }
+    if (failure) throw failure;
+    state.storedHash = hash.digest('hex');
+    persist();
+  }
+  const after = await stat(filename);
+  if (after.mtimeMs !== state.mtime || after.size !== state.size)
+    throw new Error('File changed while uploading. The next attempt will restart safely.');
+  await beforeComplete?.();
+  at.stage = 'complete';
+  return (
+    await api.complete(
+      state.uploadId!,
+      parts.sort((a, b) => a.partNumber - b.partNumber),
+      state.storedHash!,
+    )
+  ).item;
+}
+
+/**
+ * Decrypts a downloaded encrypted file into `target`, chunk by chunk; returns the SHA-256 of
+ * the decrypted file. Any damaged or swapped chunk fails the whole file.
+ */
+async function decryptFile(source: string, target: string, keys: AccountKeys) {
+  const input = await open(source, 'r');
+  const output = await open(target, 'w', 0o600);
+  const hash = createHash('sha256');
+  try {
+    const stored = (await input.stat()).size;
+    const header = Buffer.alloc(HEADER_SIZE);
+    await input.read(header, 0, HEADER_SIZE, 0);
+    const cipher = await FileCipher.open(keys, new Uint8Array(header));
+    const total = plainSize(stored);
+    const chunks = Math.max(1, Math.ceil(total / cipher.chunkSize));
+    let at = HEADER_SIZE;
+    for (let i = 0; i < chunks; i++) {
+      const length = Math.min(cipher.chunkSize, total - i * cipher.chunkSize) + 16;
+      const sealed = Buffer.alloc(length);
+      const { bytesRead } = await input.read(sealed, 0, length, at);
+      if (bytesRead !== length) throw new Error('The downloaded file is incomplete.');
+      at += length;
+      const plain = await cipher.decryptChunk(i, new Uint8Array(sealed), i === chunks - 1);
+      await output.write(plain);
+      hash.update(plain);
+    }
+  } finally {
+    await input.close();
+    await output.close();
+  }
+  return hash.digest('hex');
+}
+
 export async function downloadFile(
   api: ApiClient,
   input: {
@@ -318,7 +517,33 @@ export async function downloadFile(
   try {
     offset = (await stat(part)).size;
   } catch {}
-  const signed = await api.download(input);
+  const signed: Awaited<ReturnType<ApiClient['download']>> & { encrypted?: boolean } =
+    await api.download(input);
+  const keys = signed.encrypted ? transferKeys.read() : undefined;
+  if (signed.encrypted && !keys) throw lockedError();
+  /**
+   * Puts the checked download in place; an encrypted one is decrypted first. Returns the
+   * SHA-256 of the file as written, which is the stored hash unless it was encrypted.
+   */
+  const finish = async () => {
+    let written = part;
+    let localHash = signed.contentHash;
+    if (keys) {
+      written = destination + '.harbor-plain';
+      try {
+        localHash = await decryptFile(part, written, keys);
+      } catch (error) {
+        await rm(written, { force: true });
+        // Damaged bytes come down again next time rather than failing for good.
+        await rm(part, { force: true });
+        throw error;
+      }
+    }
+    await beforeReplace?.();
+    await replaceWith(written, destination);
+    if (written !== part) await rm(part, { force: true });
+    return localHash;
+  };
   if (offset > signed.sizeBytes) {
     await rm(part, { force: true });
     offset = 0;
@@ -428,9 +653,7 @@ export async function downloadFile(
           await rm(part, { force: true });
           throw new Error('Download integrity check failed. The original local file was kept.');
         }
-        await beforeReplace?.();
-        await replaceWith(part, destination);
-        return signed.contentHash;
+        return await finish();
       }
     } finally {
       idle.done();
@@ -440,9 +663,7 @@ export async function downloadFile(
     await rm(part, { force: true });
     throw new Error('Download integrity check failed. The original local file was kept.');
   }
-  await beforeReplace?.();
-  await replaceWith(part, destination);
-  return signed.contentHash;
+  return finish();
 }
 
 /**

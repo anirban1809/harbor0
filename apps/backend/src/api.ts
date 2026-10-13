@@ -1316,6 +1316,8 @@ export function createApp(
       sizeBytes: z.number(),
       contentHash: c.hash,
       contentHashAlgorithm: z.literal('SHA256'),
+      /** The stored bytes are encrypted; sizeBytes and contentHash describe them as stored. */
+      encrypted: z.boolean().optional(),
     }),
     async (ctx, i) => service.download(userId(ctx), i),
   );
@@ -1830,6 +1832,25 @@ export function createApp(
     z.object({ item: c.itemSchema }),
     async (ctx, i) =>
       service.createFolder(userId(ctx), i, {
+        rootId: p(ctx, 'id'),
+        runId: p(ctx, 'runId'),
+        deviceId: backupDevice(ctx),
+      }),
+  );
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/items/:itemId/name',
+    'Switch a backed up name between its plain and encrypted forms',
+    z
+      .object({
+        operationId: c.operationId,
+        baseRevision: z.number().int().positive(),
+        name: c.filename,
+      })
+      .strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) =>
+      service.renameInBackup(userId(ctx), p(ctx, 'itemId'), i, {
         rootId: p(ctx, 'id'),
         runId: p(ctx, 'runId'),
         deviceId: backupDevice(ctx),

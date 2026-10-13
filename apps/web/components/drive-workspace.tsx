@@ -124,6 +124,8 @@ type Props = {
   title?: string;
   /** Shown under the breadcrumbs, e.g. the status and controls of an open backup folder. */
   header?: ReactNode;
+  /** Replaces the listing, e.g. while the host knows its files can't be read. */
+  unavailable?: ReactNode;
 };
 const noPending: Item[] = [];
 const noAdded: AddedItem[] = [];
@@ -186,6 +188,7 @@ export function DriveWorkspace({
   onDisconnectBackup,
   title = 'My Drive',
   header,
+  unavailable,
 }: Props) {
   const query = useDebouncedValue(searchQuery);
   const lastRefresh = useRef(refreshKey);
@@ -1380,7 +1383,7 @@ export function DriveWorkspace({
               low on storage.
             </Alert>
           )}
-        {loadError && !sessionEnd && <Alert tone="error">{loadError}</Alert>}
+        {loadError && !sessionEnd && !unavailable && <Alert tone="error">{loadError}</Alert>}
         {error && !sessionEnd && <Alert tone="error">{error}</Alert>}
         <div className="drive-toolbar">
           {selection.length ? (
@@ -1649,6 +1652,8 @@ export function DriveWorkspace({
             <div className="drive-collection">
               <FileCollectionSkeleton compact grid={grid} />
             </div>
+          ) : unavailable ? (
+            unavailable
           ) : (loadError || (activeTab === 'Sync' && syncFoldersError)) && !files.length ? (
             <FileLoadError onRetry={() => setRevision((value) => value + 1)} />
           ) : files.length === 0 && !pinnedHere.length ? (

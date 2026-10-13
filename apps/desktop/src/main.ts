@@ -36,7 +36,18 @@ import { syncView } from './sync-view';
 import { FolderDiskUsageCache } from './folder-disk-usage';
 const folderDiskUsage = new FolderDiskUsageCache();
 import { stickyIssue, type SyncRuntime } from './sync-state';
-import { uploadFile, downloadFile, downloadFolderZip, type UploadState } from './transfers';
+import {
+  uploadFile,
+  downloadFile,
+  downloadFolderZip,
+  transferKeys,
+  type UploadState,
+} from './transfers';
+import { DesktopVault, type VaultStore } from './e2ee-vault';
+import { openEncryptedFile, type PlainReader } from './e2ee-reader';
+import { e2eeTransport } from '../../../packages/api-client/src/e2ee-transport';
+import { E2eeError, parseRecoveryKey } from '../../../packages/api-client/src/e2ee';
+import { TEXT_PREVIEW_BYTES } from '../../../packages/api-client/src/preview';
 import { contained, safeSegment, safeParents } from './paths';
 import type { FileUpload } from '../../web/lib/upload-activity';
 import {
@@ -171,16 +182,87 @@ const transport = retrying(
     () => session.refresh(),
   ),
 );
+/** This computer's copy of the account key, sealed by the OS keychain in the account's journal. */
+const vaultStore = (active: Journal): VaultStore => ({
+  load() {
+    const sealed = active.get<string>('e2eeDevice');
+    if (!sealed) return undefined;
+    try {
+      return JSON.parse(safeStorage.decryptString(Buffer.from(sealed, 'base64')));
+    } catch {
+      return undefined;
+    }
+  },
+  save: (copy) =>
+    active.set('e2eeDevice', safeStorage.encryptString(JSON.stringify(copy)).toString('base64')),
+  clear: () => active.set('e2eeDevice', null),
+});
+const vault = new DesktopVault(
+  () => (journal ? vaultStore(journal) : undefined),
+  () => vaultChanged(),
+);
+transferKeys.upload = vault.uploadKeys;
+transferKeys.read = vault.readKeys;
+/** Unlocking resumes sync. */
+function vaultChanged() {
+  if (engine && accountReady) {
+    window?.webContents.send('harbor:status', statusView(journal, engine.state));
+    if (!vault.locked) engine.wake();
+  }
+}
+const e2eeView = () =>
+  vault.current().enabled
+    ? { locked: vault.locked, decrypting: !!vault.current().decrypting }
+    : null;
+/** Requests the server refuses for an encrypted account; one succeeding means it no longer is. */
+const fileRequest = (endpoint: string) =>
+  /^\/v1\/(drive|uploads|downloads|folder-downloads|sync|backups|search|transfers|shares|storage)(\/|\?|$)/.test(
+    endpoint,
+  );
+let e2eeBlocked = false;
+function setE2eeBlocked(blocked: boolean) {
+  if (e2eeBlocked === blocked) return;
+  e2eeBlocked = blocked;
+  if (engine && accountReady)
+    window?.webContents.send('harbor:status', statusView(journal, engine.state));
+}
+const statusView = (activeJournal: Journal, state: SyncRuntime) => ({
+  ...syncView(activeJournal, state),
+  e2eeBlocked,
+  e2ee: e2eeView(),
+});
+// Names are encrypted on the way out and decrypted on the way back; while the account is
+// locked, file requests are refused rather than handing sync encrypted names.
+const sealed = e2eeTransport(transport, {
+  vault: vault.current,
+  onAccount: vault.setAccount,
+  strict: true,
+});
+/** The account as stored, names and all: for converting backups, which must see both forms. */
+const rawApi = new ApiClient(transport);
+// Encryption turned on or off on the web reaches this app through the account's state.
+setInterval(() => {
+  if (accountReady && vault.current().enabled) void api.me().catch(() => {});
+}, 60_000).unref();
 const api = new ApiClient(async (endpoint, init) => {
   try {
-    return await transport(endpoint, init);
+    const result = await sealed(endpoint, init);
+    if (e2eeBlocked && fileRequest(endpoint)) setE2eeBlocked(false);
+    return result;
   } catch (error) {
+    // This build is older than the server accepts for encrypted accounts.
+    if (error instanceof ApiError && error.code === 'E2EE_UPDATE_REQUIRED') setE2eeBlocked(true);
+    // Encryption was turned on or off elsewhere: the account's state tells the vault, and the
+    // next attempt goes up the right way.
+    if (error instanceof ApiError && ['E2EE_OFF', 'E2EE_REQUIRED'].includes(error.code))
+      void api.me().catch(() => {});
     noteRevoked(error);
     if (isSessionError(error)) await session.invalidate();
     throw error;
   }
 });
 async function connected() {
+  e2eeBlocked = false;
   const { user } = await api.me();
   journal = profiles.select(user.id);
   const deviceKey = DeviceKey.load(journal, {
@@ -208,6 +290,8 @@ async function connected() {
   signedOutReason = null;
   journal.set('deviceId', response.device.id);
   journal.set('deviceName', response.device.name ?? os.hostname());
+  // An encrypted account opens with this computer's saved copy of the key, if it has one.
+  if (vault.current().enabled) await vault.restore(api.request);
   for (const root of journal.roots()) {
     try {
       journal.root({ ...root, cloudPath: (await cloudLocation(api, root.remoteId)).path });
@@ -224,12 +308,23 @@ async function connected() {
     response.device.id,
     (state) => {
       if (accountReady && journal === activeJournal)
-        window?.webContents.send('harbor:status', syncView(activeJournal, state as SyncRuntime));
+        window?.webContents.send('harbor:status', statusView(activeJournal, state as SyncRuntime));
     },
     (title, body) => {
       if (accountReady && journal === activeJournal) notify(title, body);
     },
   );
+  engine.hold = () =>
+    vault.locked ? 'Unlock your files to sync. Nothing syncs until then.' : null;
+  engine.backupConversion = {
+    form: () =>
+      vault.uploadKeys()
+        ? 'encrypted'
+        : vault.current().decrypting && vault.readKeys()
+          ? 'plain'
+          : null,
+    raw: rawApi,
+  };
   engine.state.paused = journal.get<boolean>('paused') ?? false;
   await engine.start();
   accountReady = true;
@@ -304,6 +399,21 @@ const signedOutChannels = new Set([
   'checkForUpdate',
   'installUpdate',
 ]);
+/** Encrypted files being previewed, opened once and read a range at a time. */
+const encryptedPreviews = new Map<string, Promise<PlainReader>>();
+function encryptedPreview(driveItemId: string) {
+  const keys = vault.readKeys();
+  if (!keys) throw new ApiError('E2EE_LOCKED', 'Unlock your files to continue.', 423);
+  let reader = encryptedPreviews.get(driveItemId);
+  if (!reader) {
+    reader = openEncryptedFile(api, driveItemId, keys);
+    reader.catch(() => encryptedPreviews.delete(driveItemId));
+    encryptedPreviews.set(driveItemId, reader);
+    while (encryptedPreviews.size > 10)
+      encryptedPreviews.delete(encryptedPreviews.keys().next().value!);
+  }
+  return reader;
+}
 function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<unknown>) {
   ipcMain.handle('harbor:' + name, async (event, input) => {
     if (
@@ -511,7 +621,8 @@ app
             ? '~' + r.localPath.slice(os.homedir().length)
             : r.localPath,
         })),
-        sync: engine ? syncView(journal, engine.state) : { message: 'Sign in to start syncing' },
+        sync: engine ? statusView(journal, engine.state) : { message: 'Sign in to start syncing' },
+        e2ee: accountReady ? e2eeView() : null,
         jobs: (accountReady ? journal.jobs() : []).map((j) => ({
           id: j.id,
           rootId: j.rootId,
@@ -631,10 +742,15 @@ app
     });
     ipc(
       'openAccountPage',
-      z.object({ page: z.enum(['signup', 'forgot']) }).strict(),
+      z.object({ page: z.enum(['signup', 'forgot', 'drive', 'settings']) }).strict(),
       async ({ page }) => {
         if (!webUrl) throw new Error('Set HARBOR_WEB_URL to open account pages.');
-        await shell.openExternal(webUrl + (page === 'signup' ? '/signup' : '/forgot-password'));
+        await shell.openExternal(
+          webUrl +
+            { signup: '/signup', forgot: '/forgot-password', drive: '/', settings: '/settings' }[
+              page as string
+            ],
+        );
       },
     );
     ipc('notificationSettings', z.undefined(), async () => {
@@ -649,7 +765,16 @@ app
       'previewText',
       z.object({ driveItemId: z.string().min(1).max(256) }).strict(),
       async (input) => {
-        const result = await api.download(input);
+        const result: { downloadUrl: string; sizeBytes: number; encrypted?: boolean } =
+          await api.download(input);
+        if (result.encrypted) {
+          const reader = await encryptedPreview(input.driveItemId);
+          const bytes = await reader.read(0, Math.min(reader.size, TEXT_PREVIEW_BYTES));
+          const text = new TextDecoder().decode(bytes);
+          if (text.includes('\0'))
+            throw new Error('This file contains binary data and cannot be shown as text.');
+          return { text, truncated: reader.size > TEXT_PREVIEW_BYTES };
+        }
         return fetchTextPreview(result.downloadUrl, result.sizeBytes, AbortSignal.timeout(30_000));
       },
     );
@@ -1170,8 +1295,57 @@ app
       await updater!.install();
       return { restarting: true };
     });
+    ipc(
+      'e2eeUnlock',
+      z.union([
+        z.object({ passphrase: z.string().min(1).max(1024) }).strict(),
+        z
+          .object({
+            recovery: z.string().min(1).max(200),
+            passphrase: z.string().min(12).max(1024),
+          })
+          .strict(),
+      ]),
+      async (input: { passphrase: string; recovery?: string }) => {
+        try {
+          if (input.recovery !== undefined) {
+            const recovery = parseRecoveryKey(input.recovery);
+            if (!recovery) throw new Error('Enter all 8 groups of your recovery key.');
+            await vault.unlockWithRecovery(api.request, recovery, input.passphrase);
+          } else await vault.unlockWithPassphrase(api.request, input.passphrase);
+        } catch (error) {
+          if (error instanceof E2eeError && error.code === 'WRONG_KEY')
+            throw new Error(
+              input.recovery !== undefined
+                ? 'That recovery key isn’t right. Check it and try again.'
+                : 'That passphrase isn’t right. Check it and try again.',
+            );
+          throw error;
+        }
+        return { unlocked: true };
+      },
+    );
+    // The account's encryption for Settings; the wrapped keys stay out of the window.
+    ipc('e2eeDetails', z.undefined(), async () => {
+      const { e2ee } = await api.request('/v1/e2ee');
+      const { passphrase: _passphrase, recovery, ...details } = e2ee;
+      return {
+        ...details,
+        recoveryKey: !!recovery,
+        thisDevice: vault.deviceRecord ?? null,
+        locked: vault.locked,
+      };
+    });
+    ipc('e2eeLock', z.undefined(), async () => {
+      await vault.lock(api.request);
+      return { locked: true };
+    });
     ipc('logout', z.undefined(), async () => {
       await engine?.stop();
+      // Signing out removes this computer's copy of the encryption key, here and on the server.
+      await vault.lock(api.request).catch(() => {});
+      vault.reset();
+      encryptedPreviews.clear();
       try {
         await api.request('/v1/auth/logout', {
           method: 'POST',

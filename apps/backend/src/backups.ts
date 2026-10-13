@@ -8,6 +8,7 @@ import type {
 import { BACKUP_STALE_MS, StorageService, userPK, watchedBackup, type Job } from './domain';
 import { Transaction, transact } from './repository';
 import { assert } from './errors';
+import { encryptedAccount } from './e2ee';
 const partition = (userId: string, rootId: string) => `${userPK(userId)}#BACKUP#${rootId}`;
 // When the folder's last backup run finished, kept for its stale-backup reminder.
 type LastRun = { completedAt: string };
@@ -176,12 +177,19 @@ export class Backups {
         input.itemId,
         input.versionId,
       );
+      // An encrypted account's path is made of the names as stored, some of them encrypted,
+      // so the path the server builds is the one kept; the device's is never stored.
+      const encrypted = encryptedAccount(await this.service.account(tx, userId));
       assert(
-        input.relativePath.normalize('NFC') === relativePath.normalize('NFC'),
+        encrypted || input.relativePath.normalize('NFC') === relativePath.normalize('NFC'),
         'VALIDATION_ERROR',
         'Backup file path does not match.',
       );
-      await tx.put(pk, key, { ...input, sizeBytes: version.sizeBytes });
+      await tx.put(pk, key, {
+        ...input,
+        ...(encrypted ? { relativePath } : {}),
+        sizeBytes: version.sizeBytes,
+      });
       await tx.put(pk, `RUN#${runId}`, {
         ...run,
         fileCount: run.fileCount + 1,

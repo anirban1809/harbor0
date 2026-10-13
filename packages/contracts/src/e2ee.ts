@@ -20,7 +20,12 @@ export const isEncryptedName = (name: string) => encryptedNamePattern.test(name)
  * upload a file unencrypted or write ciphertext to a device as if it were the file. A platform
  * is listed with the oldest build that encrypts; the web app is always current.
  */
-export const E2EE_CLIENTS: Partial<Record<string, string>> = { WEB: '0' };
+export const E2EE_CLIENTS: Partial<Record<string, string>> = {
+  WEB: '0',
+  MACOS: '0.1.7',
+  WINDOWS: '0.1.7',
+  LINUX: '0.1.7',
+};
 
 const b64 = z
   .string()

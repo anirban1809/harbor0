@@ -210,3 +210,24 @@
 .update-panel > .progress {
   width: 100%;
 }
+
+/* The unlock form for an encrypted account, in place of a file list. */
+.e2ee-unlock .form {
+  width: min(360px, 100%);
+  text-align: left;
+}
+
+/* Settings: devices holding the encryption key. */
+.e2ee-devices {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.e2ee-devices li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}

@@ -26,6 +26,8 @@ import {
   Settings,
   Plus,
   ShieldCheck,
+  LockKeyhole,
+  KeyRound,
   Trash2,
   ChevronRight,
   Search,
@@ -410,7 +412,7 @@ function App() {
     }
   }
   // Account creation and password reset live in the web app, opened in the default browser.
-  async function openAccountPage(page: 'signup' | 'forgot') {
+  async function openAccountPage(page: 'signup' | 'forgot' | 'drive' | 'settings') {
     setError('');
     try {
       await bridge.openAccountPage({ page });
@@ -802,6 +804,23 @@ function App() {
       onChanged={() => setPlaceRevision((value) => value + 1)}
     />
   ) : null;
+  // An encrypted account: unlocked here, or the file views ask for the passphrase.
+  const e2ee: { locked: boolean; decrypting: boolean } | null = sync?.e2ee ?? status.e2ee ?? null;
+  const blockedNotice = e2ee?.locked ? (
+    <E2eeUnlock
+      onUnlocked={() => {
+        setLoadedView('');
+        setDriveRevision((value) => value + 1);
+        void bridge.status().then(setStatus);
+        void load().catch(() => {});
+      }}
+    />
+  ) : sync?.e2eeBlocked ? (
+    <EncryptedAccountNotice
+      web={status.accountLinks}
+      onOpenWeb={() => void openAccountPage('drive')}
+    />
+  ) : null;
   // One line in the sidebar: problems first, then work under way, then all clear.
   const average = (values: (number | undefined)[]) => {
     const known = values.filter((value): value is number => value !== undefined);
@@ -830,67 +849,77 @@ function App() {
   const folderStatus: { activity: FolderActivity; open: () => void } | null =
     !sync || !roots.length
       ? null
-      : problems
+      : e2ee?.locked
         ? {
-            activity: {
-              tone: 'error',
-              label: problems === 1 ? 'Sync needs attention' : `${problems} sync problems`,
-            },
-            open: () => openPlace('synced', status.deviceId ?? undefined),
+            activity: { tone: 'error', label: 'Locked · unlock to sync' },
+            open: () => goToPlace(null),
           }
-        : failingBackups.length
+        : sync.e2eeBlocked
           ? {
-              activity: {
-                tone: 'error',
-                label:
-                  failingBackups.length === 1
-                    ? `${failingBackups[0].localPathDisplayName} needs attention`
-                    : `${failingBackups.length} backups need attention`,
-              },
-              open: () => openPlace('backups'),
+              activity: { tone: 'error', label: 'Paused for encryption' },
+              open: () => openPlace('synced', status.deviceId ?? undefined),
             }
-          : sync.paused
+          : problems
             ? {
-                activity: { tone: 'paused', label: 'Sync and backups paused' },
-                open: () => setSection('Settings'),
+                activity: {
+                  tone: 'error',
+                  label: problems === 1 ? 'Sync needs attention' : `${problems} sync problems`,
+                },
+                open: () => openPlace('synced', status.deviceId ?? undefined),
               }
-            : !sync.online
+            : failingBackups.length
               ? {
-                  activity: { tone: 'paused', label: 'Offline · changes wait' },
-                  open: () => openPlace('synced', status.deviceId ?? undefined),
+                  activity: {
+                    tone: 'error',
+                    label:
+                      failingBackups.length === 1
+                        ? `${failingBackups[0].localPathDisplayName} needs attention`
+                        : `${failingBackups.length} backups need attention`,
+                  },
+                  open: () => openPlace('backups'),
                 }
-              : syncing.length
+              : sync.paused
                 ? {
-                    activity: {
-                      tone: 'busy',
-                      label: 'Syncing…',
-                      percent: average(syncing.map((root) => sync.progress?.[root.id])),
-                    },
-                    open: () => openPlace('synced', status.deviceId ?? undefined),
+                    activity: { tone: 'paused', label: 'Sync and backups paused' },
+                    open: () => setSection('Settings'),
                   }
-                : backingUp.length
+                : !sync.online
                   ? {
-                      activity: {
-                        tone: 'busy',
-                        label:
-                          backingUp.length === 1
-                            ? `Backing up ${backingUp[0].localPathDisplayName}…`
-                            : `Backing up ${backingUp.length} folders…`,
-                        percent: average(backingUp.map((root) => sync.progress?.[root.id])),
-                      },
-                      open: () => openPlace('backups', status.deviceId ?? undefined),
+                      activity: { tone: 'paused', label: 'Offline · changes wait' },
+                      open: () => openPlace('synced', status.deviceId ?? undefined),
                     }
-                  : {
-                      activity: {
-                        tone: 'ok',
-                        label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                      },
-                      open: () =>
-                        openPlace(
-                          syncRoots.length ? 'synced' : 'backups',
-                          status.deviceId ?? undefined,
-                        ),
-                    };
+                  : syncing.length
+                    ? {
+                        activity: {
+                          tone: 'busy',
+                          label: 'Syncing…',
+                          percent: average(syncing.map((root) => sync.progress?.[root.id])),
+                        },
+                        open: () => openPlace('synced', status.deviceId ?? undefined),
+                      }
+                    : backingUp.length
+                      ? {
+                          activity: {
+                            tone: 'busy',
+                            label:
+                              backingUp.length === 1
+                                ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                                : `Backing up ${backingUp.length} folders…`,
+                            percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                          },
+                          open: () => openPlace('backups', status.deviceId ?? undefined),
+                        }
+                      : {
+                          activity: {
+                            tone: 'ok',
+                            label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                          },
+                          open: () =>
+                            openPlace(
+                              syncRoots.length ? 'synced' : 'backups',
+                              status.deviceId ?? undefined,
+                            ),
+                        };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
@@ -1013,7 +1042,7 @@ function App() {
             </div>
           )}
           <div className="page-alerts">
-            {(error || loadError) && (
+            {(error || (loadError && !blockedNotice)) && (
               <Alert
                 tone="error"
                 dismissLabel="Dismiss error"
@@ -1131,6 +1160,7 @@ function App() {
               }
               showFolderUsage={!!place}
               header={folderHeader}
+              unavailable={blockedNotice ?? undefined}
               breadcrumbs={
                 <>
                   <button onClick={() => goToPlace(null)}>My Drive</button>
@@ -1226,6 +1256,8 @@ function App() {
               </div>
               {loading ? (
                 <FileCollectionSkeleton />
+              ) : blockedNotice ? (
+                blockedNotice
               ) : loadError && !visibleItems.length ? (
                 <FileLoadError
                   onRetry={() => {
@@ -1379,7 +1411,8 @@ function App() {
                   </Alert>
                 )}
                 {loading && <ContentSkeleton label="Loading transfers" />}
-                {!loading && loadError && !items.length && (
+                {!loading && blockedNotice}
+                {!loading && loadError && !items.length && !blockedNotice && (
                   <LoadError
                     onRetry={() => {
                       setLoadedView('');
@@ -1545,6 +1578,24 @@ function App() {
                     <dd>{status.deviceName || 'This device'}</dd>
                   </dl>
                 </Card>
+              )}
+              {e2ee && (
+                <EncryptionPanel
+                  state={e2ee}
+                  busy={busy}
+                  web={status.accountLinks}
+                  onOpenWeb={() => void openAccountPage('settings')}
+                  onLock={() =>
+                    setConfirmation({
+                      title: 'Lock this computer?',
+                      description:
+                        'harbor0 forgets the encryption key on this computer. Sync and backups pause until you enter your passphrase again. Your files stay as they are.',
+                      label: 'Lock',
+                      done: 'This computer is locked.',
+                      run: () => bridge.e2eeLock(),
+                    })
+                  }
+                />
               )}
               <Card
                 className="panel"
@@ -1874,3 +1925,287 @@ function App() {
   );
 }
 createRoot(document.getElementById('root')!).render(<App />);
+
+/** In place of a file list the server refused because the account is end-to-end encrypted. */
+function EncryptedAccountNotice({ web, onOpenWeb }: { web: boolean; onOpenWeb: () => void }) {
+  return (
+    <EmptyState
+      icon={<LockKeyhole />}
+      title="Update harbor0 to open your encrypted files"
+      description="Your account uses end-to-end encryption, which this version of the app can’t open. Sync and backups are paused: nothing was uploaded unencrypted and the files on this computer are untouched."
+      actions={
+        web ? (
+          <Button type="button" onClick={onOpenWeb}>
+            <ExternalLink />
+            Open harbor0 on the web
+          </Button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+/**
+ * In place of the file views on an encrypted account until this computer has the key: the
+ * passphrase, or the recovery key and a new passphrase if it was forgotten.
+ */
+function E2eeUnlock({ onUnlocked }: { onUnlocked: () => void }) {
+  const [mode, setMode] = useState<'passphrase' | 'recovery'>('passphrase');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const value = (name: string) => String(form.get(name) ?? '');
+    setError('');
+    if (mode === 'recovery') {
+      if (value('next').length < 12) return setError('Use at least 12 characters.');
+      if (value('next') !== value('confirm')) return setError('The passphrases don’t match.');
+    }
+    setBusy(true);
+    try {
+      await bridge.e2eeUnlock(
+        mode === 'passphrase'
+          ? { passphrase: value('passphrase') }
+          : { recovery: value('recovery'), passphrase: value('next') },
+      );
+      onUnlocked();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="empty-state e2ee-unlock" aria-labelledby="e2ee-unlock-title">
+      <div className="empty-state-icon" aria-hidden="true">
+        {mode === 'passphrase' ? <LockKeyhole /> : <KeyRound />}
+      </div>
+      <div className="empty-state-copy">
+        <h3 id="e2ee-unlock-title">Unlock your encrypted files</h3>
+        <p>
+          {mode === 'passphrase'
+            ? 'Enter your encryption passphrase. It’s separate from your sign-in password. This computer stays unlocked until you sign out.'
+            : 'Enter your recovery key and choose a new passphrase. Your other devices stay unlocked.'}
+        </p>
+      </div>
+      <form className="form" onSubmit={(e) => void submit(e)} key={mode}>
+        {error && <Alert tone="error">{error}</Alert>}
+        {mode === 'passphrase' ? (
+          <Field label="Passphrase">
+            <PasswordInput
+              name="passphrase"
+              autoComplete="off"
+              autoFocus
+              required
+              disabled={busy}
+            />
+          </Field>
+        ) : (
+          <>
+            <Field label="Recovery key">
+              <Input
+                name="recovery"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                autoFocus
+                required
+                disabled={busy}
+              />
+            </Field>
+            <Field label="New passphrase">
+              <PasswordInput name="next" autoComplete="new-password" required disabled={busy} />
+            </Field>
+            <Field label="Confirm new passphrase">
+              <PasswordInput name="confirm" autoComplete="new-password" required disabled={busy} />
+            </Field>
+          </>
+        )}
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Unlocking…' : 'Unlock'}
+        </Button>
+        <Button
+          type="button"
+          variant="link"
+          disabled={busy}
+          onClick={() => {
+            setError('');
+            setMode(mode === 'passphrase' ? 'recovery' : 'passphrase');
+          }}
+        >
+          {mode === 'passphrase'
+            ? 'Forgot your passphrase? Use your recovery key'
+            : 'Use your passphrase'}
+        </Button>
+      </form>
+    </section>
+  );
+}
+
+const platformNames: Record<string, string> = {
+  MACOS: 'Mac',
+  WINDOWS: 'Windows',
+  LINUX: 'Linux',
+  WEB: 'Browser',
+  IOS: 'iPhone or iPad',
+  ANDROID: 'Android',
+};
+const day = (at: string | null | undefined) =>
+  at ? new Date(at).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '—';
+/** Progress of converting existing files, as the web app or another device reports it. */
+function conversionLine(
+  progress: { doneFiles: number; totalFiles: number; deviceName: string | null } | null,
+) {
+  if (!progress) return null;
+  const by = progress.deviceName ? ` on ${progress.deviceName}` : '';
+  return `${progress.doneFiles.toLocaleString()} of ${progress.totalFiles.toLocaleString()} files${by}`;
+}
+
+/** Settings: the account's end-to-end encryption and this computer's part in it. */
+function EncryptionPanel({
+  state,
+  busy,
+  web,
+  onOpenWeb,
+  onLock,
+}: {
+  state: { locked: boolean; decrypting: boolean } | null;
+  busy: boolean;
+  web: boolean;
+  onOpenWeb: () => void;
+  onLock: () => void;
+}) {
+  type Details = Awaited<ReturnType<typeof bridge.e2eeDetails>>;
+  const [details, setDetails] = useState<Details | null>(null);
+  const [error, setError] = useState('');
+  const key = state ? `${state.locked}:${state.decrypting}` : 'off';
+  useEffect(() => {
+    let current = true;
+    setError('');
+    bridge
+      .e2eeDetails()
+      .then((next) => current && setDetails(next))
+      .catch((e: Error) => current && setError(e.message));
+    return () => {
+      current = false;
+    };
+  }, [key]);
+  const on = !!state;
+  const manage = web && (
+    <Button variant="outline" size="sm" onClick={onOpenWeb}>
+      <ExternalLink />
+      {on ? 'Manage on the web' : 'Turn on in the web app'}
+    </Button>
+  );
+  if (!on)
+    return (
+      <Card
+        className="panel"
+        title={
+          <>
+            End-to-end encryption <Badge>Off</Badge>
+          </>
+        }
+        description="With end-to-end encryption, files and their names are encrypted on your devices before they upload, so only you can read them, not even harbor0. Turn it on in the harbor0 web app; this computer then asks for your passphrase once."
+      >
+        {manage && <div className="settings-actions">{manage}</div>}
+      </Card>
+    );
+  const migrating = details?.migration && !details.migration.complete ? details.migration : null;
+  const decrypting = state.decrypting ? (details?.decryption ?? null) : null;
+  return (
+    <Card
+      className="panel"
+      title={
+        <>
+          End-to-end encryption{' '}
+          {state.decrypting ? (
+            <Badge tone="warning">Turning off</Badge>
+          ) : (
+            <Badge tone="success">On</Badge>
+          )}
+        </>
+      }
+      description={
+        state.decrypting
+          ? 'Your files are being decrypted so encryption can be turned off. New files upload unencrypted. Keep the web app open until it finishes.'
+          : 'Files and their names are encrypted on your devices before they upload. Only you can read them, not even harbor0.'
+      }
+    >
+      {error && <Alert tone="error">{error}</Alert>}
+      <dl className="details">
+        <dt>This computer</dt>
+        <dd>
+          {state.locked ? (
+            <Badge tone="warning">Locked</Badge>
+          ) : (
+            <Badge tone="success">Unlocked</Badge>
+          )}{' '}
+          {state.locked
+            ? 'Enter your passphrase in My Drive to sync.'
+            : 'Stays unlocked until you sign out or lock it.'}
+        </dd>
+        <dt>Turned on</dt>
+        <dd>{day(details?.enabledAt)}</dd>
+        <dt>Passphrase</dt>
+        <dd>
+          {details?.passphraseChangedAt
+            ? `Changed ${day(details.passphraseChangedAt)}`
+            : `Set ${day(details?.enabledAt)}`}
+        </dd>
+        <dt>Recovery key</dt>
+        <dd>
+          {details
+            ? details.recoveryKey
+              ? `Created ${day(details.recoveryCreatedAt ?? details.enabledAt)}`
+              : 'None. Create one in the web app.'
+            : '—'}
+        </dd>
+        {migrating && (
+          <>
+            <dt>Encrypting existing files</dt>
+            <dd>{conversionLine(migrating)}</dd>
+          </>
+        )}
+        {decrypting && (
+          <>
+            <dt>Decrypting</dt>
+            <dd>{conversionLine(decrypting)}</dd>
+          </>
+        )}
+        <dt>Devices with the key</dt>
+        <dd>
+          {details?.devices.length ? (
+            <ul className="e2ee-devices">
+              {details.devices.map((device) => (
+                <li key={device.id}>
+                  <strong>{device.name}</strong>
+                  {device.id === details.thisDevice && <Badge>This computer</Badge>}
+                  <span className="muted">
+                    {platformNames[device.platform] ?? device.platform} · last used{' '}
+                    {day(device.lastUsedAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            '—'
+          )}
+        </dd>
+      </dl>
+      <p className="muted">
+        Finder and the local WebDAV server are off while encryption is on. Remove a device or change
+        your passphrase in the web app.
+      </p>
+      <div className="settings-actions">
+        {!state.locked && (
+          <Button variant="outline" size="sm" disabled={busy} onClick={onLock}>
+            <LockKeyhole />
+            Lock this computer
+          </Button>
+        )}
+        {manage}
+      </div>
+    </Card>
+  );
+}

@@ -1745,6 +1745,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/backups/{id}/runs/{runId}/items/{itemId}/name": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Switch a backed up name between its plain and encrypted forms */
+        post: operations["post__v1_backups__id_runs__runId_items__itemId_name"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/backups/{id}/runs/{runId}/uploads": {
         parameters: {
             query?: never;
@@ -15316,6 +15333,7 @@ export interface operations {
                         contentHash: string;
                         /** @constant */
                         contentHashAlgorithm: "SHA256";
+                        encrypted?: boolean;
                     };
                 };
             };
@@ -23336,6 +23354,208 @@ export interface operations {
                     operationId: string;
                     /** @default null */
                     parentId?: string | null;
+                    name: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        item: {
+                            backupRootId?: string;
+                            /** @enum {string} */
+                            access?: "EDITOR" | "VIEWER";
+                            syncRemovedAt?: string | null;
+                            /** @enum {string} */
+                            cloudState?: "AVAILABLE" | "RELEASED" | "REQUESTED";
+                            id: string;
+                            ownerUserId: string;
+                            parentId: string | null;
+                            /** @enum {string} */
+                            type: "FILE" | "FOLDER";
+                            name: string;
+                            normalizedName: string;
+                            mimeType: string | null;
+                            sizeBytes: number;
+                            currentVersionId: string | null;
+                            revision: number;
+                            favorite: boolean;
+                            createdAt: string;
+                            updatedAt: string;
+                            deletedAt: string | null;
+                            encrypted?: boolean;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: {
+                            code: string;
+                            message: string;
+                            requestId: string;
+                            details?: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    post__v1_backups__id_runs__runId_items__itemId_name: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                runId: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    operationId: string;
+                    baseRevision: number;
                     name: string;
                 };
             };

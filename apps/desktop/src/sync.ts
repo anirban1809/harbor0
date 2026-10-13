@@ -1,6 +1,6 @@
 import path from 'node:path';
 import os from 'node:os';
-import { FolderBackups, backupReady } from './backups';
+import { FolderBackups, backupReady, type BackupConversion } from './backups';
 import { SyncReceipts } from './sync-receipts';
 import { mkdir, lstat, rename, rm, access, readdir } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
@@ -959,7 +959,21 @@ export class SyncEngine {
     this.hurry();
     return this.run();
   }
+  /** How backups follow end-to-end encryption being turned on or off; see FolderBackups. */
+  set backupConversion(conversion: BackupConversion | undefined) {
+    this.backups.conversion = conversion;
+  }
+  /** Why sync waits without working, e.g. an encrypted account not yet unlocked here. */
+  hold?: () => string | null;
   private async run() {
+    const held = this.hold?.();
+    if (held) {
+      if (this.state.message !== held) {
+        this.state.message = held;
+        this.emit();
+      }
+      return;
+    }
     if (!this.stopped && !this.publishingFolders) this.publishWork = this.publishSyncFolders();
     this.confirmStatus();
     if (this.running || this.stopped || (this.state.paused && !this.removedRemoteIds.size)) return;

@@ -11,7 +11,23 @@ declare global {
       status: () => Promise<any>;
       testNotification: () => Promise<{ shown: boolean }>;
       notificationSettings: () => Promise<void>;
-      openAccountPage: (input: { page: 'signup' | 'forgot' }) => Promise<void>;
+      /** Unlocks an encrypted account here: the passphrase, or the recovery key and a new one. */
+      e2eeUnlock: (
+        input: { passphrase: string } | { recovery: string; passphrase: string },
+      ) => Promise<{ unlocked: true }>;
+      openAccountPage: (input: {
+        page: 'signup' | 'forgot' | 'drive' | 'settings';
+      }) => Promise<void>;
+      /** The account's encryption for Settings, without its wrapped keys. */
+      e2eeDetails: () => Promise<
+        Omit<import('@harbor/contracts').E2eeState, 'passphrase' | 'recovery'> & {
+          recoveryKey: boolean;
+          thisDevice: string | null;
+          locked: boolean;
+        }
+      >;
+      /** Forgets the key on this computer; it needs the passphrase again. */
+      e2eeLock: () => Promise<{ locked: true }>;
       /** Signs in, or returns the account's two-step challenge to finish with loginVerify. */
       login: (input: {
         email: string;

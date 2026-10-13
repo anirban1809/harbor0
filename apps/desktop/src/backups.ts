@@ -1,11 +1,12 @@
+import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, readdir, rm, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rm, rmdir } from 'node:fs/promises';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
-import type { DriveItem } from '@harbor/contracts';
+import { isEncryptedName, type DriveItem } from '@harbor/contracts';
 import { contained, internalPath, metadataSegment, safeParents, safeSegment } from './paths';
-import { cancelUpload, downloadFile, hashFile } from './transfers';
+import { cancelUpload, downloadFile, hashFile, uploadFile, type UploadState } from './transfers';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
@@ -35,8 +36,14 @@ function refused(error: unknown) {
     ? 'This harbor0 server does not support archiving yet. Update the server and try again.'
     : error.message;
 }
+/**
+ * End-to-end encryption turned on or off: what this computer's backups should be stored as, and
+ * the server's own view of them (`raw`), whose names stay as stored.
+ */
+export type BackupConversion = { form: () => 'encrypted' | 'plain' | null; raw: ApiClient };
 export class FolderBackups {
   private nextRestoreCheck = new Map<string, number>();
+  conversion?: BackupConversion;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -160,6 +167,7 @@ export class FolderBackups {
       throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
     await this.restores(root, url);
     const key = `backup-run:${root.id}`;
+    if (!this.journal.get(key)) await this.convert(root, url, stopped);
     let run = this.journal.get<PendingRun | null>(key);
     if (!run) {
       const manual = !!this.journal.get(`backup-now:${root.id}`);
@@ -279,6 +287,116 @@ export class FolderBackups {
     const current = this.journal.roots().find((r) => r.id === root.id);
     if (current && current.lastBackupError !== run.error)
       this.journal.root({ ...current, lastBackupError: run.error });
+  }
+  /**
+   * Brings a folder's backup in line with the account's encryption. Only this computer may change
+   * its backups, so as encryption is turned on it re-encrypts what was saved before, and as it is
+   * turned off it decrypts what was saved since: each file's current version is downloaded,
+   * uploaded again the other way and its old versions deleted, then names switch form. Earlier
+   * versions go, as when the web app converts the rest of the drive. Runs once per change, inside
+   * a backup run of its own.
+   */
+  private async convert(root: Root, url: string, stopped: () => boolean) {
+    const want = this.conversion?.form();
+    const doneKey = `backup-converted:${root.id}`;
+    if (!want || !root.remoteId || this.journal.get(doneKey) === want) return;
+    const raw = this.conversion!.raw;
+    const encrypting = want === 'encrypted';
+    const items: DriveItem[] = [];
+    const folders = [root.remoteId];
+    while (folders.length) {
+      const folder = folders.pop()!;
+      let cursor: string | undefined;
+      do {
+        const page = await raw.list(folder, cursor);
+        for (const item of page.items) {
+          items.push(item);
+          if (item.type === 'FOLDER') folders.push(item.id);
+        }
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+    }
+    const content = items.filter((i) => i.type === 'FILE');
+    const names = items.filter((i) => isEncryptedName(i.name) !== encrypting);
+    if (!content.length && !names.length) return this.journal.set(doneKey, want);
+    const runId = crypto.randomUUID();
+    await this.api.request(`${url}/runs`, {
+      method: 'POST',
+      body: { id: runId, trigger: 'MANUAL' },
+    });
+    const backup = { rootId: root.backupId!, runId };
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'harbor0-convert-'));
+    let failed = 0;
+    /** Keeps the journal's record of a saved file current, so it isn't saved again. */
+    const saved = (item: DriveItem) => {
+      const known = this.journal.fileByItem(root.id, item.id);
+      if (known) this.journal.putFile({ ...known, revision: item.revision });
+    };
+    try {
+      for (const item of content) {
+        if (stopped()) return;
+        try {
+          let current = item;
+          if (!!item.encrypted !== encrypting) {
+            const copy = path.join(scratch, item.id);
+            await downloadFile(this.api, { driveItemId: item.id }, copy);
+            const state: UploadState = { operationId: crypto.randomUUID() };
+            current = await uploadFile(
+              this.api,
+              copy,
+              'file',
+              item.parentId,
+              state,
+              () => {},
+              { itemId: item.id, revision: item.revision },
+              undefined,
+              undefined,
+              backup,
+            );
+            await rm(copy, { force: true });
+            saved(current);
+          }
+          // Versions stored the other way, including ones an interrupted pass left behind.
+          await this.api.request(
+            `/v1/e2ee/items/${item.id}/${encrypting ? 'purge-plaintext' : 'purge-encrypted'}`,
+            { method: 'POST' },
+          );
+          const named = names.find((n) => n.id === item.id);
+          if (named) named.revision = current.revision;
+        } catch {
+          failed++;
+        }
+      }
+      for (const item of names) {
+        if (stopped()) return;
+        try {
+          // The decrypted name, read through the app's own client; a plain one goes up as is
+          // and is encrypted on the way.
+          const name = encrypting
+            ? item.name
+            : (await this.api.request(`/v1/drive/items/${item.id}`)).item.name;
+          const { item: renamed } = await this.api.request(
+            `${url}/runs/${runId}/items/${item.id}/name`,
+            {
+              method: 'POST',
+              body: { operationId: crypto.randomUUID(), baseRevision: item.revision, name },
+            },
+          );
+          saved(renamed);
+        } catch {
+          failed++;
+        }
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+      await this.api
+        .request(`${url}/runs/${runId}/complete`, {
+          method: 'POST',
+          body: failed ? { error: `${failed} files couldn’t be converted. Retrying.` } : {},
+        })
+        .catch(() => {});
+    }
+    if (!failed) this.journal.set(doneKey, want);
   }
   /** Files whose current content is exactly what the cloud copy holds; everything else is left alone. */
   private async saved(root: Root, relative = '') {

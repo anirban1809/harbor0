@@ -51,7 +51,14 @@ import {
     releaseInboxClaim,
 } from './signup-guard';
 import { joinTrackedSignup } from './signup-tracking';
-import { assertNameFor, conversionAllowance, encryptedAccount, encryptsNew } from './e2ee';
+import {
+    assertNameFor,
+    conversionAllowance,
+    decryptingAccount,
+    encryptedAccount,
+    encryptsNew,
+} from './e2ee';
+import { isEncryptedName } from '@harbor/contracts';
 
 // Upper bound on item rows one search request reads before returning a partial page.
 const SEARCH_SCAN_LIMIT = 5000;
@@ -571,6 +578,54 @@ export class StorageService {
         );
         return { item: await this.viewed(userId, result.item) };
     }
+    /**
+     * Switches a backed up item's name between its plain and encrypted forms, from the computer
+     * the backup belongs to, as encryption is turned on or off. Backups are otherwise read-only,
+     * so this is the only rename they take.
+     */
+    async renameInBackup(
+        userId: string,
+        itemId: string,
+        input: { operationId: string; baseRevision: number; name: string; },
+        backupWrite: BackupWrite,
+    ) {
+        const result = await this.operation(
+            userId,
+            input.operationId,
+            { action: 'backupRename', itemId, ...input, backupWrite },
+            async (tx) => {
+                const item = await this.owned(tx, userId, itemId, true);
+                await this.checkDevice(userId, backupWrite.deviceId);
+                await assertBackupWrite(tx, userId, item.parentId, backupWrite);
+                assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'Item was not found.', 404);
+                assert(
+                    item.revision === input.baseRevision,
+                    'REVISION_CONFLICT',
+                    'This item changed on another device.',
+                    409,
+                    { serverItem: item, serverRevision: item.revision },
+                );
+                const account = await this.account(tx, userId);
+                const encrypting = encryptsNew(account);
+                assert(
+                    (encrypting || decryptingAccount(account)) &&
+                        isEncryptedName(input.name) === encrypting &&
+                        isEncryptedName(item.name) !== encrypting,
+                    'VALIDATION_ERROR',
+                    'Backed up names change only as encryption is turned on or off.',
+                );
+                const old = structuredClone(item);
+                item.name = input.name.normalize('NFC');
+                item.normalizedName = normalizeName(input.name);
+                item.revision++;
+                item.updatedAt = now();
+                await this.reserveName(tx, item, old);
+                await this.record(tx, userId, 'ITEM_RENAMED', item.id, item);
+                return { item };
+            },
+        );
+        return { item: await this.viewed(userId, result.item) };
+    }
     async list(userId: string, parentId: string | null, limit = 100, cursor?: string) {
         const tx = new Transaction(this.repo);
         await this.parent(tx, userId, parentId);
@@ -900,6 +955,14 @@ export class StorageService {
                     );
                 }
                 const account = await this.account(tx, owner);
+                // An app that hasn't noticed encryption was turned off would store a file whose
+                // key is about to be deleted.
+                assert(
+                    !input.encrypted || encryptsNew(account),
+                    'E2EE_OFF',
+                    'End-to-end encryption is off for this account. Upload the file unencrypted.',
+                    409,
+                );
                 if (encryptsNew(account)) {
                     assert(
                         input.encrypted,
@@ -1607,6 +1670,8 @@ export class StorageService {
             sizeBytes: version.sizeBytes,
             contentHash: version.contentHash,
             contentHashAlgorithm: 'SHA256' as const,
+            // The stored bytes are H0E1: the app decrypts them after checking contentHash.
+            ...(version.encrypted ? { encrypted: true } : {}),
         };
     }
     async versions(userId: string, itemId: string) {

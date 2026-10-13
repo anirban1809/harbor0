@@ -196,6 +196,9 @@ describe('end-to-end encryption', () => {
       parts: [{ partNumber: 1, etag: 'e' }],
       contentHash: createHash('sha256').update('encrypted').digest('hex'),
     });
+    // Download links say the stored bytes are encrypted, so apps decrypt after checking them.
+    const link = await (await call('POST', '/v1/downloads', web, { driveItemId: first.id })).json();
+    expect(link).toMatchObject({ encrypted: true, sizeBytes: 9 });
     // An interrupted runner finds the file again from any browser.
     expect((await (await call('GET', '/v1/e2ee/leftovers', web)).json()).plaintextVersions).toEqual(
       [first.id],
@@ -211,6 +214,12 @@ describe('end-to-end encryption', () => {
     expect(versions).toMatchObject([{ encrypted: true }]);
     const after = (await (await call('GET', '/v1/users/me', web)).json()).storage.usedBytes;
     expect(before - after).toBe('plain text'.length);
+  });
+  it('refuses encrypted uploads to an account that is not encrypted', async () => {
+    await flagOn();
+    const web = await signIn();
+    const r = await upload(web, 'x.txt', 'x', { encrypted: true });
+    expect((await r.json()).error.code).toBe('E2EE_OFF');
   });
   it('lets a full account re-encrypt a file, but not grow', async () => {
     await flagOn();

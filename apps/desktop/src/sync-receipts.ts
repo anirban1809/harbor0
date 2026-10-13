@@ -10,7 +10,10 @@ type Receipt = {
   remoteId: string;
   relative: string;
   item: DriveItem;
+  /** SHA-256 of the file on disk. */
   hash: string | null;
+  /** SHA-256 of the version as stored, when it differs: an encrypted file's ciphertext. */
+  storedHash?: string | null;
 };
 /**
  * Windows flushes a file only through a handle that may write it: fsync on a read-only handle
@@ -60,7 +63,16 @@ export class SyncReceipts {
     )
       return;
     const pending = this.pending();
-    pending[item.id] = { rootId: root.id, remoteId: root.remoteId, relative, item, hash };
+    pending[item.id] = {
+      rootId: root.id,
+      remoteId: root.remoteId,
+      relative,
+      item,
+      hash,
+      ...(item.encrypted
+        ? { storedHash: (item as DriveItem & { contentHash?: string | null }).contentHash ?? null }
+        : {}),
+    };
     this.journal.set('syncReceipts', pending);
   }
   private remove(id: string, receipt: Receipt, retry = false) {
@@ -215,12 +227,21 @@ export class SyncReceipts {
           this.remove(id, receipt);
           continue;
         }
+        // An encrypted version is confirmed by its stored hash, read from its versions when the
+        // item didn't carry it.
+        let stored = receipt.storedHash;
+        if (stored === null) {
+          const { items } = await this.api.request(`/v1/drive/items/${id}/versions`);
+          stored =
+            items.find((v: { id: string }) => v.id === receipt.item.currentVersionId)
+              ?.contentHash ?? null;
+        }
         const response = await this.api.request(`/v1/sync/items/${id}/acknowledge`, {
           method: 'POST',
           body: {
             versionId: receipt.item.currentVersionId,
             revision: receipt.item.revision,
-            contentHash: receipt.hash,
+            contentHash: stored === undefined ? receipt.hash : stored,
           },
           signal: signal
             ? AbortSignal.any([signal, AbortSignal.timeout(8000)])
