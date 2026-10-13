@@ -96,7 +96,8 @@ describe('encrypted files', () => {
     ]) {
       const r = opened.cipherRange(size, b, e);
       const out = await opened.decryptRange(size, b, e, stored.subarray(r.start, r.end));
-      expect(out).toEqual(plain.subarray(b, e));
+      // Compared as buffers: element by element, megabytes take longer than the test's limit.
+      expect(Buffer.from(out).equals(plain.subarray(b, e))).toBe(true);
     }
   });
 
