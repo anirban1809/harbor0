@@ -234,7 +234,6 @@ export function DriveWorkspace({
   const [syncStatuses, setSyncStatuses] = useState<Record<string, SyncItemStatus>>({});
   // The last successful status read, for the poller; null until one succeeds.
   const settledStatuses = useRef<Record<string, SyncItemStatus> | null>(null);
-  const [syncStatusError, setSyncStatusError] = useState(false);
   const [syncFoldersError, setSyncFoldersError] = useState(false);
   const [error, setError] = useState('');
   // Requests fail while the signed-out dialog is up; it explains the failure instead.
@@ -322,7 +321,6 @@ export function DriveWorkspace({
     }
     if (!sameView) {
       setSyncStatuses({});
-      setSyncStatusError(false);
       setWholeFolder(null);
     }
     if (!sameView || cached) {
@@ -558,8 +556,8 @@ export function DriveWorkspace({
     const controller = new AbortController();
     let fetching = false;
     settledStatuses.current = null;
-    setSyncStatuses({});
-    setSyncStatusError(false);
+    // The statuses shown stay until fresh ones arrive: a new file in the folder changes the
+    // targets, and clearing them would make every badge flicker.
     const ids = statusTargets ? statusTargets.split(',') : [];
     async function refreshStatus() {
       if (fetching || !ids.length || controller.signal.aborted) return;
@@ -570,7 +568,9 @@ export function DriveWorkspace({
           const result = await request(
             '/v1/sync/status?ids=' + ids.slice(offset, offset + 50).join(','),
             {
-              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+              // Each status walks a folder's whole tree, which takes seconds for a large one;
+              // still inside the API's 29s limit.
+              signal: AbortSignal.any([controller.signal, AbortSignal.timeout(25_000)]),
             },
           );
           for (const status of result.items) statuses[status.itemId] = status;
@@ -578,13 +578,9 @@ export function DriveWorkspace({
         if (controller.signal.aborted) return;
         settledStatuses.current = statuses;
         setSyncStatuses(statuses);
-        setSyncStatusError(false);
       } catch {
-        if (!controller.signal.aborted) {
-          settledStatuses.current = null;
-          setSyncStatuses({});
-          setSyncStatusError(true);
-        }
+        // The last statuses stay shown; the next poll tries again.
+        if (!controller.signal.aborted) settledStatuses.current = null;
       } finally {
         fetching = false;
       }
@@ -1187,11 +1183,6 @@ export function DriveWorkspace({
   function renderFiles(entries: Item[], label = 'Drive files') {
     return (
       <>
-        {syncStatusError && (
-          <p className="muted drive-feedback" role="status">
-            Sync status is temporarily unavailable.
-          </p>
-        )}
         <FileCollection
           label={label}
           compact
