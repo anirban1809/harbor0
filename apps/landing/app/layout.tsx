@@ -4,7 +4,7 @@ import { SignupRef } from './signup-ref';
 
 const title = 'harbor0 — 50 GB of free storage for beta members.';
 const description =
-  'A private cloud drive with desktop sync, versioned backups, and person-to-person sharing. 50 GB free for beta members, kept after launch; no payment during the beta, and more storage on request.';
+  'A private cloud drive with optional end-to-end encryption, desktop sync, versioned backups, a local WebDAV drive and person-to-person sharing. 50 GB free for beta members, kept after launch; no payment during the beta, and more storage on request.';
 export const metadata: Metadata = {
   title,
   description,

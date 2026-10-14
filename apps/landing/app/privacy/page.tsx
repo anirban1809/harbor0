@@ -128,7 +128,7 @@ const sections: LegalSection[] = [
     'Security',
     [
       'Data travels to and from harbor0 over encrypted connections, and is encrypted at rest by our storage providers. Sign-in sessions use secure, HTTP-only cookies in the browser, and the operating system’s secure credential store in the desktop app. Access to our infrastructure is limited to the people who need it.',
-      'Files are not end-to-end encrypted: harbor0 holds the keys, which is what lets us show previews, build ZIP downloads and deliver shares. No system is perfectly secure; if a breach affects your information, we’ll tell you without undue delay.',
+      'By default, files are not end-to-end encrypted: harbor0 holds the keys, which is what lets us build ZIP downloads and deliver shares. You can turn on end-to-end encryption in Settings. Your devices then encrypt files and file names before upload with a key protected by your passphrase and recovery key, neither of which we receive, so we can’t read or recover those files. No system is perfectly secure; if a breach affects your information, we’ll tell you without undue delay.',
     ],
   ],
   [

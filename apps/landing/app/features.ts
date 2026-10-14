@@ -1,7 +1,6 @@
 import {
   Check,
   Clock,
-  History,
   Lock,
   RefreshCw,
   RotateCcw,
@@ -51,16 +50,16 @@ export const features: Feature[] = [
     id: 'drive',
     name: 'Drive',
     tint: 'var(--primary)',
-    text: 'Every file in one place, with search, previews and version history.',
+    text: 'Every file in one place, with search, previews, version history and optional end-to-end encryption.',
     shot: driveLight,
     darkShot: driveDark,
     alt: 'My Drive, listing folders and files',
     notes: [
       { icon: Search, title: 'Search', text: 'Find any file from anywhere with ⌘K.' },
-      { icon: History, title: 'Version history', text: 'Go back to any earlier copy.' },
+      { icon: Lock, title: 'End-to-end', text: 'Optional encryption only you can unlock.' },
     ],
     tagline: 'Every file in one place.',
-    lede: 'Upload, organise, preview and find your files from the browser or the desktop app.',
+    lede: 'Upload, organise, preview and find your files from the browser, the desktop app, or Finder and File Explorer. Turn on end-to-end encryption and only your devices can read them.',
     platforms: ['Web', 'Desktop'],
     steps: [
       [
@@ -99,6 +98,22 @@ export const features: Feature[] = [
         'Synced Folders, Backups and Archives sit at the top of My Drive, sorted by the computer each folder comes from.',
       ],
       ['Stable links', 'A folder keeps the same address when it is renamed or moved.'],
+      [
+        'End-to-end encryption',
+        'Turn it on in Settings and your devices encrypt files and file names before they’re uploaded. You set a passphrase and save a recovery key; harbor0 never sees either.',
+      ],
+      [
+        'Search and previews, encrypted',
+        'With encryption on, search, previews and downloads still work. They happen on your device, not on our servers.',
+      ],
+      [
+        'Open in Finder or File Explorer',
+        'The desktop app’s local WebDAV server shows My Drive as a drive named harbor0, without syncing it. Files download only when you open them.',
+      ],
+      [
+        'Any WebDAV app',
+        'Connect Cyberduck, rclone or another WebDAV app with the address and password the desktop app shows. The server only accepts connections from your own computer.',
+      ],
     ],
     questions: [
       ['Do old versions use my storage?', 'Yes. Every saved version counts towards your storage.'],
@@ -109,6 +124,18 @@ export const features: Feature[] = [
       [
         'What happens to a format that cannot be previewed?',
         'The viewer offers a download instead.',
+      ],
+      [
+        'What does end-to-end encryption change?',
+        'Only your devices can read your files. Sending files, shared folders, shared sync, folder ZIP downloads and rclone access tokens aren’t available while it’s on. You can turn it off later; your files are decrypted first.',
+      ],
+      [
+        'What if I forget my passphrase?',
+        'Use your recovery key to choose a new one. Lose both and your files can’t be recovered — not even by harbor0.',
+      ],
+      [
+        'Does the WebDAV drive work with encryption on?',
+        'Yes. Files are decrypted on your computer as apps read them, and nothing leaves it unencrypted.',
       ],
     ],
   },

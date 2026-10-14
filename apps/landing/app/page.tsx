@@ -1,4 +1,5 @@
 import { ArrowUpRight } from 'lucide-react';
+import Link from 'next/link';
 import { FitCheck } from './fit-check';
 import { ProductStage } from './product-stage';
 import { loginUrl, SignupButton, signupUrl, SiteFoot, SiteNav } from './site-chrome';
@@ -9,7 +10,17 @@ const facts = [
   { value: 'More', label: 'Storage on request' },
 ];
 
-const details = [
+const details: [string, string, string?][] = [
+  [
+    'End-to-end encryption',
+    'Optional. Your devices encrypt files and names before upload, so harbor0 can’t read them.',
+    '/encryption',
+  ],
+  [
+    'Local WebDAV',
+    'Open My Drive in Finder, File Explorer or any WebDAV app without syncing it.',
+    '/webdav',
+  ],
   ['Backups', 'Pick a folder; new versions are saved as you work.'],
   ['Version history', 'Go back to any earlier copy of a file.'],
   ['Trash', 'Deleted files wait until you restore or remove them.'],
@@ -30,8 +41,16 @@ const questions = [
     'Only you, unless you share them — and sharing is with signed-in people, not public links.',
   ],
   [
+    'Are my files end-to-end encrypted?',
+    'If you turn it on. With end-to-end encryption, your devices encrypt files and file names with a passphrase only you know, and harbor0 can’t read them. Without it, files are encrypted on our servers, which keeps sending and shared folders available.',
+  ],
+  [
+    'Can I open my files in Finder or File Explorer?',
+    'Yes. The desktop app runs a WebDAV server on your computer that shows My Drive as a drive, without syncing it. Files download when you open them.',
+  ],
+  [
     'Where does it run?',
-    'In your browser. Sync and automatic backups run through the desktop app.',
+    'In your browser. Sync, automatic backups and the local WebDAV drive run through the desktop app.',
   ],
 ];
 
@@ -52,7 +71,8 @@ export default function LandingPage() {
         </h1>
         <div className="hero-foot">
           <p className="lede">
-            50 GB of private storage, <em>free for beta members.</em>
+            50 GB of private storage, <Link href="/encryption">end-to-end encrypted</Link> if you
+            want it — <em>free for beta members.</em>
           </p>
           <div className="hero-cta">
             <SignupButton />
@@ -84,10 +104,10 @@ export default function LandingPage() {
       <section className="wrap section">
         <p className="label">03 — Also on board</p>
         <dl className="details">
-          {details.map(([name, text], index) => (
+          {details.map(([name, text, href], index) => (
             <div key={name}>
               <span>{String(index + 1).padStart(2, '0')}</span>
-              <dt>{name}</dt>
+              <dt>{href ? <Link href={href}>{name}</Link> : name}</dt>
               <dd>{text}</dd>
             </div>
           ))}

@@ -132,7 +132,7 @@ html {
   margin-top: clamp(28px, 4vw, 48px);
 }
 .lede {
-  max-width: 24ch;
+  max-width: 30ch;
   font-size: clamp(18px, 2vw, 24px);
   line-height: 1.3;
   letter-spacing: -0.015em;
@@ -761,4 +761,134 @@ html {
   .hero-cta {
     flex-wrap: wrap;
   }
+}
+
+/* Guides: encryption and WebDAV ------------------------------------------------ */
+.details dd code,
+.connect code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+.keys {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: clamp(16px, 3vw, 28px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+.keys-row {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 10px;
+}
+.keys-row > div {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.keys-row > div[data-main] {
+  border-color: var(--tint);
+  box-shadow: inset 0 0 0 1px var(--tint);
+}
+.keys-row strong {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.keys-row small,
+.keys-step {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.keys-step {
+  text-align: center;
+}
+.keys-step::before {
+  content: '↓ ';
+  color: var(--tint);
+}
+.compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(20px, 4vw, 56px);
+}
+.compare h3 {
+  margin-bottom: 8px;
+  font-size: clamp(22px, 2.4vw, 30px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.compare ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.compare li {
+  display: flex;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-lg);
+  color: var(--text-2);
+}
+.compare svg {
+  flex: none;
+  margin-top: 4px;
+  color: var(--tint);
+}
+.connect {
+  display: grid;
+  margin: 0;
+  padding: 4px clamp(16px, 3vw, 28px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+.connect > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 0;
+}
+.connect > div + div {
+  border-top: 1px solid var(--line);
+}
+.connect dt {
+  font-weight: 600;
+}
+.connect dd {
+  margin: 0;
+  color: var(--text-2);
+}
+@media (max-width: 860px) {
+  .compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .keys-row {
+    grid-auto-flow: row;
+  }
+  .connect > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+.details dt a {
+  text-decoration: underline;
+  text-decoration-color: var(--tint, var(--primary));
+  text-underline-offset: 4px;
+}
+.lede a {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 4px;
+}
+.lede a:hover {
+  text-decoration-color: currentColor;
 }

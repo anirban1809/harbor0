@@ -1,5 +1,6 @@
 import { ArrowDownToLine, ArrowUpRight } from 'lucide-react';
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import type { CSSProperties } from 'react';
 import { features } from '../features';
 import { Shot } from '../shot';
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
   description: `harbor0 in the browser and ${computers}.`,
 };
 
-const desktop = [
+const desktop: [string, string, string?][] = [
   ['Sync', 'Keep folders in step across your computers, and share a folder for two-way sync.'],
   ['Automatic backups', 'Save new versions of a folder as you work, and restore them in place.'],
   [
@@ -36,6 +37,16 @@ const desktop = [
     'Checks for files and invitations every 10 seconds, even with the window closed, and notifies you.',
   ],
   ['Your whole Drive', 'Browse, upload, preview and download, exactly as on the web.'],
+  [
+    'Local WebDAV',
+    'Open My Drive in Finder or File Explorer, or connect Cyberduck or rclone, without syncing it. Only your computer can connect.',
+    '/webdav',
+  ],
+  [
+    'End-to-end encryption',
+    'Sync, backups and WebDAV encrypt and decrypt on your computer. Enter your passphrase once per device.',
+    '/encryption',
+  ],
   ['Several accounts', 'Each account keeps its own sync folders and settings on the computer.'],
   ['Sign-in', 'Your password is never saved. The session is encrypted with the system keychain.'],
 ];
@@ -138,10 +149,10 @@ export default function AppsPage() {
           <Shot picture={sync} tint="var(--primary)" flat />
         </div>
         <dl className="details spaced">
-          {desktop.map(([name, text], index) => (
+          {desktop.map(([name, text, href], index) => (
             <div key={name}>
               <span>{String(index + 1).padStart(2, '0')}</span>
-              <dt>{name}</dt>
+              <dt>{href ? <Link href={href}>{name}</Link> : name}</dt>
               <dd>{text}</dd>
             </div>
           ))}

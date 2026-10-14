@@ -57,6 +57,8 @@ export function SiteFoot() {
       </span>
       <span>50 GB free during the beta. Files are private unless you share them.</span>
       <span className="foot-links">
+        <Link href="/encryption">Encryption</Link>
+        <Link href="/webdav">WebDAV</Link>
         <Link href="/terms">Terms</Link>
         <Link href="/privacy">Privacy</Link>
         <a href={signupUrl} className="text-link">
