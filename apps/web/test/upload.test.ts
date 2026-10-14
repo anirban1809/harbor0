@@ -4,6 +4,8 @@ import {
   BrowserUpload,
   numberedName,
   permanentUploadError,
+  put,
+  STORAGE_PUT_SLOTS,
   uploadErrorMessage,
 } from '../lib/upload';
 
@@ -211,6 +213,53 @@ describe('BrowserUpload', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('keeps storage PUTs across uploads under the browser connection limit', async () => {
+    let open = 0;
+    let peak = 0;
+    const pending: (() => void)[] = [];
+    class SlowXhr extends FakeXhr {
+      send() {
+        open++;
+        peak = Math.max(peak, open);
+        pending.push(() => {
+          open--;
+          super.send();
+        });
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', SlowXhr);
+    const signal = new AbortController().signal;
+    let done = 0;
+    const puts = Array.from({ length: 12 }, () =>
+      put('https://storage.test/part', new Blob(['x']), signal, () => {}).then(() => done++),
+    );
+    while (done < puts.length) {
+      await new Promise((r) => setTimeout(r, 0));
+      pending.shift()?.();
+    }
+    await Promise.all(puts);
+    expect(peak).toBe(STORAGE_PUT_SLOTS);
+  });
+  it('drops a PUT still waiting for a slot when its upload is paused', async () => {
+    class HangingXhr extends FakeXhr {
+      onabort?: () => void;
+      send() {}
+      abort() {
+        this.onabort?.();
+      }
+    }
+    vi.stubGlobal('XMLHttpRequest', HangingXhr);
+    const busy = new AbortController();
+    const running = Array.from({ length: STORAGE_PUT_SLOTS }, () =>
+      put('https://storage.test/part', new Blob(['x']), busy.signal, () => {}).catch(() => {}),
+    );
+    const waiting = new AbortController();
+    const queued = put('https://storage.test/part', new Blob(['x']), waiting.signal, () => {});
+    waiting.abort();
+    await expect(queued).rejects.toThrow('Paused');
+    busy.abort();
+    await Promise.all(running);
   });
   it('does not report a paused upload', async () => {
     const { api } = fakeApi({});

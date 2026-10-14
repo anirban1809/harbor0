@@ -77,7 +77,52 @@ const STALL_MS = 60_000;
 /** A storage failure with what the problem report needs. */
 const storageError = (message: string, code: string, httpStatus: number) =>
   Object.assign(new Error(message), { code, httpStatus });
-export function put(
+// Storage speaks HTTP/1.1, so the browser opens at most 6 connections to it and queues the
+// rest unsent. Capping PUTs across all uploads below that keeps every PUT on the wire, so
+// the stall timer only ever times bytes that should be moving.
+export const STORAGE_PUT_SLOTS = 5;
+let putsRunning = 0;
+const waitingPuts: (() => void)[] = [];
+/** Waits for a free storage PUT slot; resolves to the function that gives it back. */
+function putSlot(signal: AbortSignal): Promise<() => void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException('Paused', 'AbortError'));
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      putsRunning--;
+      waitingPuts.shift()?.();
+    };
+    const take = () => {
+      signal.removeEventListener('abort', cancel);
+      putsRunning++;
+      resolve(release);
+    };
+    const cancel = () => {
+      const i = waitingPuts.indexOf(take);
+      if (i >= 0) waitingPuts.splice(i, 1);
+      reject(new DOMException('Paused', 'AbortError'));
+    };
+    if (putsRunning < STORAGE_PUT_SLOTS) return take();
+    waitingPuts.push(take);
+    signal.addEventListener('abort', cancel, { once: true });
+  });
+}
+export async function put(
+  url: string,
+  blob: Blob,
+  signal: AbortSignal,
+  onProgress: (bytes: number) => void,
+): Promise<string> {
+  const release = await putSlot(signal);
+  try {
+    return await send(url, blob, signal, onProgress);
+  } finally {
+    release();
+  }
+}
+function send(
   url: string,
   blob: Blob,
   signal: AbortSignal,
