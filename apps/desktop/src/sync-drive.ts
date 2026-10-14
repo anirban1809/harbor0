@@ -4,7 +4,7 @@ export type SyncDriveItem = FileEntry & {
   parentId: string | null;
   localId?: string;
   localOnly?: boolean;
-  syncStatus?: 'Pending' | 'Syncing';
+  syncStatus?: 'Pending' | 'Syncing' | 'Not synced';
   syncDetail?: string;
   syncProgress?: number;
   /** The tab it shows in; Sync unless it says otherwise. */

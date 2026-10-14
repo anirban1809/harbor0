@@ -906,6 +906,7 @@ function App() {
     ),
   ];
   const problems = sync ? syncRequirements(syncRoots, sync, jobs).length : 0;
+  const backupProblems = [...unavailableBackups, ...failingBackups];
   const syncing = sync
     ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')
     : [];
@@ -929,9 +930,17 @@ function App() {
             ? {
                 activity: {
                   tone: 'error',
-                  label: problems === 1 ? 'Sync needs attention' : `${problems} sync problems`,
+                  // Naming only sync would hide a backup problem behind it.
+                  label: backupProblems.length
+                    ? 'Sync and backup problems'
+                    : problems === 1
+                      ? 'Sync needs attention'
+                      : `${problems} sync problems`,
                 },
-                open: () => openPlace('synced', status.deviceId ?? undefined),
+                // My Drive lists both synced folders and backups.
+                open: backupProblems.length
+                  ? () => goToPlace(null)
+                  : () => openPlace('synced', status.deviceId ?? undefined),
               }
             : unavailableBackups.length
               ? {
@@ -949,9 +958,11 @@ function App() {
                     activity: {
                       tone: 'error',
                       label:
-                        failingBackups.length === 1
-                          ? `${failingBackups[0].localPathDisplayName} needs attention`
-                          : `${failingBackups.length} backups need attention`,
+                        failingBackups.length > 1
+                          ? `${failingBackups.length} backups need attention`
+                          : 'backupStorage' in failingBackups[0] && failingBackups[0].backupStorage
+                            ? `${failingBackups[0].localPathDisplayName} · needs storage`
+                            : `${failingBackups[0].localPathDisplayName} needs attention`,
                     },
                     open: () => openPlace('backups'),
                   }

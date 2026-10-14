@@ -1196,7 +1196,9 @@ export function DriveWorkspace({
                       ? 'success'
                       : item.syncStatus === 'Syncing'
                         ? 'accent'
-                        : 'neutral'
+                        : item.syncStatus === 'Not synced'
+                          ? 'danger'
+                          : 'neutral'
                   }
                   className={`drive-sync-status ${item.syncStatus === 'Synced' ? 'is-synced' : item.syncStatus === 'Syncing' ? 'is-syncing' : ''}`}
                   title={item.syncDetail}

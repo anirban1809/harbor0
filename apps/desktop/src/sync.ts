@@ -456,6 +456,7 @@ export class SyncEngine {
     });
     if (unreadable.length) this.unreadable.set(root.id, unreadable);
     else this.unreadable.delete(root.id);
+    this.state.unreadable = Object.fromEntries(this.unreadable);
     this.scannedAt.set(root.id, Date.now());
     if (found) this.emit();
   }

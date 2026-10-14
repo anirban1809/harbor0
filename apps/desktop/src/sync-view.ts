@@ -76,6 +76,22 @@ export function syncView(journal: Journal, state: SyncRuntime) {
         relative = path.posix.dirname(relative);
       }
     }
+    // Subfolders harbor0 may not read: nothing in them syncs, whatever the cloud copy says.
+    for (const folder of state.unreadable?.[root.id] ?? []) {
+      const id = idFor(folder);
+      driveItems.set(id, {
+        id,
+        localId: localSyncId(root.id, folder),
+        parentId: idFor(path.posix.dirname(folder)),
+        name: path.posix.basename(folder),
+        type: 'FOLDER',
+        sizeBytes: 0,
+        localOnly: !known.has(folder),
+        syncStatus: 'Not synced',
+        syncDetail:
+          'harbor0 does not have permission to read this folder. It syncs once its permissions are fixed.',
+      });
+    }
     // Downloads already exist in the cloud, but still need a visible local sync status.
     const active = state.active;
     if (active?.rootId === root.id && active.direction === 'download') {

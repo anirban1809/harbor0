@@ -154,3 +154,40 @@ it('removes pending state after completion and keeps stable folder aliases', () 
   expect(snapshot.driveItems).toEqual([]);
   expect(snapshot.folderIds[localSyncId(root.id, 'new')]).toBe('folder');
 });
+
+it('marks subfolders harbor0 may not read as not synced, even ones the cloud already has', () => {
+  journal.putFile({
+    rootId: root.id,
+    relativePath: 'Restricted',
+    itemId: 'cloud-restricted',
+    revision: 1,
+    hash: null,
+    type: 'FOLDER',
+  });
+  state.unreadable = { [root.id]: ['Restricted', 'Projects/Locked'] };
+  const items = syncView(journal, state).driveItems;
+  expect(items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: 'cloud-restricted',
+        parentId: 'cloud',
+        syncStatus: 'Not synced',
+        localOnly: false,
+      }),
+      expect.objectContaining({
+        id: localSyncId(root.id, 'Projects/Locked'),
+        parentId: localSyncId(root.id, 'Projects'),
+        name: 'Locked',
+        syncStatus: 'Not synced',
+        localOnly: true,
+      }),
+    ]),
+  );
+  // The cloud listing keeps its own copy but shows the local problem.
+  const merged = mergeSyncItems(
+    [{ id: 'cloud-restricted', name: 'Restricted', type: 'FOLDER' as const, sizeBytes: 0 }],
+    items,
+    'cloud',
+  );
+  expect(merged[0]).toMatchObject({ syncStatus: 'Not synced' });
+});

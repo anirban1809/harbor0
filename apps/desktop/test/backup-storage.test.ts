@@ -143,8 +143,15 @@ it('backs up what fits and leaves bigger files queued without trying them', asyn
   // Only one upload was started: the second file no longer fit once the first was saved.
   expect(requests.filter((r) => /^POST \/v1\/backups\/.+\/uploads$/.test(r))).toHaveLength(1);
   // The file that did not fit waits, untried and without an error, for space to be freed.
-  const waiting = journal.jobs().find((job) => job.relativePath === 'second.txt');
-  expect(waiting).toMatchObject({ error: null, attempts: 0 });
+  // Both were queued at once, so either may be the one saved.
+  const waiting = journal.jobs().filter((job) => !journal.file('local', job.relativePath));
+  expect(waiting).toEqual([
+    expect.objectContaining({
+      relativePath: expect.stringMatching(/^(first|second)\.txt$/),
+      error: null,
+      attempts: 0,
+    }),
+  ]);
   const { items } = await request(`/v1/backups/${remote.id}/runs`);
   expect(items).toEqual([
     expect.objectContaining({

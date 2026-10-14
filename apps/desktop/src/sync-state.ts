@@ -68,6 +68,8 @@ export type SyncRuntime = {
   changes?: Record<string, import('./journal').ChangeSummary>;
   // Folders whose contents are still being compared with the cloud.
   reconciling?: string[];
+  // By root: subfolders the last scan could not read, so nothing in them syncs.
+  unreadable?: Record<string, string[]>;
 };
 export type SyncFolder = Root & {
   localPathDisplayName: string;
