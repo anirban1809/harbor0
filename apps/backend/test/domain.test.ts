@@ -66,6 +66,7 @@ describe('quota and upload recovery', () => {
     expect(responses.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect((await service.me('alice')).storage).toEqual({
       quotaBytes: 10,
+      trashBytes: 0,
       usedBytes: 0,
       reservedBytes: 6,
       availableBytes: 4,

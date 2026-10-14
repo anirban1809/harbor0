@@ -55,10 +55,13 @@ export function StorageIndicator({
   storage,
   onManage,
   onRetry,
+  onTrash,
 }: {
   storage?: StorageUsage | null;
   onManage: () => void;
   onRetry?: () => void;
+  /** Opens the trash, where it can be emptied; the meter shows what it holds. */
+  onTrash?: () => void;
 }) {
   return (
     <div className="drive-storage">
@@ -78,6 +81,20 @@ export function StorageIndicator({
           <p>
             {fileSize(storage.usedBytes)} of {fileSize(storage.quotaBytes)}
           </p>
+          {/* Deleted files still count until the trash is emptied: say where the space is. */}
+          {!!storage.trashBytes && (
+            <p className="drive-storage-trash">
+              {fileSize(storage.trashBytes)} in trash
+              {onTrash && (
+                <>
+                  {' · '}
+                  <Button variant="link" className="storage-link" onClick={onTrash}>
+                    Empty trash
+                  </Button>
+                </>
+              )}
+            </p>
+          )}
         </>
       ) : (
         <Button variant="link" onClick={onRetry}>

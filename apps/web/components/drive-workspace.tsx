@@ -76,12 +76,12 @@ type Item = DriveItem & {
 type Trail = { id: string; name: string }[];
 /** An item this tab just created, shown until a listing loaded after it includes it. */
 export type AddedItem = DriveItem & { addedAt: number };
-// Folder catalogs and item lookups change rarely; listings refetch on every pushed change.
+// Item lookups change rarely; listings refetch on every pushed change. Synced folders and
+// backups are always read fresh: their state (stopped, paused, full) is what the page shows.
 const CATALOG_MS = 60_000;
-const catalogPath = (path: string) =>
-  path.startsWith('/v1/sync/folders') ||
-  path.startsWith('/v1/backups') ||
-  path.startsWith('/v1/drive/items/');
+const catalogPath = (path: string) => path.startsWith('/v1/drive/items/');
+const freshPath = (path: string) =>
+  path.startsWith('/v1/sync/folders') || path.startsWith('/v1/backups');
 type Props = {
   request: Transport;
   onActivity: (update: ActivityUpdate) => void;
@@ -310,7 +310,10 @@ export function DriveWorkspace({
       lastRefresh.current = refreshKey;
       lastRevision.current = revision;
     }
-    const cached = session.views.get(viewKey);
+    // Only My Drive's own folders show their last listing while they reload; backup and synced
+    // folders always show what the server says now.
+    const stored = session.views.get(viewKey);
+    const cached = !stored?.activeTab || stored.activeTab === 'Cloud' ? stored : undefined;
     const sameView = loadedView.current === viewKey;
     setLoading(!cached && !sameView);
     if (cached) loadedView.current = viewKey;
@@ -339,12 +342,13 @@ export function DriveWorkspace({
         ? `/v1/search?q=${encodeURIComponent(query)}`
         : `/v1/drive/folders/${encodeURIComponent(parentId ?? 'root')}/children`;
     const read: Transport = (path, init) =>
-      session.data
-        .load(path, () => request(path), catalogPath(path) ? CATALOG_MS : undefined)
-        .then((data) => {
-          init?.signal?.throwIfAborted();
-          return data;
-        });
+      (freshPath(path)
+        ? request(path)
+        : session.data.load(path, () => request(path), catalogPath(path) ? CATALOG_MS : undefined)
+      ).then((data) => {
+        init?.signal?.throwIfAborted();
+        return data;
+      });
     async function readPages() {
       const result: Item[] = [];
       const seen = new Set<string>();

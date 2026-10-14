@@ -5031,6 +5031,7 @@ export interface operations {
                             usedBytes: number;
                             reservedBytes: number;
                             availableBytes: number;
+                            trashBytes?: number;
                         };
                         flags: {
                             [key: string]: boolean;
@@ -5465,6 +5466,7 @@ export interface operations {
                             usedBytes: number;
                             reservedBytes: number;
                             availableBytes: number;
+                            trashBytes?: number;
                         };
                         nextCursor: string | null;
                     };
@@ -14406,6 +14408,7 @@ export interface operations {
                             usedBytes: number;
                             reservedBytes: number;
                             availableBytes: number;
+                            trashBytes?: number;
                         };
                     };
                 };

@@ -84,6 +84,7 @@ export type SyncRuntime = {
   // The account's storage as last read: refreshed on start and whenever the feed shows a change
   // that moves it (uploads, deletes, an emptied trash, a new limit).
   storage?: import('@harbor/contracts').StorageUsage;
+  storageAt?: number;
 };
 export type RestoreProgress = {
   // Files restored so far of those requested, and the one downloading now by its bytes.

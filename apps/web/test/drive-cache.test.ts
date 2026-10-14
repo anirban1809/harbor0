@@ -210,3 +210,17 @@ it('ignores a stale folder response that arrives after a newer rename succeeds',
   expect(screen.getByRole('button', { name: 'Latest.txt' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'original.txt' })).toBeNull();
 });
+
+it('reads synced folders and backups again every time, never from the cache', async () => {
+  const request = vi.fn(async (_path: string) => ({ items: [], nextCursor: null }));
+  const first = render(createElement(DriveWorkspace, { ...defaults, request }));
+  await waitFor(() =>
+    expect(request.mock.calls.filter(([path]) => path === '/v1/backups')).toHaveLength(1),
+  );
+  first.unmount();
+  render(createElement(DriveWorkspace, { ...defaults, request }));
+  await waitFor(() => {
+    expect(request.mock.calls.filter(([path]) => path === '/v1/backups')).toHaveLength(2);
+    expect(request.mock.calls.filter(([path]) => path === '/v1/sync/folders')).toHaveLength(2);
+  });
+});

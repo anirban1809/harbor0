@@ -71,7 +71,7 @@ import type { BackupRoot } from '../../../packages/contracts/src/backups';
 import { SharedTabs, type SharedTab } from '../../web/components/shared-tabs';
 import { TransferTable } from '../../web/components/transfer-table';
 import { DriveWorkspace } from '../../web/components/lazy-drive-workspace';
-import { publishLive, setLiveConnected } from '../../web/lib/live-updates';
+import { onLive, publishLive, setLiveConnected } from '../../web/lib/live-updates';
 import {
   AccountMenu,
   FolderActivityStatus,
@@ -238,6 +238,7 @@ function App() {
   const [sync, setSync] = useState<any>();
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [storageError, setStorageError] = useState(false);
+  const [storageAt, setStorageAt] = useState(0);
   const [account, setAccount] = useState<any>();
   const [pdfPreview, setPdfPreview] = useState(false);
   const [flags, setFlags] = useState<Record<string, boolean>>();
@@ -326,6 +327,14 @@ function App() {
       live = false;
     };
   }, [placesShown, placeRevision, status?.accountId]);
+  // Synced folders and backups change elsewhere too (stopped, paused, full): follow pushed
+  // changes while their lists are on screen.
+  useEffect(() => {
+    if (!placesShown) return;
+    return onLive((message) => {
+      if (message.type === 'changes') setPlaceRevision((value) => value + 1);
+    });
+  }, [placesShown]);
   function goToPlace(next: { place: DrivePlace; key?: string } | null) {
     setPlace(next);
     goToFolder([]);
@@ -422,6 +431,7 @@ function App() {
               return;
             }
             setStorage(usage);
+            setStorageAt(Date.now());
             setStorageError(false);
           })
           .catch(() => {
@@ -844,9 +854,12 @@ function App() {
         ),
       ),
     };
-  // The sync engine reads storage again whenever the feed moves it (an emptied trash, a new
-  // limit), so its copy is the freshest.
-  const liveStorage = sync?.storage ?? storage;
+  // The window reads storage as it loads (after a delete, say) and the sync engine whenever
+  // the feed moves it (another device, an emptied trash, a new limit): show the newer reading.
+  const liveStorage =
+    sync?.storage && (sync.storageAt ?? 0) > storageAt
+      ? sync.storage
+      : (storage ?? sync?.storage ?? null);
   const backupDesktop: BackupDesktop = {
     roots: backupRoots.map((root) => ({
       ...root,
@@ -1179,6 +1192,7 @@ function App() {
             storage={liveStorage}
             onManage={() => setSection('Storage')}
             onRetry={() => void load().catch(() => {})}
+            onTrash={() => setSection('Trash')}
           />
         </div>
       </aside>

@@ -257,6 +257,8 @@ export const storageSchema = z.object({
   usedBytes: z.number(),
   reservedBytes: z.number(),
   availableBytes: z.number(),
+  // Part of `usedBytes`: files in the trash, which still count until the trash is emptied.
+  trashBytes: z.number().optional(),
 });
 // One stored file version, the unit storage is charged in. `countedBytes` is what the version
 // adds to `usedBytes` (0 for legacy content held only on synced devices).
@@ -411,11 +413,12 @@ export type TwoFactorChallenge = z.infer<typeof twoFactorChallengeSchema>;
 export type TotpSetup = z.infer<typeof totpSetupSchema>;
 export type BetaStatus = z.infer<typeof betaStatusSchema>;
 export type AccessRequestResult = z.infer<typeof accessRequestResultSchema>;
-export const storageUsage = (u: User): StorageUsage => ({
+export const storageUsage = (u: User & { trashBytes?: number }): StorageUsage => ({
   quotaBytes: u.storageQuotaBytes,
   usedBytes: u.storageUsedBytes,
   reservedBytes: u.storageReservedBytes,
   availableBytes: Math.max(0, u.storageQuotaBytes - u.storageUsedBytes - u.storageReservedBytes),
+  trashBytes: Math.max(0, u.trashBytes ?? 0),
 });
 
 export const folderDownloadSchema = z.object({

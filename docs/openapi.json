@@ -6705,6 +6705,9 @@
                         },
                         "availableBytes": {
                           "type": "number"
+                        },
+                        "trashBytes": {
+                          "type": "number"
                         }
                       },
                       "required": [
@@ -7846,6 +7849,9 @@
                           "type": "number"
                         },
                         "availableBytes": {
+                          "type": "number"
+                        },
+                        "trashBytes": {
                           "type": "number"
                         }
                       },
@@ -30823,6 +30829,9 @@
                           "type": "number"
                         },
                         "availableBytes": {
+                          "type": "number"
+                        },
+                        "trashBytes": {
                           "type": "number"
                         }
                       },

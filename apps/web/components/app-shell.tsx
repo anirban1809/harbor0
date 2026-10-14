@@ -1236,7 +1236,11 @@ function Workspace() {
         </nav>
         <div className="sidebar-bottom">
           <FolderActivityStatus activity={folderActivity} onOpen={openActivity} />
-          <StorageIndicator storage={usage} onManage={() => navigate('Storage')} />
+          <StorageIndicator
+            storage={usage}
+            onManage={() => navigate('Storage')}
+            onTrash={() => navigate('Trash')}
+          />
         </div>
       </aside>
       <div className="main-shell">

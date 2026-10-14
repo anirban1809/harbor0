@@ -2299,6 +2299,7 @@ export class SyncEngine {
     const storage = (await this.api.me().catch(() => null))?.storage;
     if (!storage) return;
     this.state.storage = storage;
+    this.state.storageAt = Date.now();
     if (storage.availableBytes <= 0) {
       if (!this.state.storageFull || this.state.storageFull.availableBytes > 0)
         this.storageIsFull({ availableBytes: 0 });
