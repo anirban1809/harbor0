@@ -12,13 +12,13 @@ const mac: Download | null = {
   version: '0.1.10',
   size: '132 MB',
   url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.10/harbor0-0.1.10-mac-arm64.dmg',
-  sha256: 'b967786ca8c86cb6650e2748aff12ea5a3d339dc5bf45c4fa50f69d40c370fc7',
+  sha256: 'a435f28461ae4a30cac0e62b38220fe9a59e3c3a31aa11c2dd394b490874909d',
 };
 const windows: Download | null = {
   version: '0.1.10',
   size: '115 MB',
   url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.10/harbor0-0.1.10-win-x64.exe',
-  sha256: 'b15d272a23076a69dea1f03cd72db4081e4fbf51da949c906f98ad4510d2a8e7',
+  sha256: '7d0d1603c6f2d0febc884cf6c495112a00e5fd2c63e7eb928c89cb8f25e065e6',
 };
 
 const computers = windows ? 'on Mac and Windows' : 'on your Mac';
