@@ -81,6 +81,9 @@ export type SyncRuntime = {
   // The account's cloud storage is full: uploads wait, everything else carries on, until space
   // is freed or the limit is raised. `availableBytes` is what was free when it was last refused.
   storageFull?: { availableBytes: number; requiredBytes?: number; at: string };
+  // The account's storage as last read: refreshed on start and whenever the feed shows a change
+  // that moves it (uploads, deletes, an emptied trash, a new limit).
+  storage?: import('@harbor/contracts').StorageUsage;
 };
 export type RestoreProgress = {
   // Files restored so far of those requested, and the one downloading now by its bytes.
@@ -135,12 +138,12 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
   if (state.paused || root.paused) return 'Paused';
   if (!state.online) return 'Offline';
   if (jobs.some((job) => job.rootId === root.id && job.error)) return 'Action required';
-  // Its uploads wait for storage; see SyncRuntime.storageFull.
+  // Its uploads wait for storage, or would: nothing new can be uploaded; see storageFull.
   if (
     state.storageFull &&
     !root.shareId &&
     !state.active &&
-    jobs.some((job) => job.rootId === root.id)
+    (state.storageFull.availableBytes <= 0 || jobs.some((job) => job.rootId === root.id))
   )
     return STORAGE_FULL;
   if (

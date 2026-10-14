@@ -1388,10 +1388,12 @@ export function DriveWorkspace({
           </div>
         )}
         {storage &&
-          // Backup and synced folders say how storage affects them in their own panel.
-          activeTab === 'Cloud' &&
+          // In the desktop app, backup and synced folders say how storage affects them in
+          // their own panel.
+          (activeTab === 'Cloud' || !canOpenDeviceCopy) &&
           storage.quotaBytes > 0 &&
-          (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.9 && (
+          // A warning from 95%; full, or over a lowered limit, is an error.
+          (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.95 && (
             <Alert
               tone={
                 storage.usedBytes + storage.reservedBytes >= storage.quotaBytes

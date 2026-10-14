@@ -844,6 +844,9 @@ function App() {
         ),
       ),
     };
+  // The sync engine reads storage again whenever the feed moves it (an emptied trash, a new
+  // limit), so its copy is the freshest.
+  const liveStorage = sync?.storage ?? storage;
   const backupDesktop: BackupDesktop = {
     roots: backupRoots.map((root) => ({
       ...root,
@@ -854,6 +857,7 @@ function App() {
           ? sync.active.relativePath
           : undefined,
       checking: sync?.checking?.[root.id],
+      storageFull: (sync?.storageFull?.availableBytes ?? 1) <= 0,
       restoring: restoreShown(sync?.restoring?.[root.id]),
       restored: sync?.restored?.[root.id],
       unavailable: unavailable(root),
@@ -1172,7 +1176,7 @@ function App() {
             onOpen={() => folderStatus?.open()}
           />
           <StorageIndicator
-            storage={storage}
+            storage={liveStorage}
             onManage={() => setSection('Storage')}
             onRetry={() => void load().catch(() => {})}
           />
@@ -1210,7 +1214,7 @@ function App() {
             />
             <AccountMenu
               user={account}
-              storage={storage}
+              storage={liveStorage}
               onNavigate={setSection}
               onSignOut={() => void act(() => bridge.logout())}
             />
@@ -1249,7 +1253,7 @@ function App() {
           </div>
           {section === 'Storage' && (
             <StoragePanel
-              storage={storage}
+              storage={liveStorage}
               error={storageError}
               retry={() => void load().catch(() => {})}
             />
@@ -1323,7 +1327,7 @@ function App() {
               query={query}
               onClearSearch={() => setQuery('')}
               userId={status.accountId}
-              storage={storage}
+              storage={liveStorage}
               refreshKey={`${driveRevision}:${activityKey}`}
               pendingItems={sync?.driveItems}
               localSyncDevices={Object.fromEntries(

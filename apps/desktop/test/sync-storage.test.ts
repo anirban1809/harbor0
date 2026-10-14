@@ -236,8 +236,78 @@ it('turns files an older version refused one by one into ones waiting for storag
   await first.engine.tick();
   expect(first.engine.state.storageFull).toBeDefined();
   expect(first.engine.state.issues).toEqual([]);
-  expect(first.journal.jobs().map((j) => [j.relativePath, j.error, j.payload.retryAt])).toEqual([
+  // Queued in the same millisecond, so in either order.
+  expect(
+    first.journal
+      .jobs()
+      .map((j) => [j.relativePath, j.error, j.payload.retryAt])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  ).toEqual([
     ['a.bin', null, undefined],
     ['b.bin', null, undefined],
   ]);
+});
+
+it('knows the account is full before uploading, and resumes as soon as the trash is emptied', async () => {
+  const { computers, cloud, folder, service } = await twoComputers();
+  const [first] = computers;
+  // Some of the storage is held by a file in the trash.
+  await writeFile(path.join(first.localPath, 'old.bin'), Buffer.alloc(500));
+  first.journal.enqueue(first.root.id, 'old.bin', 'upsert', {
+    type: 'FILE',
+    sizeBytes: 500,
+    updatedAt: new Date().toISOString(),
+  });
+  await tick(first);
+  const old = (await cloud.list(folder.id)).items.find((item) => item.name === 'old.bin')!;
+  await cloud.request(`/v1/drive/items/${old.id}`, {
+    method: 'DELETE',
+    body: { operationId: crypto.randomUUID(), baseRevision: old.revision },
+  });
+  await setQuota(service, (account) => account.storageUsedBytes, true);
+  const fresh = new (first.engine.constructor as typeof import('../src/sync').SyncEngine)(
+    first.api,
+    first.journal,
+    'device',
+    () => {},
+  );
+  const tried: string[] = [];
+  const request = first.api.request.bind(first.api);
+  vi.spyOn(first.api, 'request').mockImplementation(async (url, init) => {
+    if (/^\/v1\/uploads(\/batch)?$/.test(url)) tried.push(url);
+    return request(url, init);
+  });
+  try {
+    await fresh.tick();
+    // Full from the start: shown on the folder even with nothing waiting to upload.
+    expect(fresh.state.storageFull).toMatchObject({ availableBytes: 0 });
+    expect(
+      folderState(
+        { ...first.root, localPathDisplayName: '', fileCount: 0, folderCount: 0 },
+        fresh.state,
+        [],
+      ),
+    ).toBe('Sync paused · storage full');
+    await writeFile(path.join(first.localPath, 'new.txt'), 'new');
+    first.journal.enqueue(first.root.id, 'new.txt', 'upsert', {
+      type: 'FILE',
+      sizeBytes: 3,
+      updatedAt: new Date().toISOString(),
+    });
+    await fresh.tick();
+    // Not even tried.
+    expect(tried).toEqual([]);
+    // Emptying the trash frees the space at once; the next pass uploads.
+    await cloud.request('/v1/drive/trash/empty', {
+      method: 'POST',
+      body: { operationId: crypto.randomUUID() },
+    });
+    await fresh.tick();
+    await fresh.tick();
+    expect(fresh.state.storageFull).toBeUndefined();
+    expect(fresh.state.storage?.availableBytes).toBeGreaterThan(0);
+    expect((await cloud.list(folder.id)).items.map((item) => item.name)).toContain('new.txt');
+  } finally {
+    await fresh.stop();
+  }
 });

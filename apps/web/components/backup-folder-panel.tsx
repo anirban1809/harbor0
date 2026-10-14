@@ -85,6 +85,8 @@ export type LocalBackupRoot = {
   lastBackupError?: string;
   // The files waiting to be saved need more cloud storage than is free.
   backupStorage?: { requiredBytes: number; availableBytes: number; files: number };
+  // The account's storage is full: nothing new backs up until space is freed.
+  storageFull?: boolean;
 };
 /** What the desktop app can do with a folder it backs up itself. */
 export type BackupDesktop = {
@@ -418,17 +420,17 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                               ? `Saved ${local.run.done.toLocaleString()} of ${local.run.total.toLocaleString()} files · ${local.progress}% complete`
                               : `Saving changed files · ${local.progress}% complete`,
                           }
-                        : local?.backupStorage
+                        : local?.backupStorage || local?.storageFull
                           ? {
                               tone: 'error',
                               label:
-                                local.backupStorage.availableBytes <= 0
+                                local.storageFull || local.backupStorage!.availableBytes <= 0
                                   ? 'Backup paused · storage full'
                                   : 'Needs storage',
                               detail:
-                                local.backupStorage.availableBytes <= 0
+                                local.storageFull || local.backupStorage!.availableBytes <= 0
                                   ? 'New and changed files back up once space is freed.'
-                                  : `${count(local.backupStorage.files, 'file')} won’t fit in your remaining storage.`,
+                                  : `${count(local.backupStorage!.files, 'file')} won’t fit in your remaining storage.`,
                             }
                           : latestRun?.state === 'RUNNING'
                             ? {

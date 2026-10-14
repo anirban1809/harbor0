@@ -2005,6 +2005,8 @@ export class SyncEngine {
           // Not reached: sent again on the next pass.
         }
       };
+      // Known before the first upload, so a full account uploads nothing.
+      if (!this.state.storage && this.journal.roots().length) await this.refreshStorage();
       const slice = Date.now();
       let seen = 0;
       for (const job of this.syncQueue([...syncRoots.keys()])) {
@@ -2121,6 +2123,9 @@ export class SyncEngine {
         this.journal.set('cursor', cursor);
         more = page.hasMore;
       }
+      // Anything in the feed may have moved the account's storage: uploads, deletes, an emptied
+      // trash or a new limit.
+      if (active && this.journal.roots().length) await this.refreshStorage();
       if (this.stopped || this.state.paused) return;
       this.currentRootId = '';
       this.state.issues = this.state.issues.filter(
@@ -2285,6 +2290,24 @@ export class SyncEngine {
       type: 'FOLDER',
     });
     return item.id;
+  }
+  /**
+   * Reads the account's storage, so a full account is known before anything is uploaded, and
+   * space freed elsewhere (an emptied trash, a raised limit) resumes uploads at once.
+   */
+  private async refreshStorage() {
+    const storage = (await this.api.me().catch(() => null))?.storage;
+    if (!storage) return;
+    this.state.storage = storage;
+    if (storage.availableBytes <= 0) {
+      if (!this.state.storageFull || this.state.storageFull.availableBytes > 0)
+        this.storageIsFull({ availableBytes: 0 });
+    } else if (
+      this.state.storageFull &&
+      storage.availableBytes > this.state.storageFull.availableBytes
+    )
+      this.storageFreed();
+    this.emit();
   }
   /** Uploads refused for lack of storage; see SyncRuntime.storageFull. */
   private storageIsFull(
