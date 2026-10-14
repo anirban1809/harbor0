@@ -34,6 +34,7 @@ import { defaultDriveFilters, driveView, needsWholeFolder } from '../lib/drive-v
 import { canWriteIn, itemAccess, type ShareAccess } from '../lib/drive-access';
 import { isLive, onLive } from '../lib/live-updates';
 import { fileDate, fileKind, fileSize } from '../lib/file-metadata';
+import { storageState } from '../lib/storage-state';
 import { loadUsage, usageLabel, type UsageMap } from '../lib/folder-usage';
 import {
   FileCollection,
@@ -1399,13 +1400,9 @@ export function DriveWorkspace({
           (activeTab === 'Cloud' || !canOpenDeviceCopy) &&
           storage.quotaBytes > 0 &&
           // A warning from 95%; full, or over a lowered limit, is an error.
-          (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.95 && (
+          storageState(storage) !== 'ok' && (
             <Alert
-              tone={
-                storage.usedBytes + storage.reservedBytes >= storage.quotaBytes
-                  ? 'error'
-                  : 'warning'
-              }
+              tone={storageState(storage) === 'low' ? 'warning' : 'error'}
               className="drive-capacity"
               action={
                 <Button variant="link" onClick={onManageStorage}>
@@ -1413,12 +1410,12 @@ export function DriveWorkspace({
                 </Button>
               }
             >
-              {storage.usedBytes > storage.quotaBytes
+              {storageState(storage) === 'over'
                 ? // A lowered limit, or files saved just before it: more is stored than it allows.
                   `You’re using ${fileSize(storage.usedBytes)}, more than your ${fileSize(storage.quotaBytes)} of storage. New files can’t be uploaded or synced until you free up space or get more storage.`
-                : storage.usedBytes + storage.reservedBytes >= storage.quotaBytes
+                : storageState(storage) === 'full'
                   ? `Your storage is full (${fileSize(storage.quotaBytes)}). New files can’t be uploaded or synced until you free up space or get more storage.`
-                  : `${fileSize(storage.usedBytes)} of ${fileSize(storage.quotaBytes)} used. You’re running low on storage.`}
+                  : `${fileSize(storage.quotaBytes - storage.usedBytes - storage.reservedBytes)} of your ${fileSize(storage.quotaBytes)} is left. You’re running low on storage.`}
             </Alert>
           )}
         {loadError && !sessionEnd && !unavailable && <Alert tone="error">{loadError}</Alert>}

@@ -121,15 +121,12 @@ export type SyncJob = {
 export const WAITING = 'Waiting for another device';
 export const STORAGE_FULL = 'Sync paused · storage full';
 export const NEEDS_STORAGE = 'Needs storage';
-/**
- * Less free than this and the account is full: hardly any file fits (1% of the limit, at most
- * 1 MB). With more, only files bigger than what is left wait, and the rest keep uploading.
- */
-export const fullBelow = (quotaBytes?: number) =>
-  Math.min(1_000_000, quotaBytes ? quotaBytes / 100 : 1_000_000);
+// Less free than this and the account is full; with more, only files bigger than what is
+// left wait, and the rest keep uploading.
+import { fullBelow } from '../../web/lib/storage-state';
+export { fullBelow };
 export const storageFullNow = (state: Pick<SyncRuntime, 'storageFull' | 'storage'>) =>
-  !!state.storageFull &&
-  state.storageFull.availableBytes < fullBelow(state.storage?.quotaBytes);
+  !!state.storageFull && state.storageFull.availableBytes < fullBelow(state.storage?.quotaBytes);
 // Every file has moved; what is left is confirming the copies or comparing with the cloud.
 export const CHECKING = 'Checking sync';
 // The live status knows when a check ends; the folder list is only as fresh as its last load.
