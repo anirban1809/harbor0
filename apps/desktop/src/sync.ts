@@ -2008,10 +2008,22 @@ export class SyncEngine {
       this.currentRootId = '';
       let cursor = this.journal.get<number>('cursor') ?? 0;
       let more = true;
+      // Catching up on a long feed (after days offline, or someone else's big upload) can take
+      // hours. Once it has had a turn, local changes waiting to sync go first; the feed carries
+      // on from the same change on the next pass.
+      const feedStarted = Date.now();
+      let yielded = false;
+      const localWaiting = () =>
+        Date.now() - feedStarted >= SYNC_SLICE_MS &&
+        [...syncRoots.keys()].some((id) => this.journal.pendingCount(id) > 0);
       while (more && !this.stopped) {
         const page = await this.api.changes(cursor);
         if (page.changes.length) active = true;
         for (const change of page.changes) {
+          if (localWaiting()) {
+            yielded = true;
+            break;
+          }
           // Emptied trash, a permanent delete, a cancelled upload or a new quota can free storage.
           if (['PROFILE_UPDATED', 'FILE_DELETED', 'UPLOAD_ABORTED'].includes(change.type))
             this.storageFreed();
@@ -2051,6 +2063,13 @@ export class SyncEngine {
           const item = change.item;
           if (item)
             for (const root of targets()) await apply(root, () => this.remoteItem(root, item));
+          cursor = change.sequence;
+        }
+        if (yielded) {
+          this.journal.set('cursor', cursor);
+          // Straight back to the feed once the local changes are sent.
+          this.pendingWake = true;
+          break;
         }
         cursor = page.nextCursor;
         this.journal.set('cursor', cursor);
