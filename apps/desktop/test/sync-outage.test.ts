@@ -25,7 +25,8 @@ it('treats a gateway error page as the server being unavailable for the whole pa
   journal.enqueue('root', 'a.txt', 'upsert');
   const uploads: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {
-    if (url.endsWith('/v1/uploads')) uploads.push(url);
+    // A small file goes in a batch.
+    if (/\/v1\/uploads(\/batch)?$/.test(url)) uploads.push(url);
     return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', {
       status: 502,
       headers: { 'Content-Type': 'text/html' },

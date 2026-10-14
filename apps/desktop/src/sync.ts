@@ -25,7 +25,7 @@ import { findVolume, isNetwork, volumeId, volumeLabel, volumeRoot, type Volume }
 import { ApiClient, ApiError } from '@harbor/api-client';
 import { createHash } from 'node:crypto';
 import { FileCipher, b64url, encryptedSize } from '../../../packages/api-client/src/e2ee';
-import { BATCH_UPLOAD_MAX_BYTES, type DriveItem } from '@harbor/contracts';
+import { BATCH_UPLOAD_FILES, BATCH_UPLOAD_MAX_BYTES, type DriveItem } from '@harbor/contracts';
 import { Journal, type Root, type LocalJob, type LocalFile } from './journal';
 import {
   contained,
@@ -82,6 +82,21 @@ type BatchFile = {
   operationId: string;
   // Set on an encrypted account: the file's own key, with its header.
   cipher?: FileCipher;
+  // A synced file that is already in the cloud: its new version.
+  known?: { itemId: string; revision: number };
+};
+/** Where a batch goes: a backup run's routes, or a synced folder's. */
+type BatchRoutes = { create: string; finish: string; backup: boolean };
+/** A local file ready to upload; see SyncEngine.uploadPlan. */
+type UploadPlan = {
+  absolute: string;
+  info: Stats;
+  hash: string;
+  parentId: string | null;
+  known: LocalFile | undefined;
+  state: UploadState;
+  backup?: { rootId: string; runId: string };
+  verifyBackupQuiet: () => Promise<void>;
 };
 // Files of a backup batch sent to storage at once.
 const BATCH_PUT_CONCURRENCY = 8;
@@ -159,6 +174,8 @@ export class SyncEngine {
   // While the server is unreachable or failing, passes wait out a growing delay instead of
   // starting every 2s; wake() and tick() try again at once.
   private outages = 0;
+  // Off once the server turns out to have no batch upload routes; see syncBatch.
+  private syncBatches = true;
   private outageUntil = 0;
   // Files finished per sync folder since it was last idle; the base for its percent complete.
   private syncDone = new Map<string, number>();
@@ -922,7 +939,7 @@ export class SyncEngine {
     return {
       error: new ApiError(
         error?.code ?? 'UPLOAD_FAILED',
-        error?.message ?? 'The file could not be backed up.',
+        error?.message ?? 'The file could not be uploaded.',
         409,
         undefined,
         error?.details,
@@ -983,16 +1000,106 @@ export class SyncEngine {
     this.state.message = `Uploading ${prepared.length} files`;
     this.emit();
     try {
-      return await this.sendBatch(root, base, prepared, outcomes);
+      return await this.sendBatch(
+        root,
+        { create: `${base}/uploads/batch`, finish: `${base}/files/batch`, backup: true },
+        prepared,
+        outcomes,
+      );
     } finally {
       this.state.active = null;
       this.emit();
     }
   }
-  /** The storage and finishing half of backupBatch, for files whose folders and hashes are ready. */
+  /**
+   * A synced folder's change that may go in a batch: a small file, new or edited, with no upload
+   * of its own under way. Anything else, or anything a batch can't settle, goes alone.
+   */
+  private batchable(root: Root, job: LocalJob) {
+    return (
+      root.mode === 'sync' &&
+      job.kind === 'upsert' &&
+      job.payload.entry?.type === 'FILE' &&
+      (job.payload.entry.sizeBytes ?? Infinity) <= BATCH_UPLOAD_MAX_BYTES &&
+      !job.payload.upload?.uploadId &&
+      !job.payload.relayVersion
+    );
+  }
+  /**
+   * Uploads a synced folder's small changed files together: each is checked as on its own, then
+   * all start in one request, go to storage side by side and finish in one more. `plans` holds
+   * the files checked and found to need the single-file path. Null when the server has no batch
+   * routes.
+   */
+  private async syncBatch(root: Root, jobs: LocalJob[]) {
+    const outcomes = new Map<string, BatchOutcome>();
+    const plans = new Map<string, UploadPlan>();
+    const keys = transferKeys.upload();
+    const prepared: BatchFile[] = [];
+    for (const job of jobs) {
+      try {
+        const plan = await this.uploadPlan(root, job);
+        // Settled while being checked: unchanged, renamed, or no longer there.
+        if (!plan) {
+          outcomes.set(job.id, { saved: true });
+          continue;
+        }
+        const { info, state } = plan;
+        if (
+          state.uploadId ||
+          state.hash !== plan.hash ||
+          info.size > BATCH_UPLOAD_MAX_BYTES ||
+          (keys && encryptedSize(info.size) > BATCH_UPLOAD_MAX_BYTES)
+        ) {
+          plans.set(job.id, plan);
+          outcomes.set(job.id, { alone: true });
+          continue;
+        }
+        prepared.push({
+          job,
+          absolute: plan.absolute,
+          info,
+          hash: plan.hash,
+          parentId: plan.parentId,
+          operationId: state.operationId,
+          cipher: keys ? await FileCipher.create(keys) : undefined,
+          known: plan.known && { itemId: plan.known.itemId, revision: plan.known.revision },
+        });
+      } catch (error) {
+        if (this.interrupts(error)) throw error;
+        outcomes.set(job.id, { error: error as Error });
+      }
+    }
+    if (!prepared.length) return { outcomes, plans };
+    this.state.active = {
+      rootId: root.id,
+      direction: 'upload',
+      relativePath: prepared[0].job.relativePath,
+      loaded: 0,
+      total: prepared.reduce((sum, file) => sum + file.info.size, 0),
+    };
+    this.state.message = `Uploading ${prepared.length} files`;
+    this.emit();
+    try {
+      const sent = await this.sendBatch(
+        root,
+        { create: '/v1/uploads/batch', finish: '/v1/uploads/batch/finish', backup: false },
+        prepared,
+        outcomes,
+      );
+      return sent && { outcomes: sent, plans };
+    } finally {
+      this.state.active = null;
+      this.emit();
+    }
+  }
+  /**
+   * The storage and finishing half of a batch, for files whose folders and hashes are ready.
+   * Null when the server has no batch routes.
+   */
   private async sendBatch(
     root: Root,
-    base: string,
+    routes: BatchRoutes,
     prepared: BatchFile[],
     outcomes: Map<string, BatchOutcome>,
   ): Promise<Map<string, BatchOutcome> | null> {
@@ -1007,7 +1114,7 @@ export class SyncEngine {
     }[];
     try {
       created = (
-        await this.api.request(`${base}/uploads/batch`, {
+        await this.api.request(routes.create, {
           method: 'POST',
           body: {
             uploads: prepared.map((file) => ({
@@ -1020,6 +1127,9 @@ export class SyncEngine {
                 : { sizeBytes: file.info.size, contentHash: file.hash }),
               mimeType: 'application/octet-stream',
               modifiedAt: modifiedAt(file.info),
+              ...(file.known
+                ? { driveItemId: file.known.itemId, baseRevision: file.known.revision }
+                : {}),
             })),
           },
         })
@@ -1112,16 +1222,21 @@ export class SyncEngine {
     let finished: { item?: DriveItem; entry?: any; error?: any }[];
     try {
       finished = (
-        await this.api.request(`${base}/files/batch`, {
+        await this.api.request(routes.finish, {
           method: 'POST',
           body: {
             files: sent.map((file) => ({
               uploadId: file.uploadId,
               etag: file.etag,
               contentHash: file.storedHash,
-              relativePath: file.job.relativePath,
-              modifiedAt: modifiedAt(file.info),
-              savedAt: new Date().toISOString(),
+              // What the backup run records of each file.
+              ...(routes.backup
+                ? {
+                    relativePath: file.job.relativePath,
+                    modifiedAt: modifiedAt(file.info),
+                    savedAt: new Date().toISOString(),
+                  }
+                : {}),
             })),
           },
         })
@@ -1132,7 +1247,7 @@ export class SyncEngine {
     }
     sent.forEach((file, n) => {
       const result = finished[n];
-      if (!result?.item || !result.entry) {
+      if (!result?.item || (routes.backup && !result.entry)) {
         outcomes.set(file.job.id, this.batchFailure(result?.error ?? {}));
         return;
       }
@@ -1148,7 +1263,7 @@ export class SyncEngine {
       });
       this.receipts.queue(root, file.job.relativePath, result.item, file.hash);
       this.activity(root, file.job.relativePath, 'upload', result.item);
-      outcomes.set(file.job.id, { entry: result.entry });
+      outcomes.set(file.job.id, routes.backup ? { entry: result.entry } : { saved: true });
     });
     return outcomes;
   }
@@ -1789,32 +1904,12 @@ export class SyncEngine {
       const backupsWaiting = this.journal
         .roots()
         .some((r) => r.mode === 'backup' && !r.paused && this.journal.pendingCount(r.id));
-      const slice = Date.now();
-      let seen = 0;
-      for (const job of this.syncQueue([...syncRoots.keys()])) {
-        if (this.stopped || this.state.paused) return;
-        // Asked to check in again with a backup waiting: give it its turn; this queue resumes after.
-        if (backupsWaiting && this.hurried && Date.now() - slice >= SYNC_SLICE_MS) break;
-        // Settings changed by this pass (pausing, exclusions) apply to the jobs after it.
-        if (++seen % QUEUE_PAGE === 0)
-          for (const r of this.journal.roots()) if (syncRoots.has(r.id)) syncRoots.set(r.id, r);
-        const root = syncRoots.get(job.rootId);
-        if (
-          !root ||
-          root.mode === 'backup' ||
-          !available.has(root.id) ||
-          root.paused ||
-          this.ignored(root, job.relativePath) ||
-          (job.payload.retryAt ?? 0) > Date.now() ||
-          (job.kind === 'upsert' &&
-            job.payload.entry?.type !== 'FOLDER' &&
-            (job.payload.entry?.sizeBytes ?? Infinity) > (full.get(root.id) ?? Infinity))
-        )
-          continue;
+      // One queued change, done by `work`; a failure waits for its own retry and the rest go on.
+      const run = async (root: Root, job: LocalJob, work: () => Promise<void>) => {
         active = true;
         this.currentRootId = root.id;
         try {
-          await this.localJob(root, job);
+          await work();
           this.journal.finish(job.id);
           this.finished(root.id);
           if (this.state.issues.some((issue) => issue.jobId === job.id)) {
@@ -1838,7 +1933,7 @@ export class SyncEngine {
             this.journal.saveJob(job);
             this.tooDeep(root, job);
             this.state.active = null;
-            continue;
+            return;
           }
           // One failing file waits for its own retry; the rest of the queue keeps moving.
           job.payload.retryAt = Date.now() + retryDelay(job.attempts);
@@ -1849,7 +1944,66 @@ export class SyncEngine {
           this.issue(root.id, e, job.relativePath, job.id);
           this.state.active = null;
         }
+      };
+      // Small changed files, uploaded together; see syncBatch.
+      let group: { root: Root; jobs: LocalJob[] } | undefined;
+      const flush = async () => {
+        if (!group) return;
+        const { root, jobs } = group;
+        group = undefined;
+        active = true;
+        this.currentRootId = root.id;
+        const sent = await this.syncBatch(root, jobs);
+        if (!sent) this.syncBatches = false;
+        for (const job of jobs) {
+          if (this.stopped || this.state.paused) return;
+          const outcome = sent?.outcomes.get(job.id);
+          const plan = sent?.plans.get(job.id);
+          if (!outcome || 'alone' in outcome)
+            await run(root, job, () =>
+              plan ? this.sendUpload(root, job, plan) : this.localJob(root, job),
+            );
+          else if ('error' in outcome)
+            await run(root, job, async () => {
+              throw outcome.error;
+            });
+          else if ('saved' in outcome) await run(root, job, async () => {});
+          // Not reached: sent again on the next pass.
+        }
+      };
+      const slice = Date.now();
+      let seen = 0;
+      for (const job of this.syncQueue([...syncRoots.keys()])) {
+        if (this.stopped || this.state.paused) return;
+        // Asked to check in again with a backup waiting: give it its turn; this queue resumes after.
+        if (backupsWaiting && this.hurried && Date.now() - slice >= SYNC_SLICE_MS) break;
+        // Settings changed by this pass (pausing, exclusions) apply to the jobs after it.
+        if (++seen % QUEUE_PAGE === 0)
+          for (const r of this.journal.roots()) if (syncRoots.has(r.id)) syncRoots.set(r.id, r);
+        const root = syncRoots.get(job.rootId);
+        if (
+          !root ||
+          root.mode === 'backup' ||
+          !available.has(root.id) ||
+          root.paused ||
+          this.ignored(root, job.relativePath) ||
+          (job.payload.retryAt ?? 0) > Date.now() ||
+          (job.kind === 'upsert' &&
+            job.payload.entry?.type !== 'FOLDER' &&
+            (job.payload.entry?.sizeBytes ?? Infinity) > (full.get(root.id) ?? Infinity))
+        )
+          continue;
+        if (this.syncBatches && this.batchable(root, job)) {
+          if (group && group.root.id !== root.id) await flush();
+          (group ??= { root, jobs: [] }).jobs.push(job);
+          if (group.jobs.length >= BATCH_UPLOAD_FILES) await flush();
+          continue;
+        }
+        // Earlier changes go first: a folder deleted after its files, a file after its folder.
+        await flush();
+        await run(root, job, () => this.localJob(root, job));
       }
+      await flush();
       if (this.stopped || this.state.paused || !remote) return;
       this.currentRootId = '';
       let cursor = this.journal.get<number>('cursor') ?? 0;
@@ -2077,11 +2231,12 @@ export class SyncEngine {
     }
   }
   /** The job's partial upload will never complete: free the storage it reserved. */
-  private abandonUpload(job: LocalJob) {
+  private abandonUpload(job: LocalJob): undefined {
     if (!job.payload.upload) return;
     this.journal.abandonUpload(job.payload.upload.uploadId);
     job.payload.upload = { operationId: crypto.randomUUID() };
     this.journal.saveJob(job);
+    return undefined;
   }
   private async releaseUploads() {
     for (const uploadId of this.journal.abandonedUploads()) {
@@ -2094,6 +2249,15 @@ export class SyncEngine {
     }
   }
   private async localJob(root: Root, job: LocalJob) {
+    const plan = await this.uploadPlan(root, job);
+    if (plan) await this.sendUpload(root, job, plan);
+  }
+  /**
+   * Everything a local change needs before its bytes go: deletes, folders, renames and files
+   * that turn out unchanged are dealt with here and return nothing. A file to upload returns
+   * what sendUpload, or a batch, needs.
+   */
+  private async uploadPlan(root: Root, job: LocalJob): Promise<UploadPlan | undefined> {
     const absolute = contained(root.localPath, job.relativePath);
     let known = this.journal.file(root.id, job.relativePath);
     if (job.kind === 'delete') {
@@ -2258,6 +2422,11 @@ export class SyncEngine {
         throw new Error('This file changed recently. Automatic backup will wait one hour.');
     };
     await verifyBackupQuiet();
+    return { absolute, info, hash, parentId, known, state, backup, verifyBackupQuiet };
+  }
+  private async sendUpload(root: Root, job: LocalJob, plan: UploadPlan) {
+    const { absolute, parentId, known, state, backup, verifyBackupQuiet } = plan;
+    const info = plan.info;
     let item: DriveItem;
     this.state.active = {
       rootId: root.id,

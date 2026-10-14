@@ -83,6 +83,8 @@ export type BackupConversion = { form: () => 'encrypted' | 'plain' | null; raw: 
 /** What happened to one file sent in a batch; see BackupBatch. */
 export type BatchOutcome =
   | { entry: BackupEntry }
+  // A synced file, uploaded.
+  | { saved: true }
   | { error: Error }
   // Needs the single-file path: it already exists in the cloud, or changed while being sent.
   | { alone: true }

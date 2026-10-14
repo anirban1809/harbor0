@@ -26,14 +26,14 @@ export function usageDetails(
   let fields: Fields;
   switch (action) {
     case 'UPLOADED':
-      // A backup's batch of small files: how many were saved and their total size.
+      // A batch of small files: how many were saved and their total size.
       if (Array.isArray(r.results)) {
         const saved = r.results.map((result) => record(record(result).item) as Item);
         const items = saved.filter((entry) => entry.sizeBytes !== undefined);
         fields = {
           files: items.length,
           sizeBytes: items.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0),
-          backup: true,
+          backup: route.startsWith('/v1/backups/'),
         };
         break;
       }

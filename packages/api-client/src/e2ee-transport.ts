@@ -89,8 +89,12 @@ export function e2eeTransport(inner: Transport, options: E2eeTransportOptions): 
       const segments = await Promise.all(body.relativePath.split('/').map(sealName));
       return { ...init, body: { ...body, relativePath: segments.join('/') } };
     }
-    // A backup's batch of small files: each encrypted upload's name, and each recorded path.
-    const batch = /^\/v1\/backups\/[^/]+\/runs\/[^/]+\/(uploads|files)\/batch$/.exec(route)?.[1];
+    // A batch of small files from a synced folder or a backup run: each encrypted upload's name,
+    // and each path a backup records.
+    const batch =
+      route === '/v1/uploads/batch'
+        ? 'uploads'
+        : /^\/v1\/backups\/[^/]+\/runs\/[^/]+\/(uploads|files)\/batch$/.exec(route)?.[1];
     if (method === 'POST' && batch === 'uploads' && Array.isArray(body?.uploads)) {
       const uploads = await Promise.all(
         (body.uploads as { name?: unknown; encrypted?: unknown }[]).map(async (upload) =>

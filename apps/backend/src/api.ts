@@ -1335,6 +1335,126 @@ export function createApp(
     anyObject,
     async (ctx, i) => service.createUpload(userId(ctx), i, ctx.get('identity').deviceId),
   );
+  // A batch stops starting files after this long, inside the API's 29 s limit; the files it did
+  // not reach come back as BATCH_NOT_REACHED and the device sends them again.
+  const BATCH_DEADLINE_MS = 18_000;
+  const batchError = (error: unknown) => {
+    if (!(error instanceof DomainError)) throw error;
+    return {
+      error: { code: error.code, message: error.message, details: error.details },
+    };
+  };
+  const notReached = {
+    error: { code: 'BATCH_NOT_REACHED', message: 'Not reached in this batch. Send it again.' },
+  };
+  // A reserved upload started in storage, with the URL its one part goes to.
+  const openBatched = async (
+    ctx: Context<Env>,
+    result: Awaited<ReturnType<typeof service.reserveUpload>> | { error: unknown },
+  ) => {
+    if (!('upload' in result)) return result;
+    try {
+      const upload = await service.openUpload(userId(ctx), result.upload.id);
+      return { upload: service.publicUpload(upload), uploadUrl: await service.firstPartUrl(upload) };
+    } catch (error) {
+      return batchError(error);
+    }
+  };
+  // Finishing in storage touches only each upload's own record, so it runs at once; adding the
+  // files moves room on the account, so that is one at a time.
+  const prepareBatched = (
+    ctx: Context<Env>,
+    files: { uploadId: string; etag: string; contentHash: string }[],
+  ) =>
+    Promise.all(
+      files.map((file) =>
+        service
+          .prepareFinish(
+            userId(ctx),
+            file.uploadId,
+            [{ partNumber: 1, etag: file.etag }],
+            file.contentHash,
+          )
+          .catch(batchError),
+      ),
+    );
+  // Several small files at once, as a backup run sends them (see the backup batch routes): each
+  // reserved one at a time, then started in storage together.
+  add(
+    'post',
+    '/v1/uploads/batch',
+    'Create several small uploads at once: each gets an upload and one storage part URL',
+    z
+      .object({
+        uploads: z
+          .array(c.uploadInput.refine((u) => u.sizeBytes <= c.BATCH_UPLOAD_MAX_BYTES))
+          .min(1)
+          .max(c.BATCH_UPLOAD_FILES),
+      })
+      .strict(),
+    z.object({ results: z.array(anyObject) }),
+    async (ctx, i) => {
+      const deviceId = ctx.get('identity').deviceId;
+      const started = Date.now();
+      const reserved = [];
+      for (const input of i.uploads) {
+        if (Date.now() - started > BATCH_DEADLINE_MS) {
+          reserved.push(notReached);
+          continue;
+        }
+        try {
+          reserved.push(await service.reserveUpload(userId(ctx), input, deviceId));
+        } catch (error) {
+          reserved.push(batchError(error));
+        }
+      }
+      return { results: await Promise.all(reserved.map((result) => openBatched(ctx, result))) };
+    },
+  );
+  add(
+    'post',
+    '/v1/uploads/batch/finish',
+    'Finish several small uploads at once',
+    z
+      .object({
+        files: z
+          .array(
+            z
+              .object({ uploadId: c.id, etag: z.string().min(1).max(256), contentHash: c.hash })
+              .strict(),
+          )
+          .min(1)
+          .max(c.BATCH_UPLOAD_FILES),
+      })
+      .strict(),
+    z.object({ results: z.array(anyObject) }),
+    async (ctx, i) => {
+      const started = Date.now();
+      const prepared = await prepareBatched(ctx, i.files);
+      const results = [];
+      for (const [index, file] of i.files.entries()) {
+        const ready = prepared[index];
+        if ('error' in ready) {
+          results.push(ready);
+          continue;
+        }
+        if (Date.now() - started > BATCH_DEADLINE_MS) {
+          results.push(notReached);
+          continue;
+        }
+        try {
+          const { item } =
+            'item' in ready
+              ? ready
+              : await service.commitFinish(userId(ctx), file.uploadId, file.contentHash, ready.object);
+          results.push({ item: await service.viewed(userId(ctx), item) });
+        } catch (error) {
+          results.push(batchError(error));
+        }
+      }
+      return { results };
+    },
+  );
   add('get', '/v1/uploads/:id', 'Resume an upload', undefined, anyObject, async (ctx) =>
     service.uploadStatus(userId(ctx), p(ctx, 'id')),
   );
@@ -2018,18 +2138,6 @@ export function createApp(
         deviceId: backupDevice(ctx),
       }),
   );
-  // A batch stops starting files after this long, inside the API's 29 s limit; the files it did
-  // not reach come back as BATCH_NOT_REACHED and the device sends them again.
-  const BATCH_DEADLINE_MS = 18_000;
-  const batchError = (error: unknown) => {
-    if (!(error instanceof DomainError)) throw error;
-    return {
-      error: { code: error.code, message: error.message, details: error.details },
-    };
-  };
-  const notReached = {
-    error: { code: 'BATCH_NOT_REACHED', message: 'Not reached in this batch. Send it again.' },
-  };
   add(
     'post',
     '/v1/backups/:id/runs/:runId/uploads/batch',
@@ -2060,20 +2168,7 @@ export function createApp(
           reserved.push(batchError(error));
         }
       }
-      const results = await Promise.all(
-        reserved.map(async (result) => {
-          if (!('upload' in result)) return result;
-          try {
-            const upload = await service.openUpload(userId(ctx), result.upload.id);
-            return {
-              upload: service.publicUpload(upload),
-              uploadUrl: await service.firstPartUrl(upload),
-            };
-          } catch (error) {
-            return batchError(error);
-          }
-        }),
-      );
+      const results = await Promise.all(reserved.map((result) => openBatched(ctx, result)));
       return { results };
     },
   );
@@ -2104,20 +2199,7 @@ export function createApp(
     async (ctx, i) => {
       const [rootId, runId, deviceId] = [p(ctx, 'id'), p(ctx, 'runId'), backupDevice(ctx)];
       const started = Date.now();
-      // Finishing in storage touches only each upload's own record, so it runs at once; adding
-      // the files moves room on the account and counts them in the run, so that is one at a time.
-      const prepared = await Promise.all(
-        i.files.map((file: (typeof i.files)[number]) =>
-          service
-            .prepareFinish(
-              userId(ctx),
-              file.uploadId,
-              [{ partNumber: 1, etag: file.etag }],
-              file.contentHash,
-            )
-            .catch(batchError),
-        ),
-      );
+      const prepared = await prepareBatched(ctx, i.files);
       const results = [];
       for (const [index, file] of i.files.entries()) {
         const ready = prepared[index];

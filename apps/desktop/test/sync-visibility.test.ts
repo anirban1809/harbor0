@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ApiClient } from '@harbor/api-client';
+import { ApiClient, ApiError } from '@harbor/api-client';
 import { Journal, type Root } from '../src/journal';
 import { SyncEngine } from '../src/sync';
 import { syncView } from '../src/sync-view';
@@ -17,6 +17,8 @@ vi.mock('../src/transfers', () => ({
   hashFile: vi.fn(async () => 'hash'),
   uploadFile: vi.fn(),
   downloadFile: vi.fn(),
+  transferKeys: { upload: () => undefined, read: () => undefined },
+  modifiedAt: (info: { mtimeMs: number }) => new Date(info.mtimeMs).toISOString(),
 }));
 
 it('publishes the current file before transfer and removes each completed job immediately', async () => {
@@ -31,9 +33,11 @@ it('publishes the current file before transfer and removes each completed job im
     excluded: [],
   };
   const snapshots: ReturnType<typeof syncView>[] = [];
-  const api = new ApiClient(async (endpoint) =>
-    endpoint.includes('/changes') ? { changes: [], nextCursor: 0, hasMore: false } : {},
-  );
+  // A server without batch routes, so each file uploads on its own.
+  const api = new ApiClient(async (endpoint) => {
+    if (endpoint.includes('/batch')) throw new ApiError('NOT_FOUND', 'Endpoint not found.', 404);
+    return endpoint.includes('/changes') ? { changes: [], nextCursor: 0, hasMore: false } : {};
+  });
   const engine = new SyncEngine(api, journal, 'device', (state) =>
     snapshots.push(structuredClone(syncView(journal, state as SyncRuntime))),
   );

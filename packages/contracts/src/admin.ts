@@ -308,6 +308,8 @@ const ENGINE_REQUESTS = [
   'POST /v1/uploads',
   'POST /v1/uploads/:id/parts',
   'POST /v1/uploads/:id/complete',
+  'POST /v1/uploads/batch',
+  'POST /v1/uploads/batch/finish',
   'DELETE /v1/uploads/:id',
   'POST /v1/downloads',
   'POST /v1/sync/operations',
@@ -476,6 +478,7 @@ export const adminActivitySchema = z.object({
 export const USAGE_ACTIONS = {
   'POST /v1/uploads/:id/complete': 'UPLOADED',
   'POST /v1/backups/:id/runs/:runId/files/batch': 'UPLOADED',
+  'POST /v1/uploads/batch/finish': 'UPLOADED',
   'POST /v1/downloads': 'DOWNLOADED',
   'POST /v1/folder-downloads': 'FOLDER_ZIPPED',
   'POST /v1/drive/folders': 'FOLDER_CREATED',
