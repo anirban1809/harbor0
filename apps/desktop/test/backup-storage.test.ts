@@ -537,6 +537,22 @@ describe('restores', () => {
     expect(states.at(-1)?.restored?.local).toMatchObject({ restored: 1, unchanged: 1 });
   });
 
+  it('gives a restored folder’s files the time this computer saved them, if the cloud has none', async () => {
+    const folder = await backupFolder();
+    const { directory, remote, api } = folder;
+    const { changed } = await backedUp(folder, { 'Docs/b.txt': 'b' });
+    // As files backed up before uploads recorded their time are listed.
+    const list = api.list.bind(api);
+    vi.spyOn(api, 'list').mockImplementation(async (...args) => {
+      const page = await list(...args);
+      return { ...page, items: page.items.map((item) => ({ ...item, modifiedAt: null })) };
+    });
+    await rm(path.join(directory, 'Docs/b.txt'));
+    await restore(folder, { itemId: remote.remoteRootDriveItemId });
+    const restored = await stat(path.join(directory, 'Docs/b.txt'));
+    expect(Math.abs(restored.mtimeMs - changed.getTime())).toBeLessThan(1000);
+  });
+
   it('refuses a version for a folder, and a file without one', async () => {
     const folder = await backupFolder();
     const { items } = await backedUp(folder, { 'Docs/b.txt': 'b' });

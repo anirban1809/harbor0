@@ -938,7 +938,11 @@ export class FolderBackups {
         restoring,
         { itemId: item.id, versionId: item.currentVersionId ?? undefined },
         relativePath,
-        item.modifiedAt,
+        // Files backed up before uploads recorded their time: the one this computer saved them at.
+        item.modifiedAt ??
+          (known?.revision === item.revision && known.mtimeMs
+            ? modifiedAt({ mtimeMs: known.mtimeMs })
+            : null),
       );
       if (error) failures.push(error);
     }
