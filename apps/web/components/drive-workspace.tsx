@@ -212,10 +212,12 @@ export function DriveWorkspace({
   const [backupRoots, setBackupRoots] = useState<BackupRoot[]>([]);
   const [catalogError, setCatalogError] = useState(false);
   const changingTab = useRef(false);
+  // A file version, or a folder with each file at its latest version, to put back on the
+  // computer it was backed up from.
   const [backupRestore, setBackupRestore] = useState<{
     item: Item;
-    versionId: string;
-    createdAt: string;
+    versionId?: string;
+    createdAt?: string;
     id: string;
   } | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -706,6 +708,16 @@ export function DriveWorkspace({
       : noPinned;
   const access = (item: Item) => itemAccess(item, folderAccess);
   const mutable = (item: Item) => !item.backupRootId && !catalogError;
+  // Restoring writes to the computer the backup came from, so only the desktop app offers it,
+  // and only while that backup is running.
+  const restorable = (item: Item) =>
+    !!item.backupRootId &&
+    canOpenDeviceCopy &&
+    !item.localOnly &&
+    backupRoots.some(
+      (root) =>
+        root.id === item.backupRootId && root.state !== 'ARCHIVED' && root.state !== 'REMOVED',
+    );
   const canModify = (item: Item) => mutable(item) && access(item).manage;
   const canShare = (item: Item) => mutable(item) && access(item).share;
   const canWriteHere =
@@ -1139,6 +1151,21 @@ export function DriveWorkspace({
         <MenuItem onClick={() => show('details', [item])}>View details</MenuItem>
         {item.type === 'FILE' && (
           <MenuItem onClick={() => show('versions', [item])}>Version history</MenuItem>
+        )}
+        {restorable(item) && (
+          <MenuItem
+            onClick={() =>
+              setBackupRestore({
+                item,
+                ...(item.type === 'FILE'
+                  ? { versionId: item.currentVersionId ?? undefined, createdAt: item.updatedAt }
+                  : {}),
+                id: crypto.randomUUID(),
+              })
+            }
+          >
+            {item.type === 'FOLDER' ? 'Restore folder' : 'Restore'}
+          </MenuItem>
         )}
         <MenuSeparator />
         {backupRoots.some((root) => root.remoteRootDriveItemId === item.id) && (
@@ -1866,7 +1893,7 @@ export function DriveWorkspace({
                         Download
                       </Button>
                     )}
-                    {modal.items[0].backupRootId && canOpenDeviceCopy && (
+                    {restorable(modal.items[0]) && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -2037,8 +2064,16 @@ export function DriveWorkspace({
           onOpenChange={(open) => {
             if (!open && !busy) setBackupRestore(null);
           }}
-          title="Restore this local file?"
-          description={`Replace the current local copy of ${backupRestore?.item.name ?? 'this file'} with the version saved ${backupRestore ? fileDate(backupRestore.createdAt).full : ''}. The archive will stay unchanged. The source computer must be online with backups running.`}
+          title={
+            backupRestore?.item.type === 'FOLDER'
+              ? `Restore ${backupRestore.item.name}?`
+              : 'Restore this local file?'
+          }
+          description={
+            backupRestore?.item.type === 'FOLDER'
+              ? `Every file in ${backupRestore.item.name} is put back as it was last backed up. Files changed since then are replaced; files that were never backed up are kept. The source computer must be online with backups running.`
+              : `Replace the current local copy of ${backupRestore?.item.name ?? 'this file'} with the version saved ${backupRestore?.createdAt ? fileDate(backupRestore.createdAt).full : ''}. The backed-up versions stay unchanged. The source computer must be online with backups running.`
+          }
         >
           <DialogActions>
             <Button variant="outline" disabled={busy} onClick={() => setBackupRestore(null)}>
@@ -2054,11 +2089,13 @@ export function DriveWorkspace({
                     body: {
                       id: backupRestore.id,
                       itemId: backupRestore.item.id,
-                      versionId: backupRestore.versionId,
+                      ...(backupRestore.versionId ? { versionId: backupRestore.versionId } : {}),
                     },
                   });
                   setBackupRestore(null);
-                  setNotice('Local restore requested. Track progress in Backups → History.');
+                  setNotice(
+                    `Restoring ${backupRestore.item.name}. Its progress shows in the sidebar and in the backup’s History.`,
+                  );
                 })
               }
             >

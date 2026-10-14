@@ -1,4 +1,4 @@
-import type { Device, FileVersion } from '@harbor/contracts';
+import type { Device, DriveItem, FileVersion } from '@harbor/contracts';
 import type {
   BackupRoot,
   BackupRun,
@@ -14,6 +14,8 @@ const partition = (userId: string, rootId: string) => `${userPK(userId)}#BACKUP#
 type LastRun = { completedAt: string };
 // A device saying nothing changed re-arms the reminder at most this often.
 const CHECKED_MS = 12 * 3600_000;
+// Backup runs looked through for a restored version's modified time; see savedModifiedAt.
+const RESTORE_RUNS_SEARCHED = 20;
 export class Backups {
   constructor(private service: StorageService) {}
   async root(tx: Transaction, userId: string, rootId: string, deviceId?: string) {
@@ -142,8 +144,15 @@ export class Backups {
     itemId: string,
     versionId: string,
   ) {
-    let item = await this.service.owned(tx, userId, itemId);
+    const item = await this.service.owned(tx, userId, itemId);
     assert(item.type === 'FILE', 'VALIDATION_ERROR', 'Choose a file version.');
+    const relativePath = await this.pathOf(tx, userId, root, item);
+    const version = await tx.get<FileVersion>(userPK(userId), `VERSION#${itemId}#${versionId}`);
+    assert(version, 'ITEM_NOT_FOUND', 'File version was not found.', 404);
+    return { version, relativePath };
+  }
+  /** Where an item is inside a backup folder, as stored: `a/b/name`. */
+  private async pathOf(tx: Transaction, userId: string, root: BackupRoot, item: DriveItem) {
     const segments = [item.name];
     const seen = new Set<string>();
     while (item.parentId !== root.remoteRootDriveItemId) {
@@ -157,9 +166,7 @@ export class Backups {
       item = await this.service.owned(tx, userId, item.parentId);
       segments.unshift(item.name);
     }
-    const version = await tx.get<FileVersion>(userPK(userId), `VERSION#${itemId}#${versionId}`);
-    assert(version, 'ITEM_NOT_FOUND', 'File version was not found.', 404);
-    return { version, relativePath: segments.join('/') };
+    return segments.join('/');
   }
   async entry(userId: string, rootId: string, deviceId: string, runId: string, input: BackupEntry) {
     return transact(this.service.repo, async (tx) => {
@@ -276,7 +283,7 @@ export class Backups {
   async restore(
     userId: string,
     rootId: string,
-    input: { id: string; itemId: string; versionId: string },
+    input: { id: string; itemId: string; versionId?: string },
   ) {
     return transact(this.service.repo, async (tx) => {
       const root = await this.connected(tx, userId, rootId);
@@ -292,19 +299,71 @@ export class Backups {
         return { restore: existing };
       }
       this.active(root);
-      const { relativePath } = await this.version(tx, userId, root, input.itemId, input.versionId);
-      const restore: BackupRestore = {
-        ...input,
+      const target = await this.service.owned(tx, userId, input.itemId);
+      let restore: BackupRestore;
+      const requested = {
         rootId,
-        relativePath,
-        state: 'PENDING',
+        state: 'PENDING' as const,
         requestedAt: new Date().toISOString(),
         completedAt: null,
       };
+      if (target.type === 'FOLDER') {
+        assert(!input.versionId, 'VALIDATION_ERROR', 'A folder has no versions to choose from.');
+        const relativePath =
+          target.id === root.remoteRootDriveItemId
+            ? ''
+            : await this.pathOf(tx, userId, root, target);
+        restore = { id: input.id, itemId: input.itemId, folder: true, relativePath, ...requested };
+      } else {
+        assert(input.versionId, 'VALIDATION_ERROR', 'Choose the version to restore.');
+        const { version, relativePath } = await this.version(
+          tx,
+          userId,
+          root,
+          input.itemId,
+          input.versionId,
+        );
+        restore = {
+          id: input.id,
+          itemId: input.itemId,
+          versionId: input.versionId,
+          relativePath,
+          modifiedAt:
+            version.modifiedAt ??
+            (await this.savedModifiedAt(tx, userId, rootId, {
+              itemId: input.itemId,
+              versionId: input.versionId,
+            })),
+          ...requested,
+        };
+      }
       await tx.put(pk, `RESTORE#${input.id}`, restore);
       await tx.put(pk, `PENDING#${input.id}`, restore);
       return { restore };
     });
+  }
+  /**
+   * A version saved without its modified time, as files backed up in batches were at first: the
+   * time its backup run recorded, looked up in the newest runs.
+   */
+  private async savedModifiedAt(
+    tx: Transaction,
+    userId: string,
+    rootId: string,
+    input: { itemId: string; versionId: string },
+  ) {
+    const pk = partition(userId, rootId);
+    const runs = (await tx.list<BackupRun>(pk, 'RUN#'))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, RESTORE_RUNS_SEARCHED);
+    for (const run of runs) {
+      const entry = await tx.get<BackupEntry>(
+        pk,
+        `ENTRY#${run.id}#${input.itemId}#${input.versionId}`,
+      );
+      if (entry) return entry.modifiedAt;
+    }
+    return null;
   }
   async restored(userId: string, rootId: string, deviceId: string, id: string, error?: string) {
     return transact(this.service.repo, async (tx) => {

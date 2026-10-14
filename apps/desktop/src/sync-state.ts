@@ -75,6 +75,26 @@ export type SyncRuntime = {
   checking?: Record<string, { found: number; checked?: number }>;
   // By root: subfolders the last scan could not read, so nothing in them syncs.
   unreadable?: Record<string, string[]>;
+  // By root: backed-up files being put back on this computer, and how the last restores went.
+  restoring?: Record<string, RestoreProgress>;
+  restored?: Record<string, RestoreSummary>;
+};
+export type RestoreProgress = {
+  // Files restored so far of those requested, and the one downloading now by its bytes.
+  done: number;
+  total: number;
+  relativePath: string;
+  loaded: number;
+  size: number;
+};
+export type RestoreSummary = {
+  restored: number;
+  // Files in a restored folder that already matched their backed-up copy.
+  unchanged: number;
+  failed: number;
+  // Why the first file that failed could not be restored.
+  error?: string;
+  at: string;
 };
 export type SyncFolder = Root & {
   localPathDisplayName: string;

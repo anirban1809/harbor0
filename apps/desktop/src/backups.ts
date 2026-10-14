@@ -5,6 +5,7 @@ import type { Stats } from 'node:fs';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
+import type { RestoreProgress, RestoreSummary } from './sync-state';
 import {
   BATCH_UPLOAD_FILES,
   BATCH_UPLOAD_MAX_BYTES,
@@ -19,15 +20,18 @@ import {
   safeSegment,
   verifyParents,
 } from './paths';
-import { cancelUpload, downloadFile, hashFile, uploadFile, type UploadState } from './transfers';
+import {
+  cancelUpload,
+  downloadFile,
+  hashFile,
+  modifiedAt,
+  uploadFile,
+  type UploadState,
+} from './transfers';
 import { fileSize } from '../../web/lib/file-metadata';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
-/**
- * A file's modification time as a backup entry records it. Built from mtimeMs the way every
- * caller does: Stats.mtime rounds the fraction of a millisecond where new Date(mtimeMs)
- * truncates it, so mixing the two made about half of all saved files look changed.
- */
-export const modifiedAt = (info: { mtimeMs: number }) => new Date(info.mtimeMs).toISOString();
+// Saved files' modification times; see transfers.ts.
+export { modifiedAt };
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
 }
@@ -98,6 +102,12 @@ export class FolderBackups {
   private runJobs = new Map<string, { id: string; jobs: string[] }>();
   conversion?: BackupConversion;
   batch?: BackupBatch;
+  // Restores under way by root, cleared with a summary of how they went when they are done.
+  onRestore?: (
+    rootId: string,
+    progress: RestoreProgress | undefined,
+    summary?: RestoreSummary,
+  ) => void;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -802,67 +812,219 @@ export class FolderBackups {
     if (await walk(root.remoteId!, ''))
       this.journal.root({ ...root, archive: undefined, archiveError: undefined });
   }
+  /** Looks for restore requests on the next pass instead of waiting for the usual check. */
+  restoreSoon() {
+    this.nextRestoreCheck.clear();
+  }
+  /**
+   * Puts requested files back on this computer: one version of a file, or everything saved in a
+   * folder. Progress counts files; a folder's are added once it has been listed.
+   */
   private async restores(root: Root, url: string) {
     if (Date.now() < (this.nextRestoreCheck.get(root.id) ?? 0)) return;
     this.nextRestoreCheck.set(root.id, Date.now() + 10000);
     // Pending entries are removed on acknowledgement; always read from the beginning.
     const { items } = await this.api.request(`${url}/pending-restores`);
-    for (const request of items as BackupRestore[]) {
+    // Requests already restored, waiting only to be acknowledged, are not counted again.
+    const requests = (items as BackupRestore[]).filter(
+      (request) => !this.journal.get(`backup-restore:${request.id}`),
+    );
+    const restoring: Restoring = {
+      root,
+      url,
+      done: 0,
+      total: requests.filter((request) => !request.folder).length,
+      summary: { restored: 0, unchanged: 0, failed: 0, at: '' },
+    };
+    try {
+      for (const request of items as BackupRestore[]) await this.restoreRequest(restoring, request);
+    } finally {
+      const { summary } = restoring;
+      if (requests.length)
+        this.onRestore?.(
+          root.id,
+          undefined,
+          summary.restored + summary.unchanged + summary.failed
+            ? { ...summary, at: new Date().toISOString() }
+            : undefined,
+        );
+    }
+  }
+  private async restoreRequest(restoring: Restoring, request: BackupRestore) {
+    const { root, url } = restoring;
+    const receiptKey = `backup-restore:${request.id}`;
+    let receipt = this.journal.get<{ error?: string }>(receiptKey);
+    if (!receipt) {
       const relativePath =
-        this.journal.fileByItem(root.id, request.itemId)?.relativePath ?? request.relativePath;
-      const receiptKey = `backup-restore:${request.id}`;
-      let receipt = this.journal.get<{ error?: string }>(receiptKey);
-      if (!receipt) {
-        try {
-          const destination = await safeParents(root.localPath, relativePath);
-          if (!relativePath || destination === path.resolve(root.localPath))
-            throw new Error('Invalid restore destination.');
-          const before = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
+        request.itemId === root.remoteId
+          ? ''
+          : (this.journal.fileByItem(root.id, request.itemId)?.relativePath ??
+            request.relativePath);
+      try {
+        if (request.folder) {
+          const failed = await this.restoreFolder(restoring, request.itemId, relativePath);
+          receipt = failed ? { error: failed } : {};
+        } else {
+          const error = await this.restoreFile(
+            restoring,
+            { itemId: request.itemId, versionId: request.versionId },
+            relativePath,
+            request.modifiedAt,
+          );
+          receipt = error ? { error } : {};
+        }
+      } catch (error) {
+        if (error instanceof TypeError || (error as { status?: number }).status! >= 500)
+          throw error;
+        receipt = { error: (error as Error).message.slice(0, 2000) };
+      }
+      // Recorded before acknowledging so an offline retry cannot overwrite newer edits.
+      this.journal.set(receiptKey, receipt);
+    }
+    await this.api.request(`${url}/restores/${request.id}/complete`, {
+      method: 'POST',
+      body: receipt,
+    });
+  }
+  /**
+   * Everything saved in a folder, each file at its latest version. Files that already match it
+   * are left alone. Returns why some files could not be restored, if any could not.
+   */
+  private async restoreFolder(restoring: Restoring, folderId: string, relative: string) {
+    const { root } = restoring;
+    const files: { item: DriveItem; relativePath: string }[] = [];
+    const walk = async (parentId: string, folder: string) => {
+      let cursor: string | undefined;
+      do {
+        const page = await this.api.list(parentId, cursor);
+        for (const item of page.items as DriveItem[]) {
+          const name = safeSegment(item.name, item.id);
+          const relativePath = folder ? `${folder}/${name}` : name;
+          if (this.ignored(root, relativePath)) continue;
+          if (item.type === 'FOLDER') {
+            await mkdir(await safeParents(root.localPath, relativePath), { recursive: true });
+            await walk(item.id, relativePath);
+          } else files.push({ item, relativePath });
+        }
+        this.onRestore?.(root.id, {
+          done: restoring.done,
+          total: restoring.total + files.length,
+          relativePath: folder || path.basename(root.localPath),
+          loaded: 0,
+          size: 0,
+        });
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+    };
+    if (relative) await mkdir(await safeParents(root.localPath, relative), { recursive: true });
+    await walk(folderId, relative);
+    restoring.total += files.length;
+    const failures: string[] = [];
+    for (const { item, relativePath } of files) {
+      const known = this.journal.fileByItem(root.id, item.id);
+      const filename = contained(root.localPath, relativePath);
+      const local = await lstat(filename).catch(() => null);
+      if (
+        local?.isFile() &&
+        known?.hash &&
+        known.revision === item.revision &&
+        (await hashFile(filename)) === known.hash
+      ) {
+        restoring.done++;
+        restoring.summary.unchanged++;
+        continue;
+      }
+      const error = await this.restoreFile(
+        restoring,
+        { itemId: item.id, versionId: item.currentVersionId ?? undefined },
+        relativePath,
+        item.modifiedAt,
+      );
+      if (error) failures.push(error);
+    }
+    if (!failures.length) return undefined;
+    return `${failures.length === 1 ? '1 file was' : `${failures.length} files were`} not restored. ${failures[0]}`.slice(
+      0,
+      2000,
+    );
+  }
+  /**
+   * One version of a file, written over the local copy unless that changes while it downloads.
+   * Returns why it could not be restored; a lost connection or server error is thrown instead.
+   */
+  private async restoreFile(
+    restoring: Restoring,
+    version: { itemId: string; versionId?: string },
+    relativePath: string,
+    modifiedAt?: string | null,
+  ) {
+    const { root, url, summary } = restoring;
+    const progress = (loaded: number, size: number) =>
+      this.onRestore?.(root.id, {
+        done: restoring.done,
+        total: restoring.total,
+        relativePath,
+        loaded,
+        size,
+      });
+    progress(0, 0);
+    try {
+      const destination = await safeParents(root.localPath, relativePath);
+      if (!relativePath || destination === path.resolve(root.localPath))
+        throw new Error('Invalid restore destination.');
+      const before = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      // A part file from a different selected version must not be resumed.
+      await rm(destination + '.harbor-part', { force: true });
+      await downloadFile(
+        this.api,
+        { driveItemId: version.itemId, versionId: version.versionId },
+        destination,
+        progress,
+        async () => {
+          const { root: connection } = await this.api.request(url);
+          if (connection.state === 'REMOVED')
+            throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
+          await safeParents(root.localPath, relativePath);
+          const current = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== 'ENOENT') throw error;
             return null;
           });
-          // A part file from a different selected version must not be resumed.
-          await rm(destination + '.harbor-part', { force: true });
-          await downloadFile(
-            this.api,
-            { driveItemId: request.itemId, versionId: request.versionId },
-            destination,
-            undefined,
-            async () => {
-              const { root: connection } = await this.api.request(url);
-              if (connection.state === 'REMOVED')
-                throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
-              await safeParents(root.localPath, relativePath);
-              const current = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
-                if (error.code !== 'ENOENT') throw error;
-                return null;
-              });
-              if (
-                !!before !== !!current ||
-                (before &&
-                  current &&
-                  (before.mtimeMs !== current.mtimeMs ||
-                    before.size !== current.size ||
-                    before.ino !== current.ino))
-              )
-                throw new Error(
-                  'The local file changed during restore. Retry after editing is finished.',
-                );
-            },
-          );
-          // Record completion before acknowledging so an offline retry cannot overwrite newer edits.
-          receipt = {};
-        } catch (error) {
-          if (error instanceof TypeError || (error as { status?: number }).status! >= 500)
-            throw error;
-          receipt = { error: (error as Error).message.slice(0, 2000) };
-        }
-        this.journal.set(receiptKey, receipt);
-      }
-      await this.api.request(`${url}/restores/${request.id}/complete`, {
-        method: 'POST',
-        body: receipt,
-      });
+          if (
+            !!before !== !!current ||
+            (before &&
+              current &&
+              (before.mtimeMs !== current.mtimeMs ||
+                before.size !== current.size ||
+                before.ino !== current.ino))
+          )
+            throw new Error(
+              'The local file changed during restore. Retry after editing is finished.',
+            );
+        },
+        modifiedAt,
+      );
+      summary.restored++;
+      return undefined;
+    } catch (error) {
+      if (error instanceof TypeError || (error as { status?: number }).status! >= 500) throw error;
+      const reason = `${path.posix.basename(relativePath)}: ${(error as Error).message}`;
+      summary.failed++;
+      summary.error ??= reason;
+      return reason.slice(0, 2000);
+    } finally {
+      restoring.done++;
     }
   }
 }
+/** Restores under way in one backup folder; see FolderBackups.restores. */
+type Restoring = {
+  root: Root;
+  url: string;
+  // Files restored, or found already restored, of all those known so far.
+  done: number;
+  total: number;
+  summary: RestoreSummary;
+};

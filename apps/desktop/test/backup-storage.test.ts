@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, writeFile, rm, utimes } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile, rm, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ApiClient, ApiError } from '@harbor/api-client';
@@ -22,6 +22,7 @@ import {
 } from '../../../packages/api-client/src/e2ee';
 import { isEncryptedName } from '@harbor/contracts';
 import { SyncEngine } from '../src/sync';
+import type { SyncRuntime } from '../src/sync-state';
 vi.mock('../src/local-watcher', async () => {
   const { EventEmitter } = await import('node:events');
   return {
@@ -130,18 +131,27 @@ async function backupFolder(options: { encrypted?: boolean } = {}) {
       }),
     );
     transferKeys.upload = () => accountKeysNow;
+    transferKeys.read = () => accountKeysNow;
     cleanup.push(async () => {
       transferKeys.upload = () => undefined;
+      transferKeys.read = () => undefined;
     });
   }
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = new URL(String(input));
+    // Downloads read what storage holds.
+    if (init?.method !== 'PUT')
+      return new Response(Buffer.from(storage.objects.get(url.pathname.slice(1))!));
     storage.uploads
       .get(url.hostname)!
-      .parts.set(Number(url.pathname.slice(1)), new Uint8Array(init!.body as Buffer));
+      .parts.set(Number(url.pathname.slice(1)), new Uint8Array(init.body as Buffer));
     return new Response(null, { headers: { etag: `part-${url.pathname.slice(1)}` } });
   });
-  const engine = new SyncEngine(api, journal, session.device.id, () => {});
+  // Every status the window would be sent.
+  const states: SyncRuntime[] = [];
+  const engine = new SyncEngine(api, journal, session.device.id, (state) =>
+    states.push(state as SyncRuntime),
+  );
   cleanup.push(() => engine.stop());
   const { root: remote } = await api.request('/v1/backups', {
     method: 'POST',
@@ -161,7 +171,7 @@ async function backupFolder(options: { encrypted?: boolean } = {}) {
       const account = (await tx.get<Account>(userPK('alice'), 'PROFILE'))!;
       await tx.put(userPK('alice'), 'PROFILE', { ...account, storageQuotaBytes: bytes });
     });
-  return { directory, journal, engine, quota, api, raw, remote, storage, keys };
+  return { directory, journal, engine, quota, api, raw, remote, storage, keys, states };
 }
 
 it('refuses "Back up now" up front when none of the changed files fit', async () => {
@@ -422,4 +432,136 @@ it('batches an encrypted account’s files, encrypting their contents and names'
     }),
   );
   expect(contents.sort()).toEqual(Array.from({ length: 6 }, (_, index) => `return ${index}`));
+});
+
+describe('restores', () => {
+  // Backs up the files, each last changed a day ago, and returns them by path.
+  const backedUp = async (
+    { directory, engine, api, remote }: Awaited<ReturnType<typeof backupFolder>>,
+    files: Record<string, string>,
+  ) => {
+    const changed = new Date(Date.now() - 24 * 3600_000);
+    for (const [name, contents] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(directory, name)), { recursive: true });
+      await writeFile(path.join(directory, name), contents);
+      await utimes(path.join(directory, name), changed, changed);
+    }
+    await engine.backupNow('local');
+    await engine.tick();
+    const items = new Map<string, { id: string; type: string; currentVersionId: string }>();
+    const walk = async (parentId: string, folder: string) => {
+      for (const item of (await api.list(parentId)).items) {
+        const relative = folder ? `${folder}/${item.name}` : item.name;
+        items.set(relative, item as never);
+        if (item.type === 'FOLDER') await walk(item.id, relative);
+      }
+    };
+    await walk(remote.remoteRootDriveItemId, '');
+    return { items, changed };
+  };
+  const restore = async (
+    { engine, api, remote }: Awaited<ReturnType<typeof backupFolder>>,
+    body: { itemId: string; versionId?: string },
+  ) => {
+    await api.request(`/v1/backups/${remote.id}/restores`, {
+      method: 'POST',
+      body: { id: crypto.randomUUID(), ...body },
+    });
+    engine.restoreSoon();
+    await engine.tick();
+    const { items } = await api.request(`/v1/backups/${remote.id}/restores`);
+    return items as { state: string; error?: string; folder?: boolean }[];
+  };
+  const newFileMode = 0o666 & ~process.umask();
+
+  it('puts a deleted file back as it was, with its modified time and usual permissions', async () => {
+    const folder = await backupFolder();
+    const { directory, states } = folder;
+    const { items, changed } = await backedUp(folder, { 'Taxes/2025/return.pdf': 'tax return' });
+    const file = path.join(directory, 'Taxes/2025/return.pdf');
+    await rm(file);
+    states.length = 0;
+    const file1 = items.get('Taxes/2025/return.pdf')!;
+    const [request] = await restore(folder, {
+      itemId: file1.id,
+      versionId: file1.currentVersionId,
+    });
+    expect(request.state).toBe('COMPLETED');
+    expect(await readFile(file, 'utf8')).toBe('tax return');
+    const info = await stat(file);
+    expect(Math.abs(info.mtimeMs - changed.getTime())).toBeLessThan(1000);
+    expect(info.mode & 0o777).toBe(newFileMode);
+    // The window was told which file was being restored, then how it went.
+    expect(
+      states.some((state) => state.restoring?.local?.relativePath === 'Taxes/2025/return.pdf'),
+    ).toBe(true);
+    expect(states.at(-1)?.restoring?.local).toBeUndefined();
+    expect(states.at(-1)?.restored?.local).toMatchObject({ restored: 1, unchanged: 0, failed: 0 });
+  });
+
+  it('restores a folder: missing and changed files come back, others are left alone', async () => {
+    const folder = await backupFolder();
+    const { directory, states } = folder;
+    const { items } = await backedUp(folder, {
+      'Photos/beach.jpg': 'beach',
+      'Photos/2024/hike.jpg': 'hike',
+      'Photos/2024/snow.jpg': 'snow',
+      'notes.txt': 'notes',
+    });
+    await rm(path.join(directory, 'Photos/beach.jpg'));
+    await writeFile(path.join(directory, 'Photos/2024/hike.jpg'), 'edited');
+    // Never backed up: kept.
+    await writeFile(path.join(directory, 'Photos/new.jpg'), 'new');
+    await rm(path.join(directory, 'notes.txt'));
+    const [request] = await restore(folder, { itemId: items.get('Photos')!.id });
+    expect(request).toMatchObject({ state: 'COMPLETED', folder: true });
+    expect(await readFile(path.join(directory, 'Photos/beach.jpg'), 'utf8')).toBe('beach');
+    expect(await readFile(path.join(directory, 'Photos/2024/hike.jpg'), 'utf8')).toBe('hike');
+    expect(await readFile(path.join(directory, 'Photos/2024/snow.jpg'), 'utf8')).toBe('snow');
+    expect(await readFile(path.join(directory, 'Photos/new.jpg'), 'utf8')).toBe('new');
+    // Outside the folder restored.
+    await expect(stat(path.join(directory, 'notes.txt'))).rejects.toThrow();
+    expect(states.at(-1)?.restored?.local).toMatchObject({ restored: 2, unchanged: 1, failed: 0 });
+  });
+
+  it('restores the whole backed-up folder', async () => {
+    const folder = await backupFolder();
+    const { directory, remote, states } = folder;
+    const { changed } = await backedUp(folder, { 'a.txt': 'a', 'Docs/b.txt': 'b' });
+    await rm(path.join(directory, 'Docs'), { recursive: true });
+    const [request] = await restore(folder, { itemId: remote.remoteRootDriveItemId });
+    expect(request.state).toBe('COMPLETED');
+    expect(await readFile(path.join(directory, 'Docs/b.txt'), 'utf8')).toBe('b');
+    const restored = await stat(path.join(directory, 'Docs/b.txt'));
+    expect(Math.abs(restored.mtimeMs - changed.getTime())).toBeLessThan(1000);
+    expect(states.at(-1)?.restored?.local).toMatchObject({ restored: 1, unchanged: 1 });
+  });
+
+  it('refuses a version for a folder, and a file without one', async () => {
+    const folder = await backupFolder();
+    const { items } = await backedUp(folder, { 'Docs/b.txt': 'b' });
+    const file = items.get('Docs/b.txt')!;
+    for (const body of [
+      { itemId: items.get('Docs')!.id, versionId: file.currentVersionId },
+      { itemId: file.id },
+    ])
+      await expect(
+        folder.api.request(`/v1/backups/${folder.remote.id}/restores`, {
+          method: 'POST',
+          body: { id: crypto.randomUUID(), ...body },
+        }),
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('restores an encrypted account’s folder under the names the person gave it', async () => {
+    const folder = await backupFolder({ encrypted: true });
+    const { directory, remote } = folder;
+    const { changed } = await backedUp(folder, { 'Taxes/return.pdf': 'tax return' });
+    await rm(path.join(directory, 'Taxes'), { recursive: true });
+    const [request] = await restore(folder, { itemId: remote.remoteRootDriveItemId });
+    expect(request).toMatchObject({ state: 'COMPLETED' });
+    const file = path.join(directory, 'Taxes/return.pdf');
+    expect(await readFile(file, 'utf8')).toBe('tax return');
+    expect(Math.abs((await stat(file)).mtimeMs - changed.getTime())).toBeLessThan(1000);
+  });
 });

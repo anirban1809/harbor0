@@ -934,11 +934,15 @@ app
       },
     );
     // The window's own requests go ahead of background sync and backups; see RequestBudget.
-    ipc('request', rendererRequestSchema, async (input) =>
-      foreground.run(true, () =>
+    ipc('request', rendererRequestSchema, async (input) => {
+      const result = await foreground.run(true, () =>
         api.request(input.path, { method: input.method, body: input.body }),
-      ),
-    );
+      );
+      // A file restored to this computer starts now rather than at the next check.
+      if (input.method === 'POST' && /^\/v1\/backups\/[^/]+\/restores$/.test(input.path))
+        engine?.restoreSoon();
+      return result;
+    });
     ipc('testNotification', z.undefined(), async () => {
       if (!Notification.isSupported())
         throw new Error('Desktop notifications are not supported on this computer.');

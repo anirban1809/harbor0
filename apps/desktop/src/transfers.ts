@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, open, stat, lstat, rename, rm } from 'node:fs/promises';
+import { chmod, open, stat, lstat, rename, rm, utimes } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -109,6 +109,12 @@ export type UploadState = {
   /** SHA-256 of the encrypted bytes as stored, once every part is sealed. */
   storedHash?: string;
 };
+/**
+ * A file's modification time as a backup entry records it. Built from mtimeMs the way every
+ * caller does: Stats.mtime rounds the fraction of a millisecond where new Date(mtimeMs)
+ * truncates it, so mixing the two made about half of all saved files look changed.
+ */
+export const modifiedAt = (info: { mtimeMs: number }) => new Date(info.mtimeMs).toISOString();
 export async function uploadFile(
   api: ApiClient,
   filename: string,
@@ -202,6 +208,8 @@ async function upload(
         ? { sizeBytes: encryptedSize(info.size), encrypted: true }
         : { sizeBytes: info.size, contentHash: state.hash }),
       mimeType: 'application/octet-stream',
+      // Kept with the version, so a restore can give the file back its time.
+      modifiedAt: modifiedAt(info),
       ...(existing ? { driveItemId: existing.itemId, baseRevision: existing.revision } : {}),
     };
     const result = backup
@@ -491,6 +499,8 @@ async function decryptFile(source: string, target: string, keys: AccountKeys) {
   return hash.digest('hex');
 }
 
+// What a newly created file gets on this computer: read and write as allowed by its umask.
+const NEW_FILE_MODE = 0o666 & ~process.umask();
 export async function downloadFile(
   api: ApiClient,
   input: {
@@ -503,6 +513,8 @@ export async function downloadFile(
   destination: string,
   onProgress?: (bytes: number, total: number) => void,
   beforeReplace?: () => Promise<void>,
+  // When the file was last changed where it came from, such as a restored backup version.
+  modifiedAt?: string | null,
 ) {
   const part = destination + '.harbor-part';
   for (const target of [destination, part]) {
@@ -539,6 +551,12 @@ export async function downloadFile(
         throw error;
       }
     }
+    // Kept private while it downloads; in place, it has the permissions of the file it replaces,
+    // or those of any new file.
+    const replaced = await lstat(destination).catch(() => undefined);
+    await chmod(written, replaced?.isFile() ? replaced.mode & 0o7777 : NEW_FILE_MODE);
+    const changed = modifiedAt ? new Date(modifiedAt) : undefined;
+    if (changed && !Number.isNaN(changed.getTime())) await utimes(written, new Date(), changed);
     await beforeReplace?.();
     await replaceWith(written, destination);
     if (written !== part) await rm(part, { force: true });

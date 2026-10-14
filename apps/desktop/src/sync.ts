@@ -17,6 +17,8 @@ import {
   type SyncRuntime,
   type SyncIssue,
   type SyncActivityItem,
+  type RestoreProgress,
+  type RestoreSummary,
 } from './sync-state';
 import { watchTree, type TreeWatcher } from './local-watcher';
 import { findVolume, isNetwork, volumeId, volumeLabel, volumeRoot, type Volume } from './volumes';
@@ -204,6 +206,8 @@ export class SyncEngine {
       (rootId) => this.unreadable.get(rootId) ?? [],
     );
     this.backups.batch = (root, jobs, runId) => this.backupBatch(root, jobs, runId);
+    this.backups.onRestore = (rootId, progress, summary) =>
+      this.setRestoring(rootId, progress, summary);
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
     // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
     this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
@@ -440,6 +444,18 @@ export class SyncEngine {
     this.state.checking = progress ? { ...rest, [rootId]: progress } : rest;
     // Progress-only updates are throttled; the last one always goes out.
     this.emit(!!progress);
+  }
+  /** A restore under way in a backup folder, and how it went once done; see SyncRuntime. */
+  private setRestoring(rootId: string, progress?: RestoreProgress, summary?: RestoreSummary) {
+    const { [rootId]: _, ...rest } = this.state.restoring ?? {};
+    this.state.restoring = progress ? { ...rest, [rootId]: progress } : rest;
+    if (summary) this.state.restored = { ...this.state.restored, [rootId]: summary };
+    this.emit(!!progress && progress.loaded > 0);
+  }
+  /** A restore was just requested from this computer: start it without waiting. */
+  restoreSoon() {
+    this.backups.restoreSoon();
+    this.wake();
   }
   private async scanLocalPass(root: Root, report?: (found: number) => void) {
     let files = 0;
@@ -1003,6 +1019,7 @@ export class SyncEngine {
                 ? { sizeBytes: encryptedSize(file.info.size), encrypted: true }
                 : { sizeBytes: file.info.size, contentHash: file.hash }),
               mimeType: 'application/octet-stream',
+              modifiedAt: modifiedAt(file.info),
             })),
           },
         })

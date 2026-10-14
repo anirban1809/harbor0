@@ -85,6 +85,7 @@ import {
   type SyncFolder,
   type SyncIssue,
   type SyncIssueCode,
+  type RestoreProgress,
 } from './sync-state';
 import { SyncNotifications } from './sync-notifications';
 import { SharedSyncInvitations } from './sync-sharing';
@@ -827,6 +828,21 @@ function App() {
       ? { label: UNAVAILABLE[issue.code as SyncIssueCode]!, message: issue.message as string }
       : undefined;
   };
+  // A restore under way as the window shows it: its files and the share of them done.
+  const restoreShown = (progress?: RestoreProgress) =>
+    progress && {
+      done: progress.done,
+      total: progress.total,
+      relativePath: progress.relativePath,
+      percent: Math.min(
+        99,
+        Math.floor(
+          ((progress.done + (progress.size ? progress.loaded / progress.size : 0)) /
+            Math.max(1, progress.total)) *
+            100,
+        ),
+      ),
+    };
   const backupDesktop: BackupDesktop = {
     roots: backupRoots.map((root) => ({
       ...root,
@@ -837,6 +853,8 @@ function App() {
           ? sync.active.relativePath
           : undefined,
       checking: sync?.checking?.[root.id],
+      restoring: restoreShown(sync?.restoring?.[root.id]),
+      restored: sync?.restored?.[root.id],
       unavailable: unavailable(root),
     })),
     backup: (id) => bridge.backupNow({ id }),
@@ -935,6 +953,9 @@ function App() {
     .map((root: SyncFolder) => ({ root, progress: sync?.checking?.[root.id] }))
     .find((entry: { progress?: unknown }) => entry.progress) as
     { root: SyncFolder; progress: { found: number; checked?: number } } | undefined;
+  const restoring = backupRoots
+    .map((root) => ({ root, progress: sync?.restoring?.[root.id] }))
+    .find((entry): entry is { root: SyncFolder; progress: RestoreProgress } => !!entry.progress);
   const syncing = sync
     ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')
     : [];
@@ -1004,63 +1025,77 @@ function App() {
                         activity: { tone: 'paused', label: 'Offline · changes wait' },
                         open: () => openPlace('synced', status.deviceId ?? undefined),
                       }
-                    : checking
+                    : restoring
                       ? {
-                          // Looked through before anything is saved: show what has been found.
                           activity: {
                             tone: 'busy',
                             label:
-                              checking.progress.checked === undefined
-                                ? `Found ${checking.progress.found.toLocaleString()} files in ${checking.root.localPathDisplayName}…`
-                                : `Getting ${checking.root.localPathDisplayName} ready…`,
-                            percent:
-                              checking.progress.checked === undefined || !checking.progress.found
-                                ? undefined
-                                : Math.min(
-                                    99,
-                                    Math.floor(
-                                      (checking.progress.checked / checking.progress.found) * 100,
-                                    ),
-                                  ),
+                              restoring.progress.total === 1
+                                ? `Restoring ${restoring.progress.relativePath.split('/').pop()}…`
+                                : `Restoring ${restoring.progress.done + 1} of ${restoring.progress.total} files…`,
+                            percent: restoreShown(restoring.progress)?.percent,
                           },
-                          open: () =>
-                            openPlace(
-                              checking.root.mode === 'backup' ? 'backups' : 'synced',
-                              status.deviceId ?? undefined,
-                            ),
+                          open: () => openPlace('backups', status.deviceId ?? undefined),
                         }
-                      : syncing.length
+                      : checking
                         ? {
+                            // Looked through before anything is saved: show what has been found.
                             activity: {
                               tone: 'busy',
-                              label: 'Syncing…',
-                              percent: average(syncing.map((root) => sync.progress?.[root.id])),
+                              label:
+                                checking.progress.checked === undefined
+                                  ? `Found ${checking.progress.found.toLocaleString()} files in ${checking.root.localPathDisplayName}…`
+                                  : `Getting ${checking.root.localPathDisplayName} ready…`,
+                              percent:
+                                checking.progress.checked === undefined || !checking.progress.found
+                                  ? undefined
+                                  : Math.min(
+                                      99,
+                                      Math.floor(
+                                        (checking.progress.checked / checking.progress.found) * 100,
+                                      ),
+                                    ),
                             },
-                            open: () => openPlace('synced', status.deviceId ?? undefined),
+                            open: () =>
+                              openPlace(
+                                checking.root.mode === 'backup' ? 'backups' : 'synced',
+                                status.deviceId ?? undefined,
+                              ),
                           }
-                        : backingUp.length
+                        : syncing.length
                           ? {
                               activity: {
                                 tone: 'busy',
-                                label:
-                                  backingUp.length === 1
-                                    ? `Backing up ${backingUp[0].localPathDisplayName}…`
-                                    : `Backing up ${backingUp.length} folders…`,
-                                percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                                label: 'Syncing…',
+                                percent: average(syncing.map((root) => sync.progress?.[root.id])),
                               },
-                              open: () => openPlace('backups', status.deviceId ?? undefined),
+                              open: () => openPlace('synced', status.deviceId ?? undefined),
                             }
-                          : {
-                              activity: {
-                                tone: 'ok',
-                                label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                              },
-                              open: () =>
-                                openPlace(
-                                  syncRoots.length ? 'synced' : 'backups',
-                                  status.deviceId ?? undefined,
-                                ),
-                            };
+                          : backingUp.length
+                            ? {
+                                activity: {
+                                  tone: 'busy',
+                                  label:
+                                    backingUp.length === 1
+                                      ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                                      : `Backing up ${backingUp.length} folders…`,
+                                  percent: average(
+                                    backingUp.map((root) => sync.progress?.[root.id]),
+                                  ),
+                                },
+                                open: () => openPlace('backups', status.deviceId ?? undefined),
+                              }
+                            : {
+                                activity: {
+                                  tone: 'ok',
+                                  label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                                },
+                                open: () =>
+                                  openPlace(
+                                    syncRoots.length ? 'synced' : 'backups',
+                                    status.deviceId ?? undefined,
+                                  ),
+                              };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">

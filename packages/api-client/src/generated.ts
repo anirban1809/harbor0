@@ -1910,7 +1910,7 @@ export interface paths {
         /** List backup restores */
         get: operations["get__v1_backups__id_restores"];
         put?: never;
-        /** Restore a backup version to its local folder */
+        /** Restore a backup version, or a folder with each file at its latest version, to its local folder */
         post: operations["post__v1_backups__id_restores"];
         delete?: never;
         options?: never;
@@ -25787,13 +25787,15 @@ export interface operations {
                             id: string;
                             rootId: string;
                             itemId: string;
-                            versionId: string;
+                            versionId?: string;
+                            folder?: boolean;
                             relativePath: string;
                             /** @enum {string} */
                             state: "PENDING" | "COMPLETED" | "FAILED";
                             requestedAt: string;
                             completedAt: string | null;
                             error?: string;
+                            modifiedAt?: string | null;
                         }[];
                         nextCursor: string | null;
                     };
@@ -25959,7 +25961,7 @@ export interface operations {
                 "application/json": {
                     id: string;
                     itemId: string;
-                    versionId: string;
+                    versionId?: string;
                 };
             };
         };
@@ -25975,13 +25977,15 @@ export interface operations {
                             id: string;
                             rootId: string;
                             itemId: string;
-                            versionId: string;
+                            versionId?: string;
+                            folder?: boolean;
                             relativePath: string;
                             /** @enum {string} */
                             state: "PENDING" | "COMPLETED" | "FAILED";
                             requestedAt: string;
                             completedAt: string | null;
                             error?: string;
+                            modifiedAt?: string | null;
                         };
                     };
                 };
@@ -26157,13 +26161,15 @@ export interface operations {
                             id: string;
                             rootId: string;
                             itemId: string;
-                            versionId: string;
+                            versionId?: string;
+                            folder?: boolean;
                             relativePath: string;
                             /** @enum {string} */
                             state: "PENDING" | "COMPLETED" | "FAILED";
                             requestedAt: string;
                             completedAt: string | null;
                             error?: string;
+                            modifiedAt?: string | null;
                         }[];
                         nextCursor: string | null;
                     };

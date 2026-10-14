@@ -58772,6 +58772,9 @@
                           "versionId": {
                             "type": "string"
                           },
+                          "folder": {
+                            "type": "boolean"
+                          },
                           "relativePath": {
                             "type": "string"
                           },
@@ -58794,13 +58797,18 @@
                           },
                           "error": {
                             "type": "string"
+                          },
+                          "modifiedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
                           "id",
                           "rootId",
                           "itemId",
-                          "versionId",
                           "relativePath",
                           "state",
                           "requestedAt",
@@ -59150,7 +59158,7 @@
         }
       },
       "post": {
-        "summary": "Restore a backup version to its local folder",
+        "summary": "Restore a backup version, or a folder with each file at its latest version, to its local folder",
         "operationId": "post__v1_backups__id_restores",
         "security": [
           {
@@ -59196,8 +59204,7 @@
                 },
                 "required": [
                   "id",
-                  "itemId",
-                  "versionId"
+                  "itemId"
                 ],
                 "additionalProperties": false
               }
@@ -59228,6 +59235,9 @@
                         "versionId": {
                           "type": "string"
                         },
+                        "folder": {
+                          "type": "boolean"
+                        },
                         "relativePath": {
                           "type": "string"
                         },
@@ -59250,13 +59260,18 @@
                         },
                         "error": {
                           "type": "string"
+                        },
+                        "modifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
                         "id",
                         "rootId",
                         "itemId",
-                        "versionId",
                         "relativePath",
                         "state",
                         "requestedAt",
@@ -59663,6 +59678,9 @@
                           "versionId": {
                             "type": "string"
                           },
+                          "folder": {
+                            "type": "boolean"
+                          },
                           "relativePath": {
                             "type": "string"
                           },
@@ -59685,13 +59703,18 @@
                           },
                           "error": {
                             "type": "string"
+                          },
+                          "modifiedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
                           "id",
                           "rootId",
                           "itemId",
-                          "versionId",
                           "relativePath",
                           "state",
                           "requestedAt",

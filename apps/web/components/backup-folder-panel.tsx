@@ -74,6 +74,11 @@ export type LocalBackupRoot = {
   uploading?: string;
   // Files found so far while the folder is looked through; with `checked`, a run being got ready.
   checking?: { found: number; checked?: number };
+  // Backed-up files being put back on this computer: restored so far of those requested, the one
+  // downloading now and the percent of all of them done.
+  restoring?: { done: number; total: number; relativePath: string; percent: number };
+  // How the last restores on this computer went.
+  restored?: { restored: number; failed: number; error?: string; at: string };
   // Why this device can't read the folder right now, such as its drive being disconnected.
   unavailable?: { label: string; message: string };
   // Why the last run on this device skipped files or failed, such as subfolders it may not read.
@@ -200,6 +205,22 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
     const timer = setTimeout(() => setMessage(''), 8000);
     return () => clearTimeout(timer);
   }, [message]);
+  // Once restores on this computer finish, say how they went and show them in History.
+  const restoredAt = local?.restored?.at;
+  useEffect(() => {
+    const done = local?.restored;
+    if (!done?.at || Date.now() - new Date(done.at).getTime() > 60_000) return;
+    if (done.restored)
+      setMessage(
+        `Restored ${count(done.restored, 'file')} to ${local?.localPathDisplay ?? 'this computer'}.`,
+      );
+    if (done.failed)
+      setError(
+        `${count(done.failed, 'file')} couldn’t be restored${done.error ? `. ${done.error}` : '.'}`,
+      );
+    setRefresh((value) => value + 1);
+    // Only a new summary is announced; `local` changes with every status update.
+  }, [restoredAt]);
   const rootId = root?.id;
   useEffect(() => {
     let active = true;
@@ -361,54 +382,71 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                     label: local.unavailable.label,
                     detail: local.unavailable.message,
                   }
-                : local?.checking
-                  ? local.checking.checked === undefined
+                : local?.restoring
+                  ? {
+                      tone: 'busy',
+                      label: 'Restoring',
+                      detail:
+                        local.restoring.total === 1
+                          ? 'Restoring 1 file…'
+                          : `Restored ${local.restoring.done.toLocaleString()} of ${local.restoring.total.toLocaleString()} files…`,
+                    }
+                  : pendingRestores > 0 && local
                     ? {
                         tone: 'busy',
-                        label: 'Checking files',
-                        detail: `Found ${local.checking.found.toLocaleString()} files so far…`,
+                        label: 'Restoring',
+                        detail: `Getting ready to restore ${count(pendingRestores, 'file')}…`,
                       }
-                    : {
-                        tone: 'busy',
-                        label: 'Getting ready',
-                        detail: `Checked ${local.checking.checked.toLocaleString()} of ${local.checking.found.toLocaleString()} files…`,
-                      }
-                  : local?.progress !== undefined
-                    ? {
-                        tone: 'busy',
-                        label: 'Backing up',
-                        detail: local.run
-                          ? `Saved ${local.run.done.toLocaleString()} of ${local.run.total.toLocaleString()} files · ${local.progress}% complete`
-                          : `Saving changed files · ${local.progress}% complete`,
-                      }
-                    : latestRun?.state === 'RUNNING'
-                      ? {
-                          tone: 'busy',
-                          label: 'Backing up',
-                          detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
-                        }
-                      : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+                    : local?.checking
+                      ? local.checking.checked === undefined
                         ? {
-                            tone: 'error',
-                            label: 'Needs attention',
-                            detail: latestRun?.error
-                              ? `The last backup didn’t finish: ${latestRun.error}`
-                              : `The last backup didn’t finish. It will try again automatically.`,
+                            tone: 'busy',
+                            label: 'Checking files',
+                            detail: `Found ${local.checking.found.toLocaleString()} files so far…`,
                           }
-                        : lastGoodRun
+                        : {
+                            tone: 'busy',
+                            label: 'Getting ready',
+                            detail: `Checked ${local.checking.checked.toLocaleString()} of ${local.checking.found.toLocaleString()} files…`,
+                          }
+                      : local?.progress !== undefined
+                        ? {
+                            tone: 'busy',
+                            label: 'Backing up',
+                            detail: local.run
+                              ? `Saved ${local.run.done.toLocaleString()} of ${local.run.total.toLocaleString()} files · ${local.progress}% complete`
+                              : `Saving changed files · ${local.progress}% complete`,
+                          }
+                        : latestRun?.state === 'RUNNING'
                           ? {
-                              tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
-                              label:
-                                latestRun?.state === 'PARTIAL' ? 'Some files skipped' : 'Backed up',
-                              detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                              tone: 'busy',
+                              label: 'Backing up',
+                              detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
                             }
-                          : {
-                              tone: 'ok',
-                              label: 'Waiting',
-                              detail: historyLoading
-                                ? 'Checking backup status…'
-                                : 'The first backup runs once files have been unchanged for an hour.',
-                            };
+                          : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+                            ? {
+                                tone: 'error',
+                                label: 'Needs attention',
+                                detail: latestRun?.error
+                                  ? `The last backup didn’t finish: ${latestRun.error}`
+                                  : `The last backup didn’t finish. It will try again automatically.`,
+                              }
+                            : lastGoodRun
+                              ? {
+                                  tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
+                                  label:
+                                    latestRun?.state === 'PARTIAL'
+                                      ? 'Some files skipped'
+                                      : 'Backed up',
+                                  detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                                }
+                              : {
+                                  tone: 'ok',
+                                  label: 'Waiting',
+                                  detail: historyLoading
+                                    ? 'Checking backup status…'
+                                    : 'The first backup runs once files have been unchanged for an hour.',
+                                };
   const historyButton = (
     <Button size="sm" variant="ghost" onClick={() => setHistoryOpen(true)}>
       <History />
@@ -438,23 +476,44 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
               {' · '}
               {status.detail}
             </p>
-            {local?.checking?.checked !== undefined && local.checking.found > 0 && (
-              <FolderProgress
-                percent={Math.min(
-                  99,
-                  Math.floor((local.checking.checked / local.checking.found) * 100),
-                )}
-                label={`${name} getting ready`}
-              />
+            {local?.restoring && (
+              <>
+                <FolderProgress
+                  percent={local.restoring.percent}
+                  label={`${name} restore progress`}
+                />
+                <p className="backup-uploading" title={local.restoring.relativePath}>
+                  Restoring {local.restoring.relativePath}
+                </p>
+              </>
             )}
-            {local?.progress !== undefined && !local.checking && !local.paused && !removed && (
-              <FolderProgress percent={local.progress} label={`${name} backup progress`} />
-            )}
-            {local?.uploading && !local.checking && !local.paused && !removed && (
-              <p className="backup-uploading" title={local.uploading}>
-                Uploading {local.uploading}
-              </p>
-            )}
+            {!local?.restoring &&
+              local?.checking?.checked !== undefined &&
+              local.checking.found > 0 && (
+                <FolderProgress
+                  percent={Math.min(
+                    99,
+                    Math.floor((local.checking.checked / local.checking.found) * 100),
+                  )}
+                  label={`${name} getting ready`}
+                />
+              )}
+            {local?.progress !== undefined &&
+              !local.restoring &&
+              !local.checking &&
+              !local.paused &&
+              !removed && (
+                <FolderProgress percent={local.progress} label={`${name} backup progress`} />
+              )}
+            {local?.uploading &&
+              !local.restoring &&
+              !local.checking &&
+              !local.paused &&
+              !removed && (
+                <p className="backup-uploading" title={local.uploading}>
+                  Uploading {local.uploading}
+                </p>
+              )}
           </div>
         </div>
         {local && desktop && !removed && (archived || local.archive) ? (
@@ -640,7 +699,11 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
               <div className="list-row backup-recovery-row" key={value.id}>
                 <RotateCcw aria-hidden="true" />
                 <div className="list-row-text">
-                  <strong>{value.relativePath}</strong>
+                  <strong>
+                    {value.folder
+                      ? `${value.relativePath || name} · whole folder`
+                      : value.relativePath}
+                  </strong>
                   <small>
                     Requested {date(value.requestedAt)}
                     {value.completedAt && ` · Finished ${date(value.completedAt)}`}

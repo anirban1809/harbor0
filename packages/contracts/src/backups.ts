@@ -36,12 +36,16 @@ export const backupRestoreSchema = z.object({
   id: z.string(),
   rootId: z.string(),
   itemId: z.string(),
-  versionId: z.string(),
+  // A file's version; a folder has none and is restored with each file at its latest version.
+  versionId: z.string().optional(),
+  folder: z.boolean().optional(),
   relativePath: z.string(),
   state: z.enum(['PENDING', 'COMPLETED', 'FAILED']),
   requestedAt: z.string(),
   completedAt: z.string().nullable(),
   error: z.string().optional(),
+  // When the file was last changed on the computer it was backed up from; set back on restore.
+  modifiedAt: z.string().nullable().optional(),
 });
 export type BackupRoot = z.infer<typeof backupRootSchema>;
 export type BackupRun = z.infer<typeof backupRunSchema>;

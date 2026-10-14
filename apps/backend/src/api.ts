@@ -2235,8 +2235,8 @@ export function createApp(
   add(
     'post',
     '/v1/backups/:id/restores',
-    'Restore a backup version to its local folder',
-    z.object({ id: c.id, itemId: c.id, versionId: c.id }).strict(),
+    'Restore a backup version, or a folder with each file at its latest version, to its local folder',
+    z.object({ id: c.id, itemId: c.id, versionId: c.id.optional() }).strict(),
     z.object({ restore: backupRestoreSchema }),
     async (ctx, i) => backupWorkflows.restore(userId(ctx), p(ctx, 'id'), i),
   );
