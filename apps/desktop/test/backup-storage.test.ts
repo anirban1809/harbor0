@@ -189,6 +189,13 @@ it('refuses "Back up now" up front when none of the changed files fit', async ()
     files: 1,
   });
   expect(engine.state.storageFull).toMatchObject({ availableBytes: 10 });
+  // An ordinary pass, with the file still in its quiet hour, keeps saying so.
+  await engine.tick();
+  expect(journal.roots()[0].backupStorage).toMatchObject({ availableBytes: 10 });
+  // Until space is freed.
+  engine.storageFreed();
+  expect(journal.roots()[0].backupStorage).toBeUndefined();
+  expect(engine.state.storageFull).toBeUndefined();
 });
 
 it('remembers that the last backup skipped files until a clean run', async () => {

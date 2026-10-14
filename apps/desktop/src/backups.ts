@@ -323,7 +323,8 @@ export class FolderBackups {
       const ready = await this.changed(root, manual, onCheck);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
-        this.storageShort(root, undefined);
+        // Files still waiting (for their quiet hour) still need the storage they needed.
+        if (!this.journal.pendingCount(root.id)) this.storageShort(root, undefined);
         // Nothing left that failed (deleted, or saved meanwhile): the folder is backed up, apart
         // from any subfolders it may not read.
         const current = this.journal.roots().find((r) => r.id === root.id);

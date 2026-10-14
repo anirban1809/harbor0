@@ -2326,6 +2326,10 @@ export class SyncEngine {
       this.state.storageFull = undefined;
       this.emit();
     }
+    // Their next run checks again what fits.
+    for (const root of this.journal.roots())
+      if (root.mode === 'backup' && root.backupStorage)
+        this.journal.root({ ...root, backupStorage: undefined });
     const refused = new Set(
       this.state.issues
         .filter((issue) => issue.code === 'STORAGE_QUOTA_EXCEEDED' && issue.jobId)
