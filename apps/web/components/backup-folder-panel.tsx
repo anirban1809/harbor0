@@ -420,10 +420,13 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                         : local?.backupStorage
                           ? {
                               tone: 'error',
-                              label: 'Needs storage',
+                              label:
+                                local.backupStorage.availableBytes <= 0
+                                  ? 'Backup paused · storage full'
+                                  : 'Needs storage',
                               detail:
                                 local.backupStorage.availableBytes <= 0
-                                  ? 'Paused: your cloud storage is full.'
+                                  ? 'New and changed files back up once space is freed.'
                                   : `${count(local.backupStorage.files, 'file')} won’t fit in your remaining storage.`,
                             }
                           : latestRun?.state === 'RUNNING'

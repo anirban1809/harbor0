@@ -129,7 +129,7 @@ it('pauses uploads that do not fit as the account being full, keeps smaller file
       first.engine.state,
       first.journal.jobs(),
     ),
-  ).toBe('Storage full');
+  ).toBe('Sync paused · storage full');
   // Later passes leave it waiting instead of being refused again.
   const request = first.api.request.bind(first.api);
   const tried: string[] = [];

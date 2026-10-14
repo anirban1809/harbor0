@@ -115,7 +115,7 @@ export type SyncJob = {
   attempts: number;
 };
 export const WAITING = 'Waiting for another device';
-export const STORAGE_FULL = 'Storage full';
+export const STORAGE_FULL = 'Sync paused · storage full';
 // Every file has moved; what is left is confirming the copies or comparing with the cloud.
 export const CHECKING = 'Checking sync';
 // The live status knows when a check ends; the folder list is only as fresh as its last load.
