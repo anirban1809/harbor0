@@ -89,6 +89,31 @@ export function e2eeTransport(inner: Transport, options: E2eeTransportOptions): 
       const segments = await Promise.all(body.relativePath.split('/').map(sealName));
       return { ...init, body: { ...body, relativePath: segments.join('/') } };
     }
+    // A backup's batch of small files: each encrypted upload's name, and each recorded path.
+    const batch = /^\/v1\/backups\/[^/]+\/runs\/[^/]+\/(uploads|files)\/batch$/.exec(route)?.[1];
+    if (method === 'POST' && batch === 'uploads' && Array.isArray(body?.uploads)) {
+      const uploads = await Promise.all(
+        (body.uploads as { name?: unknown; encrypted?: unknown }[]).map(async (upload) =>
+          upload.encrypted === true ? { ...upload, name: await sealName(upload.name) } : upload,
+        ),
+      );
+      return { ...init, body: { ...body, uploads } };
+    }
+    if (method === 'POST' && batch === 'files' && Array.isArray(body?.files)) {
+      const files = await Promise.all(
+        (body.files as { relativePath?: unknown }[]).map(async (file) =>
+          typeof file.relativePath === 'string'
+            ? {
+                ...file,
+                relativePath: (await Promise.all(file.relativePath.split('/').map(sealName))).join(
+                  '/',
+                ),
+              }
+            : file,
+        ),
+      );
+      return { ...init, body: { ...body, files } };
+    }
     if (method === 'POST' && route === '/v1/sync/operations' && Array.isArray(body?.operations)) {
       const operations = await Promise.all(
         (body.operations as { entityId: string; payload?: { name?: unknown } }[]).map(async (o) =>

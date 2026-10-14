@@ -21,7 +21,9 @@ import {
 import { watchTree, type TreeWatcher } from './local-watcher';
 import { findVolume, isNetwork, volumeId, volumeLabel, volumeRoot, type Volume } from './volumes';
 import { ApiClient, ApiError } from '@harbor/api-client';
-import type { DriveItem } from '@harbor/contracts';
+import { createHash } from 'node:crypto';
+import { FileCipher, b64url, encryptedSize } from '../../../packages/api-client/src/e2ee';
+import { BATCH_UPLOAD_MAX_BYTES, type DriveItem } from '@harbor/contracts';
 import { Journal, type Root, type LocalJob, type LocalFile } from './journal';
 import {
   contained,
@@ -68,6 +70,17 @@ const BACKUP_YIELD_MS = 15_000;
 const SYNC_SLICE_MS = 15_000;
 // Jobs read from the queue at a time.
 const QUEUE_PAGE = 500;
+/** One file of a backup batch, ready to go: its folder exists and its content is hashed. */
+type BatchFile = {
+  job: LocalJob;
+  absolute: string;
+  info: Stats;
+  hash: string;
+  parentId: string | null;
+  operationId: string;
+  // Set on an encrypted account: the file's own key, with its header.
+  cipher?: FileCipher;
+};
 // Files of a backup batch sent to storage at once.
 const BATCH_PUT_CONCURRENCY = 8;
 // A path harbor0 never accepts (nested too deep) is retried this rarely.
@@ -912,22 +925,12 @@ export class SyncEngine {
     runId: string,
   ): Promise<Map<string, BatchOutcome> | null> {
     const outcomes = new Map<string, BatchOutcome>();
-    const alone = (list: { job: LocalJob }[]) => {
-      for (const { job } of list) outcomes.set(job.id, { alone: true });
-      return outcomes;
-    };
-    // An encrypted account encrypts each file and its name on the way: one at a time.
-    if (transferKeys.upload()) return alone(jobs.map((job) => ({ job })));
+    // An encrypted account's files are encrypted one by one before they go; their names are
+    // encrypted on the way by the API client's E2EE layer.
+    const keys = transferKeys.upload();
     const backup = { rootId: root.backupId!, runId };
     const base = `/v1/backups/${backup.rootId}/runs/${runId}`;
-    const prepared: {
-      job: LocalJob;
-      absolute: string;
-      info: Stats;
-      hash: string;
-      parentId: string | null;
-      operationId: string;
-    }[] = [];
+    const prepared: BatchFile[] = [];
     for (const job of jobs) {
       const absolute = contained(root.localPath, job.relativePath);
       try {
@@ -941,7 +944,13 @@ export class SyncEngine {
           continue;
         }
         const operationId = (job.payload.upload?.operationId as string | undefined) ?? job.id;
-        prepared.push({ job, absolute, info, hash, parentId, operationId });
+        // Encryption adds a little to every file; one that then outgrows a batch goes alone.
+        if (keys && encryptedSize(info.size) > BATCH_UPLOAD_MAX_BYTES) {
+          outcomes.set(job.id, { alone: true });
+          continue;
+        }
+        const cipher = keys ? await FileCipher.create(keys) : undefined;
+        prepared.push({ job, absolute, info, hash, parentId, operationId, cipher });
       } catch (error) {
         if (this.interrupts(error)) throw error;
         outcomes.set(job.id, { error: error as Error });
@@ -968,14 +977,7 @@ export class SyncEngine {
   private async sendBatch(
     root: Root,
     base: string,
-    prepared: {
-      job: LocalJob;
-      absolute: string;
-      info: Stats;
-      hash: string;
-      parentId: string | null;
-      operationId: string;
-    }[],
+    prepared: BatchFile[],
     outcomes: Map<string, BatchOutcome>,
   ): Promise<Map<string, BatchOutcome> | null> {
     const alone = (list: { job: LocalJob }[]) => {
@@ -996,8 +998,10 @@ export class SyncEngine {
               operationId: file.operationId,
               parentId: file.parentId,
               name: path.basename(file.absolute),
-              sizeBytes: file.info.size,
-              contentHash: file.hash,
+              // The server only ever sees the encrypted size and hash of an encrypted file.
+              ...(file.cipher
+                ? { sizeBytes: encryptedSize(file.info.size), encrypted: true }
+                : { sizeBytes: file.info.size, contentHash: file.hash }),
               mimeType: 'application/octet-stream',
             })),
           },
@@ -1023,6 +1027,8 @@ export class SyncEngine {
         hash: file.hash,
         size: file.info.size,
         mtime: file.info.mtimeMs,
+        // Kept so a file the batch doesn't finish resumes alone with the same key.
+        ...(file.cipher ? { header: b64url(file.cipher.header) } : {}),
       } satisfies UploadState;
       this.journal.saveJob(file.job);
       uploads.push({ ...file, uploadId: result.upload.id, uploadUrl: result.uploadUrl });
@@ -1030,6 +1036,8 @@ export class SyncEngine {
     // To storage side by side; a file that changed meanwhile, or that storage refused, goes alone
     // and resumes the upload it already has.
     const etags: (string | undefined)[] = [];
+    // The hash of what was stored, which an encrypted file is finished with.
+    const storedHashes: (string | undefined)[] = [];
     let next = 0;
     let interrupted: unknown;
     let loaded = 0;
@@ -1040,13 +1048,26 @@ export class SyncEngine {
           const file = uploads[n];
           try {
             const buffer = await readFile(file.absolute);
+            const body = file.cipher
+              ? await file.cipher.encryptedRange(
+                  buffer.length,
+                  0,
+                  encryptedSize(buffer.length),
+                  async (begin, end) => buffer.subarray(begin, end),
+                )
+              : buffer;
+            if (file.cipher) {
+              storedHashes[n] = createHash('sha256').update(body).digest('hex');
+              (file.job.payload.upload as UploadState).storedHash = storedHashes[n];
+              this.journal.saveJob(file.job);
+            }
             const etag = await putPart(
               this.api,
               file.job.payload.upload as UploadState,
               1,
-              buffer,
+              body,
               file.uploadUrl,
-              buffer.length,
+              body.length,
             );
             const after = await lstat(file.absolute);
             if (
@@ -1067,7 +1088,9 @@ export class SyncEngine {
       }),
     );
     if (interrupted) throw interrupted;
-    const sent = uploads.flatMap((file, n) => (etags[n] ? [{ ...file, etag: etags[n]! }] : []));
+    const sent = uploads.flatMap((file, n) =>
+      etags[n] ? [{ ...file, etag: etags[n]!, storedHash: storedHashes[n] ?? file.hash }] : [],
+    );
     if (!sent.length) return outcomes;
     let finished: { item?: DriveItem; entry?: any; error?: any }[];
     try {
@@ -1078,7 +1101,7 @@ export class SyncEngine {
             files: sent.map((file) => ({
               uploadId: file.uploadId,
               etag: file.etag,
-              contentHash: file.hash,
+              contentHash: file.storedHash,
               relativePath: file.job.relativePath,
               modifiedAt: modifiedAt(file.info),
               savedAt: new Date().toISOString(),

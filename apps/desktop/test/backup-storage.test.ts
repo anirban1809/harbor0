@@ -9,6 +9,18 @@ import { StorageService, userPK, type Account } from '../../backend/src/domain';
 import { createApp } from '../../backend/src/api';
 import { DevelopmentAuth } from '../../backend/src/auth';
 import { Journal } from '../src/journal';
+import { transferKeys } from '../src/transfers';
+import { FLAG_PK, emptyFlag } from '../../backend/src/flags';
+import { e2eeTransport } from '../../../packages/api-client/src/e2ee-transport';
+import {
+  FileCipher,
+  HEADER_SIZE,
+  accountKeys,
+  encryptedSize,
+  newMasterKey,
+  type AccountKeys,
+} from '../../../packages/api-client/src/e2ee';
+import { isEncryptedName } from '@harbor/contracts';
 import { SyncEngine } from '../src/sync';
 vi.mock('../src/local-watcher', async () => {
   const { EventEmitter } = await import('node:events');
@@ -22,7 +34,7 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
-async function backupFolder() {
+async function backupFolder(options: { encrypted?: boolean } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-backup-storage-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const journal = new Journal(':memory:');
@@ -30,6 +42,11 @@ async function backupFolder() {
   const storage = new MemoryStorage();
   const service = new StorageService(new MemoryRepository(), storage);
   const { app } = createApp(service, new DevelopmentAuth());
+  // Flag rules are cached, so encryption is allowed before the first request.
+  if (options.encrypted)
+    await transact(service.repo, (tx) =>
+      tx.put(FLAG_PK, 'e2ee', { ...emptyFlag('e2ee'), mode: 'TARGETED', userIds: ['alice'] }),
+    );
   const login = await app.request('/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -41,7 +58,7 @@ async function backupFolder() {
     }),
   });
   const session = await login.json();
-  const api = new ApiClient(async (url, init) => {
+  const raw = new ApiClient(async (url, init) => {
     const response = await app.request(url, {
       method: init?.method,
       headers: {
@@ -61,6 +78,62 @@ async function backupFolder() {
       );
     return data;
   });
+  let api = raw;
+  let keys: AccountKeys | undefined;
+  if (options.encrypted) {
+    // Turned on from the web, as people do; the server only sees the wrapped key's shape.
+    const web = await (
+      await app.request('/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'alice@example.test',
+          password: 'Development-only-123!',
+          deviceName: 'Web',
+          platform: 'WEB',
+        }),
+      })
+    ).json();
+    const shape = (n: number) => Buffer.alloc(n, 7).toString('base64url');
+    const enrolled = await app.request('/v1/e2ee/enroll', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${web.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        passphrase: {
+          v: 1,
+          kdf: 'argon2id',
+          salt: shape(16),
+          memoryKiB: 65536,
+          iterations: 3,
+          parallelism: 1,
+          iv: shape(12),
+          ciphertext: shape(48),
+        },
+        recovery: { v: 1, kdf: 'hkdf', salt: shape(16), iv: shape(12), ciphertext: shape(48) },
+        proof: 'proof-value-1234',
+      }),
+    });
+    expect(enrolled.status).toBe(200);
+    // Only builds that encrypt may use an encrypted account; this one says it's current.
+    await transact(service.repo, async (tx) => {
+      const key = `DEVICE#${session.device.id}`;
+      const device = (await tx.get<Record<string, unknown>>(userPK('alice'), key))!;
+      await tx.put(userPK('alice'), key, { ...device, appVersion: '99.0.0' });
+    });
+    const accountKeysNow = await accountKeys(newMasterKey());
+    keys = accountKeysNow;
+    api = new ApiClient(
+      e2eeTransport((url, init) => raw.request(url, init), {
+        vault: () => ({ userId: 'alice', enabled: true, keys: accountKeysNow }),
+        onAccount: () => {},
+        strict: true,
+      }),
+    );
+    transferKeys.upload = () => accountKeysNow;
+    cleanup.push(async () => {
+      transferKeys.upload = () => undefined;
+    });
+  }
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     storage.uploads
@@ -88,7 +161,7 @@ async function backupFolder() {
       const account = (await tx.get<Account>(userPK('alice'), 'PROFILE'))!;
       await tx.put(userPK('alice'), 'PROFILE', { ...account, storageQuotaBytes: bytes });
     });
-  return { directory, journal, engine, quota, api, remote };
+  return { directory, journal, engine, quota, api, raw, remote, storage, keys };
 }
 
 it('refuses "Back up now" up front when none of the changed files fit', async () => {
@@ -266,4 +339,67 @@ describe('small files in batches', () => {
     expect(journal.jobs()).toEqual([]);
     expect((await runFiles(api, remote.id)).items).toHaveLength(4);
   });
+});
+
+it('batches an encrypted account’s files, encrypting their contents and names', async () => {
+  const { directory, journal, engine, api, raw, remote, keys, storage } = await backupFolder({
+    encrypted: true,
+  });
+  expect(keys).toBeDefined();
+  for (let index = 0; index < 6; index++) {
+    await mkdir(path.join(directory, 'Taxes'), { recursive: true });
+    await writeFile(path.join(directory, 'Taxes', `return-${index}.pdf`), `return ${index}`);
+  }
+  const requests: string[] = [];
+  const request = raw.request.bind(raw);
+  vi.spyOn(raw, 'request').mockImplementation(async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    return request(url, init);
+  });
+  await engine.backupNow('local');
+  await engine.tick();
+  expect(journal.jobs()).toEqual([]);
+  expect(requests.filter((r) => r.endsWith('/uploads/batch'))).toHaveLength(1);
+  expect(requests.filter((r) => /\/runs\/[^/]+\/uploads$/.test(r))).toHaveLength(0);
+  // As stored: encrypted names, encrypted sizes.
+  const folders = (await request(`/v1/drive/folders/${remote.remoteRootDriveItemId}/children`))
+    .items as { id: string; name: string }[];
+  expect(folders).toHaveLength(1);
+  expect(isEncryptedName(folders[0].name)).toBe(true);
+  const stored = (await request(`/v1/drive/folders/${folders[0].id}/children`)).items as {
+    name: string;
+    sizeBytes: number;
+    encrypted?: boolean;
+  }[];
+  expect(stored).toHaveLength(6);
+  for (const file of stored) {
+    expect(isEncryptedName(file.name)).toBe(true);
+    expect(file.encrypted).toBe(true);
+    expect(file.sizeBytes).toBe(encryptedSize('return 0'.length));
+  }
+  // Through the app, everything reads as the person named it.
+  const seen = (await api.request(`/v1/drive/folders/${folders[0].id}/children`)).items as {
+    name: string;
+  }[];
+  expect(seen.map((file) => file.name).sort()).toEqual(
+    Array.from({ length: 6 }, (_, index) => `return-${index}.pdf`),
+  );
+  const { items: runs } = await request(`/v1/backups/${remote.id}/runs`);
+  expect(runs).toEqual([expect.objectContaining({ state: 'COMPLETED', fileCount: 6 })]);
+  // And what storage holds decrypts back to each file's contents.
+  const contents = await Promise.all(
+    // Copied out: a Buffer's slice shares its pool, which the header reader doesn't expect.
+    [...storage.objects.values()].map(async (stored) => {
+      const object = new Uint8Array(stored);
+      const cipher = await FileCipher.open(keys!, object);
+      const plain = await cipher.decryptRange(
+        'return 0'.length,
+        0,
+        'return 0'.length,
+        object.subarray(HEADER_SIZE),
+      );
+      return Buffer.from(plain).toString();
+    }),
+  );
+  expect(contents.sort()).toEqual(Array.from({ length: 6 }, (_, index) => `return ${index}`));
 });
