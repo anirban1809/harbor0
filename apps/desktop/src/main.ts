@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { writeFile, mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { watch } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { rendererRequestSchema } from './request-schema';
@@ -95,6 +95,8 @@ let journal: Journal;
 let profiles: AccountProfiles;
 let accountReady = false;
 let authTransition = false;
+// Set while the session saved in the keychain is restored at startup.
+let restoringSession = false;
 let stoppingSync: Promise<void> = Promise.resolve();
 const operations = new Set<Promise<unknown>>();
 let engine: SyncEngine | undefined;
@@ -825,6 +827,7 @@ app
         development,
         signedIn: session.signedIn && accountReady,
         signedOutReason,
+        restoring: restoringSession,
         live: live?.connected ?? false,
         e2ee: accountReady ? e2eeView() : null,
         roots: (accountReady ? journal.roots() : []).map((r) => ({
@@ -1683,6 +1686,8 @@ app
     powerMonitor.on('resume', wake);
     window.on('focus', wake);
     app.on('activate', () => window.show());
+    // Known before the window asks for its status, so it never shows the login page first.
+    restoringSession = existsSync(sessionFile());
     await window.loadFile(rendererPath);
     // `npm run dev` touches this stamp after each renderer rebuild.
     if (!app.isPackaged && process.env.HARBOR_DEV_RELOAD)
@@ -1703,6 +1708,10 @@ app
       // Network failures preserve the saved session so renewal can be retried.
     } finally {
       authTransition = false;
+      if (restoringSession) {
+        restoringSession = false;
+        if (!accountReady) window.webContents.send('harbor:signed-out', signedOutReason);
+      }
     }
   })
   .catch((error) => {

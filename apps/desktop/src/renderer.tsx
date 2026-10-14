@@ -37,6 +37,7 @@ import {
   Search,
   Check,
   ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import {
   FileCollection,
@@ -585,7 +586,9 @@ function App() {
     const signedOut = bridge.onSignedOut((reason) => {
       requestId.current++;
       setStatus((previous: any) =>
-        previous ? { ...previous, signedIn: false, signedOutReason: reason } : previous,
+        previous
+          ? { ...previous, signedIn: false, restoring: false, signedOutReason: reason }
+          : previous,
       );
       setItems([]);
       setAccount(undefined);
@@ -630,6 +633,16 @@ function App() {
       </main>
     ) : (
       <WorkspaceSkeleton />
+    );
+  // A session saved in the keychain is being restored; the login page would only flash past.
+  if (!status.signedIn && status.restoring)
+    return (
+      <main className="loading-screen" aria-busy="true">
+        <BrandLogo />
+        <p role="status">
+          <Loader2 className="spin" size={16} aria-hidden="true" /> Signing you in…
+        </p>
+      </main>
     );
   if (!status.signedIn)
     return (
