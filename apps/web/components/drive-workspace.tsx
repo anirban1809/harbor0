@@ -1388,6 +1388,8 @@ export function DriveWorkspace({
           </div>
         )}
         {storage &&
+          // Backup and synced folders say how storage affects them in their own panel.
+          activeTab === 'Cloud' &&
           storage.quotaBytes > 0 &&
           (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.9 && (
             <Alert

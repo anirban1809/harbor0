@@ -89,7 +89,8 @@ export type LocalBackupRoot = {
 /** What the desktop app can do with a folder it backs up itself. */
 export type BackupDesktop = {
   roots: LocalBackupRoot[];
-  backup: (id: string) => Promise<{ changes: number }>;
+  // `storage`: nothing could start because the cloud storage is full (the panel says so).
+  backup: (id: string) => Promise<{ changes: number; storage?: boolean }>;
   disconnect: (id: string) => Promise<unknown>;
   archive: (id: string, archived: boolean) => Promise<unknown>;
   setPaused: (root: LocalBackupRoot, paused: boolean) => Promise<unknown>;
@@ -569,14 +570,17 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
               disabled={busy || local.paused || status.tone === 'busy' || !!local.unavailable}
               onClick={() => {
                 let changes = 0;
+                let storage = false;
                 void act(
                   async () => {
-                    ({ changes } = await desktop.backup(local.id));
+                    ({ changes, storage = false } = await desktop.backup(local.id));
                   },
                   () =>
-                    changes
-                      ? `Backing up ${count(changes, 'changed file')}.`
-                      : 'Nothing has changed since the last backup.',
+                    storage
+                      ? ''
+                      : changes
+                        ? `Backing up ${count(changes, 'changed file')}.`
+                        : 'Nothing has changed since the last backup.',
                 );
               }}
             >

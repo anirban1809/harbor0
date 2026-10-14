@@ -174,13 +174,16 @@ async function backupFolder(options: { encrypted?: boolean } = {}) {
   return { directory, journal, engine, quota, api, raw, remote, storage, keys, states };
 }
 
-it('refuses "Back up now" up front when none of the changed files fit', async () => {
+it('starts nothing on "Back up now" when none of the changed files fit, and says so on the folder', async () => {
   const { directory, journal, engine, quota } = await backupFolder();
   await quota(10);
   await writeFile(path.join(directory, 'report.pdf'), Buffer.alloc(100));
-  await expect(engine.backupNow('local')).rejects.toThrow(
-    'There is not enough cloud storage to back up the changed file.',
-  );
+  // Not an error of its own: the folder's panel says storage is full.
+  await expect(engine.backupNow('local')).resolves.toEqual({
+    queued: false,
+    changes: 1,
+    storage: true,
+  });
   expect(journal.get('backup-now:local')).toBe(false);
   // Kept on screen, not only in the refusal: the folder needs storage, and the account is full.
   expect(journal.roots()[0].backupStorage).toEqual({

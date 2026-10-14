@@ -759,9 +759,8 @@ export class SyncEngine {
           availableBytes: available!,
           files,
         });
-        throw new Error(
-          `There is not enough cloud storage to back up ${changes === 1 ? 'the changed file' : 'any of the changed files'}. They back up automatically once space is freed.`,
-        );
+        // Nothing to start: the folder's panel says why, so this isn't an error as well.
+        return { queued: false, changes, storage: true };
       }
       this.wake();
     }
