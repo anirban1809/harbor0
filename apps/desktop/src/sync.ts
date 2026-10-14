@@ -2283,17 +2283,26 @@ export class SyncEngine {
       ...(need?.requiredBytes !== undefined ? { requiredBytes: need.requiredBytes } : {}),
       at: new Date().toISOString(),
     };
-    // Earlier passes may have listed refused files one by one; one notice says it all now.
-    const before = this.state.issues.length;
-    this.state.issues = this.state.issues.filter(
+    // Earlier passes, or versions, listed refused files one by one with an error and a retry
+    // delay; they now simply wait with the rest, and one notice says why.
+    const refused = this.state.issues.filter(
       (issue) =>
-        !(
-          issue.code === 'STORAGE_QUOTA_EXCEEDED' &&
-          issue.jobId &&
-          !this.journal.roots().find((root) => root.id === issue.rootId)?.shareId
-        ),
+        issue.code === 'STORAGE_QUOTA_EXCEEDED' &&
+        issue.jobId &&
+        !this.journal.roots().find((root) => root.id === issue.rootId)?.shareId,
     );
-    if (this.state.issues.length !== before) this.persistIssues();
+    for (const issue of refused) {
+      const job = this.journal.job(issue.jobId!);
+      if (!job) continue;
+      job.error = null;
+      job.attempts = 0;
+      delete job.payload.retryAt;
+      this.journal.saveJob(job);
+    }
+    if (refused.length) {
+      this.state.issues = this.state.issues.filter((issue) => !refused.includes(issue));
+      this.persistIssues();
+    }
     this.emit();
   }
   /** Uploads refused for lack of storage try again now instead of waiting out their delay. */

@@ -27,6 +27,7 @@ import {
     syncRequirements,
     WAITING,
     CHECKING,
+    STORAGE_FULL,
     type SyncFolder,
     type SyncIssue,
     type SyncJob,
@@ -59,6 +60,7 @@ const needsAttention = (state: string) =>
         'Drive not connected',
         'Wrong drive',
         'Share unavailable',
+        STORAGE_FULL,
     ].includes(state);
 function StateIcon({ state }: { state: string; }) {
     if (state === 'Up to date') return <Check aria-hidden="true" />;

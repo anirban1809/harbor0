@@ -417,36 +417,45 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                               ? `Saved ${local.run.done.toLocaleString()} of ${local.run.total.toLocaleString()} files · ${local.progress}% complete`
                               : `Saving changed files · ${local.progress}% complete`,
                           }
-                        : latestRun?.state === 'RUNNING'
+                        : local?.backupStorage
                           ? {
-                              tone: 'busy',
-                              label: 'Backing up',
-                              detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
+                              tone: 'error',
+                              label: 'Needs storage',
+                              detail:
+                                local.backupStorage.availableBytes <= 0
+                                  ? 'Paused: your cloud storage is full.'
+                                  : `${count(local.backupStorage.files, 'file')} won’t fit in your remaining storage.`,
                             }
-                          : root.state === 'ERROR' || latestRun?.state === 'FAILED'
+                          : latestRun?.state === 'RUNNING'
                             ? {
-                                tone: 'error',
-                                label: 'Needs attention',
-                                detail: latestRun?.error
-                                  ? `The last backup didn’t finish: ${latestRun.error}`
-                                  : `The last backup didn’t finish. It will try again automatically.`,
+                                tone: 'busy',
+                                label: 'Backing up',
+                                detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
                               }
-                            : lastGoodRun
+                            : root.state === 'ERROR' || latestRun?.state === 'FAILED'
                               ? {
-                                  tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
-                                  label:
-                                    latestRun?.state === 'PARTIAL'
-                                      ? 'Some files skipped'
-                                      : 'Backed up',
-                                  detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                                  tone: 'error',
+                                  label: 'Needs attention',
+                                  detail: latestRun?.error
+                                    ? `The last backup didn’t finish: ${latestRun.error}`
+                                    : `The last backup didn’t finish. It will try again automatically.`,
                                 }
-                              : {
-                                  tone: 'ok',
-                                  label: 'Waiting',
-                                  detail: historyLoading
-                                    ? 'Checking backup status…'
-                                    : 'The first backup runs once files have been unchanged for an hour.',
-                                };
+                              : lastGoodRun
+                                ? {
+                                    tone: latestRun?.state === 'PARTIAL' ? 'error' : 'ok',
+                                    label:
+                                      latestRun?.state === 'PARTIAL'
+                                        ? 'Some files skipped'
+                                        : 'Backed up',
+                                    detail: `Last backed up ${ago(lastGoodRun.completedAt ?? lastGoodRun.startedAt)}.`,
+                                  }
+                                : {
+                                    tone: 'ok',
+                                    label: 'Waiting',
+                                    detail: historyLoading
+                                      ? 'Checking backup status…'
+                                      : 'The first backup runs once files have been unchanged for an hour.',
+                                  };
   const historyButton = (
     <Button size="sm" variant="ghost" onClick={() => setHistoryOpen(true)}>
       <History />
@@ -639,11 +648,22 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
             )
           }
         >
-          {name} needs {fileSize(local.backupStorage.requiredBytes)}, you have{' '}
-          {fileSize(local.backupStorage.availableBytes)} free.{' '}
-          {local.backupStorage.files > 0 &&
-            `${count(local.backupStorage.files, 'file')} ${local.backupStorage.files === 1 ? 'is' : 'are'} too big to fit and will back up once space is freed. `}
-          Files that fit keep backing up.
+          {local.backupStorage.availableBytes <= 0 ? (
+            // Nothing fits: say so plainly rather than counting what doesn't.
+            <>
+              Your cloud storage is full, so backing up is paused. {name} has{' '}
+              {fileSize(local.backupStorage.requiredBytes)} waiting to back up; it backs up by
+              itself once space is freed.
+            </>
+          ) : (
+            <>
+              {name} needs {fileSize(local.backupStorage.requiredBytes)}, you have{' '}
+              {fileSize(local.backupStorage.availableBytes)} free.{' '}
+              {local.backupStorage.files > 0 &&
+                `${count(local.backupStorage.files, 'file')} ${local.backupStorage.files === 1 ? 'is' : 'are'} too big to fit and will back up once space is freed. `}
+              Files that fit keep backing up.
+            </>
+          )}
         </Alert>
       )}
       {local?.lastBackupError && !local.paused && !removed && !archived && (

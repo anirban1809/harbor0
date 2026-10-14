@@ -115,6 +115,7 @@ export type SyncJob = {
   attempts: number;
 };
 export const WAITING = 'Waiting for another device';
+export const STORAGE_FULL = 'Storage full';
 // Every file has moved; what is left is confirming the copies or comparing with the cloud.
 export const CHECKING = 'Checking sync';
 // The live status knows when a check ends; the folder list is only as fresh as its last load.
@@ -134,6 +135,14 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
   if (state.paused || root.paused) return 'Paused';
   if (!state.online) return 'Offline';
   if (jobs.some((job) => job.rootId === root.id && job.error)) return 'Action required';
+  // Its uploads wait for storage; see SyncRuntime.storageFull.
+  if (
+    state.storageFull &&
+    !root.shareId &&
+    !state.active &&
+    jobs.some((job) => job.rootId === root.id)
+  )
+    return STORAGE_FULL;
   if (
     state.active?.rootId === root.id ||
     jobs.some((job) => job.rootId === root.id) ||

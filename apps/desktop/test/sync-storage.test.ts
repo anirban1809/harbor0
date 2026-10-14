@@ -3,7 +3,7 @@ import { writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { userPK, type Account } from '../../backend/src/domain';
 import { transact } from '../../backend/src/repository';
-import { storageNeed, type SyncIssue } from '../src/sync-state';
+import { folderState, storageNeed, type SyncIssue } from '../src/sync-state';
 import { storageText } from '../src/storage-text';
 import { tick, twoComputers } from './two-computers';
 
@@ -122,6 +122,14 @@ it('pauses uploads that do not fit as the account being full, keeps smaller file
   expect(first.journal.jobs()).toEqual([
     expect.objectContaining({ relativePath: 'big.bin', error: null, attempts: 0 }),
   ]);
+  // The folder says why, instead of "Action required".
+  expect(
+    folderState(
+      { ...first.root, localPathDisplayName: '', fileCount: 0, folderCount: 0 },
+      first.engine.state,
+      first.journal.jobs(),
+    ),
+  ).toBe('Storage full');
   // Later passes leave it waiting instead of being refused again.
   const request = first.api.request.bind(first.api);
   const tried: string[] = [];
@@ -169,4 +177,47 @@ it('blames the folder owner, not the user, when a shared folder owner is out of 
     'Your cloud storage is full (this file needs 200 KB). Syncing resumes once space is freed.',
   );
   expect(storageText(issue({}))).not.toMatch(/full/);
+});
+
+it('turns files an older version refused one by one into ones waiting for storage', async () => {
+  const { computers, service } = await twoComputers();
+  const [first] = computers;
+  await setQuota(service, () => 10);
+  await writeFile(path.join(first.localPath, 'a.bin'), Buffer.alloc(100));
+  first.journal.enqueue(first.root.id, 'a.bin', 'upsert', {
+    type: 'FILE',
+    sizeBytes: 100,
+    updatedAt: new Date().toISOString(),
+  });
+  // As an older version left it: an error, a retry delay and a problem of its own.
+  const [job] = first.journal.jobs();
+  first.journal.saveJob({
+    ...job,
+    error: 'There is not enough available storage.',
+    attempts: 1,
+    payload: { ...job.payload, retryAt: Date.now() + 60_000 },
+  });
+  first.engine.state.issues.push({
+    id: `job:${job.id}`,
+    rootId: first.root.id,
+    code: 'STORAGE_QUOTA_EXCEEDED',
+    relativePath: 'a.bin',
+    message: 'There is not enough available storage.',
+    jobId: job.id,
+    scope: 'item',
+    at: '',
+  });
+  await writeFile(path.join(first.localPath, 'b.bin'), Buffer.alloc(100));
+  first.journal.enqueue(first.root.id, 'b.bin', 'upsert', {
+    type: 'FILE',
+    sizeBytes: 100,
+    updatedAt: new Date().toISOString(),
+  });
+  await first.engine.tick();
+  expect(first.engine.state.storageFull).toBeDefined();
+  expect(first.engine.state.issues).toEqual([]);
+  expect(first.journal.jobs().map((j) => [j.relativePath, j.error, j.payload.retryAt])).toEqual([
+    ['a.bin', null, undefined],
+    ['b.bin', null, undefined],
+  ]);
 });
