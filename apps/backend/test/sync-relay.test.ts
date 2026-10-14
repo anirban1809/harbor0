@@ -232,7 +232,7 @@ it('reports confirmation for the authenticated installation separately from the 
   );
 });
 
-it('removes a sync folder account-wide without file deletion and rejects stale device registrations', async () => {
+it('removes a sync folder account-wide, deletes its cloud copy (devices keep theirs) and rejects stale device registrations', async () => {
   const item = await upload();
   await relay.acknowledge('alice', 'mac', item.id, {
     versionId: item.currentVersionId,
@@ -260,14 +260,44 @@ it('removes a sync folder account-wide without file deletion and rejects stale d
       operationId: randomUUID(),
     }),
   ).rejects.toMatchObject({ code: 'SYNC_REMOVED' });
-  const retained = await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id);
-  expect(retained?.deletedAt).toBeNull();
-  expect((await service.me('alice')).storage.usedBytes).toBe(before);
+  // Its size comes off the storage total at once; the files themselves go in the background.
+  expect((await service.me('alice')).storage.usedBytes).toBe(before - 5);
+  await service.runJobs();
+  expect(
+    await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id),
+  ).toBeUndefined();
+  const account = await service.account(new Transaction(repo), 'alice');
+  expect([account.storageUsedBytes, account.purgingBytes ?? 0]).toEqual([before - 5, 0]);
+  // The folder stays, empty, so a device that missed the news still learns it was removed.
+  const kept = await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + folder.id);
+  expect(kept?.syncRemovedAt).toBeTruthy();
+  await expect(service.metadata('alice', folder.id)).rejects.toMatchObject({
+    code: 'SYNC_REMOVED',
+  });
+  // Devices hear the folder was removed (and keep their files) before any file is deleted.
   const changes = (await service.changes('alice', 0, 100)).changes;
-  expect(changes.some((c) => c.type === 'SYNC_FOLDER_REMOVED' && c.entityId === folder.id)).toBe(
-    true,
+  const removed = changes.find((c) => c.type === 'SYNC_FOLDER_REMOVED' && c.entityId === folder.id);
+  const deleted = changes.filter((c) => c.type === 'FILE_DELETED');
+  expect(removed).toBeDefined();
+  expect(deleted.length).toBeGreaterThan(0);
+  expect(deleted.every((c) => c.sequence > removed!.sequence)).toBe(true);
+});
+
+it('keeps the cloud copy of a removed sync folder that is shared with someone', async () => {
+  await upload();
+  const before = (await service.me('alice')).storage.usedBytes;
+  await transact(repo, (tx) =>
+    tx.put(userPK('alice'), 'SHARE#share-1', {
+      id: 'share-1',
+      ownerUserId: 'alice',
+      recipientUserId: 'bob',
+      driveItemId: folder.id,
+      revokedAt: null,
+    }),
   );
-  expect(changes.some((c) => c.type === 'FILE_DELETED')).toBe(false);
+  await service.removeSyncFolder('alice', folder.id);
+  await service.runJobs();
+  expect((await service.me('alice')).storage.usedBytes).toBe(before);
 });
 
 it('does not remove unrelated cloud folders or another account’s folder', async () => {
@@ -313,13 +343,19 @@ it('lets the owner’s other app devices request a legacy released file', async 
     (await new Transaction(repo).get<DriveItem>(userPK('alice'), 'ITEM#' + item.id))?.cloudState,
   ).toBe('RELEASED');
   // A phone that opens the file on demand without syncing the folder.
-  await service.registerDevice('alice', { name: 'phone', platform: 'IOS', devicePublicId: 'phone' }, 'phone');
+  await service.registerDevice(
+    'alice',
+    { name: 'phone', platform: 'IOS', devicePublicId: 'phone' },
+    'phone',
+  );
   expect((await relay.requestContent('alice', 'phone', item.id)).item.cloudState).toBe('REQUESTED');
   const provided = await upload(item);
   expect(provided.cloudState).toBe('AVAILABLE');
   // Web sessions still cannot ask linked devices for content.
   await service.registerDevice('alice', { name: 'web', platform: 'WEB' }, 'web');
-  await expect(relay.requestContent('alice', 'web', item.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  await expect(relay.requestContent('alice', 'web', item.id)).rejects.toMatchObject({
+    code: 'FORBIDDEN',
+  });
 });
 it('reports the latest change position without replaying the feed', async () => {
   await upload();

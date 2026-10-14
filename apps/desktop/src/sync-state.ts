@@ -120,6 +120,16 @@ export type SyncJob = {
 };
 export const WAITING = 'Waiting for another device';
 export const STORAGE_FULL = 'Sync paused · storage full';
+export const NEEDS_STORAGE = 'Needs storage';
+/**
+ * Less free than this and the account is full: hardly any file fits (1% of the limit, at most
+ * 1 MB). With more, only files bigger than what is left wait, and the rest keep uploading.
+ */
+export const fullBelow = (quotaBytes?: number) =>
+  Math.min(1_000_000, quotaBytes ? quotaBytes / 100 : 1_000_000);
+export const storageFullNow = (state: Pick<SyncRuntime, 'storageFull' | 'storage'>) =>
+  !!state.storageFull &&
+  state.storageFull.availableBytes < fullBelow(state.storage?.quotaBytes);
 // Every file has moved; what is left is confirming the copies or comparing with the cloud.
 export const CHECKING = 'Checking sync';
 // The live status knows when a check ends; the folder list is only as fresh as its last load.
@@ -139,14 +149,16 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
   if (state.paused || root.paused) return 'Paused';
   if (!state.online) return 'Offline';
   if (jobs.some((job) => job.rootId === root.id && job.error)) return 'Action required';
-  // Its uploads wait for storage, or would: nothing new can be uploaded; see storageFull.
+  // Nothing new can be uploaded; see storageFull.
+  if (storageFullNow(state) && !root.shareId && !state.active) return STORAGE_FULL;
+  // Some waiting files are bigger than what is left; smaller ones keep uploading.
   if (
     state.storageFull &&
     !root.shareId &&
     !state.active &&
-    (state.storageFull.availableBytes <= 0 || jobs.some((job) => job.rootId === root.id))
+    jobs.some((job) => job.rootId === root.id)
   )
-    return STORAGE_FULL;
+    return NEEDS_STORAGE;
   if (
     state.active?.rootId === root.id ||
     jobs.some((job) => job.rootId === root.id) ||

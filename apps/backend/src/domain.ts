@@ -2865,6 +2865,14 @@ export class StorageService {
         });
     }
     async removeSyncFolder(userId: string, folderId: string) {
+        const deletion = new DeletionWorkflows(this);
+        const bytes = await deletion.discardable(userId, folderId);
+        const result = await this.unlinkSyncFolder(userId, folderId);
+        // Every device keeps its copy; the cloud's goes, and so does the storage it used.
+        if (bytes !== null) await deletion.discardContents(userId, folderId, bytes);
+        return result;
+    }
+    private async unlinkSyncFolder(userId: string, folderId: string) {
         return transact(this.repo, async (tx) => {
             const item = await tx.get<DriveItem>(userPK(userId), `ITEM#${folderId}`);
             assert(

@@ -28,6 +28,8 @@ import {
     WAITING,
     CHECKING,
     STORAGE_FULL,
+    NEEDS_STORAGE,
+    storageFullNow,
     type SyncFolder,
     type SyncIssue,
     type SyncJob,
@@ -61,6 +63,7 @@ const needsAttention = (state: string) =>
         'Wrong drive',
         'Share unavailable',
         STORAGE_FULL,
+        NEEDS_STORAGE,
     ].includes(state);
 function StateIcon({ state }: { state: string; }) {
     if (state === 'Up to date') return <Check aria-hidden="true" />;
@@ -150,21 +153,27 @@ const issueText: Record<SyncIssue['code'], string> = {
 /** The account's storage is full: uploads wait, and say why, until space is freed. */
 export function StorageFullNotice({
     full,
+    isFull,
     storage,
 }: {
     full: NonNullable<SyncRuntime['storageFull']>;
+    // Hardly anything fits; otherwise only files bigger than what is left wait.
+    isFull: boolean;
     storage: () => void;
 }) {
     return (
         <article className="sync-problem" role="status">
             <AlertCircle size={16} aria-hidden="true" />
             <div>
-                <h3>Your cloud storage is full</h3>
+                <h3>
+                    {isFull
+                        ? 'Your cloud storage is full'
+                        : 'Some files don’t fit in your remaining storage'}
+                </h3>
                 <p>
-                    {full.availableBytes > 0
-                        ? `Only ${storageSize(full.availableBytes)} is left, so files bigger than that aren’t uploaded.`
-                        : 'New and changed files aren’t uploaded until you free up space or get more storage.'}{' '}
-                    Everything else keeps syncing, and uploads resume by themselves once there’s room.
+                    {isFull
+                        ? 'New and changed files aren’t uploaded until you free up space or get more storage. Everything else keeps syncing, and uploads resume by themselves once there’s room.'
+                        : `${storageSize(full.availableBytes)} is left, so files bigger than that wait. Smaller files keep syncing, and the rest upload once there’s room.`}
                 </p>
                 <div className="sync-problem-actions">
                     <Button variant="outline" size="sm" onClick={storage}>
@@ -413,14 +422,14 @@ export function StopSyncDialog({
             description={
                 root.shareId
                     ? 'This shared folder will stop syncing on this computer. Your local files will stay where they are.'
-                    : 'This folder will stop syncing on all linked devices and disappear from the app. Your local files will stay where they are.'
+                    : 'This folder will stop syncing on all linked devices and its copy in the cloud will be deleted, freeing the storage it uses. Your local files will stay where they are.'
             }
         >
             <div className="sync-dialog">
                 <p>
                     {root.shareId
                         ? 'Other devices and the owner’s folder are unaffected. You can link this folder again from Shared with you.'
-                        : 'Local folders and their contents are preserved on every device. Offline devices will stop syncing this folder when they reconnect.'}
+                        : 'Local folders and their contents are preserved on every device. Offline devices will stop syncing this folder when they reconnect. If you share this folder, its cloud copy is kept.'}
                 </p>
                 {error && <Alert tone="error">{error}</Alert>}
                 <DialogActions>
@@ -784,7 +793,11 @@ export function SyncFolderPanel({
             {(issues.length > 0 || (state.storageFull && !root.shareId)) && (
                 <section className="sync-problems" aria-label="Needs attention">
                     {state.storageFull && !root.shareId && (
-                        <StorageFullNotice full={state.storageFull} storage={manageStorage} />
+                        <StorageFullNotice
+                            full={state.storageFull}
+                            isFull={storageFullNow(state)}
+                            storage={manageStorage}
+                        />
                     )}
                     {issues.map((issue) => (
                         <SyncProblem

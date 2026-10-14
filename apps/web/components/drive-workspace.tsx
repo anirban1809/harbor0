@@ -1096,7 +1096,9 @@ export function DriveWorkspace({
         const removed = new Set(targets.map((item) => item.id));
         setItems((previous) => previous.filter((item) => !removed.has(item.id)));
         setSyncedFolders((previous) => previous.filter((item) => !removed.has(item.id)));
-        setNotice('Folder removed from sync. Local files are preserved on every device.');
+        setNotice(
+          'Folder removed from sync. Its cloud copy is being deleted; local files stay on every device.',
+        );
       } else
         setNotice(
           mode === 'send'
@@ -1854,7 +1856,7 @@ export function DriveWorkspace({
             modal?.mode === 'disconnect-backup'
               ? 'Stop backing up this folder. All archived files and versions will remain in Cloud and become editable. Local files stay where they are.'
               : modal?.mode === 'remove-sync'
-                ? 'Stop syncing on all linked devices and remove this folder from the app. Local folders and files will stay where they are. Offline devices will stop syncing when they reconnect.'
+                ? 'Stop syncing on all linked devices and delete the folder’s copy in the cloud, freeing the storage it uses. Local folders and files stay where they are on every device. Offline devices stop syncing when they reconnect. A folder you share keeps its cloud copy.'
                 : modal?.mode === 'trash'
                   ? `You can restore ${modal.items.length === 1 ? 'this item' : 'these items'} from Trash.`
                   : modal?.mode === 'send'

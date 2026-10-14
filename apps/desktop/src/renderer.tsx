@@ -82,6 +82,7 @@ import { AddSyncFolderDialog, OpenFolderProgress, SyncFolderPanel } from './sync
 import {
   CHECKING,
   folderState,
+  storageFullNow,
   syncRequirements,
   type SyncFolder,
   type SyncIssue,
@@ -870,7 +871,7 @@ function App() {
           ? sync.active.relativePath
           : undefined,
       checking: sync?.checking?.[root.id],
-      storageFull: (sync?.storageFull?.availableBytes ?? 1) <= 0,
+      storageFull: !!sync && storageFullNow(sync),
       restoring: restoreShown(sync?.restoring?.[root.id]),
       restored: sync?.restored?.[root.id],
       unavailable: unavailable(root),
@@ -1000,7 +1001,12 @@ function App() {
           : sync.storageFull
             ? {
                 // One reason for every upload waiting, synced or backed up.
-                activity: { tone: 'error', label: 'Storage full · uploads paused' },
+                activity: {
+                  tone: 'error',
+                  label: storageFullNow(sync)
+                    ? 'Storage full · uploads paused'
+                    : 'Some files need more storage',
+                },
                 open: () => setSection('Storage'),
               }
             : problems

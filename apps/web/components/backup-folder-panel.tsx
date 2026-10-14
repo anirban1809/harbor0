@@ -424,11 +424,11 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                           ? {
                               tone: 'error',
                               label:
-                                local.storageFull || local.backupStorage!.availableBytes <= 0
+                                local.storageFull || local.backupStorage!.availableBytes < 1_000_000
                                   ? 'Backup paused · storage full'
                                   : 'Needs storage',
                               detail:
-                                local.storageFull || local.backupStorage!.availableBytes <= 0
+                                local.storageFull || local.backupStorage!.availableBytes < 1_000_000
                                   ? 'New and changed files back up once space is freed.'
                                   : `${count(local.backupStorage!.files, 'file')} won’t fit in your remaining storage.`,
                             }
@@ -657,7 +657,7 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
             )
           }
         >
-          {local.backupStorage.availableBytes <= 0 ? (
+          {local.backupStorage.availableBytes < 1_000_000 ? (
             // Nothing fits: say so plainly rather than counting what doesn't.
             <>
               Your cloud storage is full, so backing up is paused. {name} has{' '}

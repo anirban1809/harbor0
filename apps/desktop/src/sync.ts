@@ -11,7 +11,9 @@ import { SyncReceipts } from './sync-receipts';
 import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
+  fullBelow,
   stickyIssue,
+  storageFullNow,
   storageNeed,
   syncIssueCode,
   type SyncRuntime,
@@ -2149,7 +2151,9 @@ export class SyncEngine {
         .roots()
         .find((r) => r.mode === 'backup' && !r.paused && this.backups.run(r.id));
       this.state.message = this.state.storageFull
-        ? 'Storage full · uploads paused'
+        ? storageFullNow(this.state)
+          ? 'Storage full · uploads paused'
+          : 'Some files need more storage'
         : this.state.confirmationPendingRoots.length
           ? 'Files transferred; waiting for backend confirmation'
           : backingUp
@@ -2300,9 +2304,9 @@ export class SyncEngine {
     if (!storage) return;
     this.state.storage = storage;
     this.state.storageAt = Date.now();
-    if (storage.availableBytes <= 0) {
-      if (!this.state.storageFull || this.state.storageFull.availableBytes > 0)
-        this.storageIsFull({ availableBytes: 0 });
+    if (storage.availableBytes < fullBelow(storage.quotaBytes)) {
+      if (!storageFullNow(this.state))
+        this.storageIsFull({ availableBytes: storage.availableBytes });
     } else if (
       this.state.storageFull &&
       storage.availableBytes > this.state.storageFull.availableBytes
@@ -2321,7 +2325,9 @@ export class SyncEngine {
       ...(need?.requiredBytes !== undefined ? { requiredBytes: need.requiredBytes } : {}),
       at: new Date().toISOString(),
     };
-    this.state.message = 'Storage full · uploads paused';
+    this.state.message = storageFullNow(this.state)
+      ? 'Storage full · uploads paused'
+      : 'Some files need more storage';
     // Earlier passes, or versions, listed refused files one by one with an error and a retry
     // delay; they now simply wait with the rest, and one notice says why.
     const refused = this.state.issues.filter(

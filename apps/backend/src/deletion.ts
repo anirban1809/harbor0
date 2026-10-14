@@ -1,15 +1,23 @@
 import { assertBackupMutable } from './backup-policy';
-import type { DriveItem, FileVersion } from '@harbor/contracts';
+import type { DriveItem, FileVersion, ShareGrant } from '@harbor/contracts';
 import { emptied, StorageService, userPK, type Account } from './domain';
 import { transact, type Transaction } from './repository';
 import { assert } from './errors';
+import { UsageService } from './usage';
+
 type PurgingItem = DriveItem & { purging?: boolean };
 type Work = { itemId: string; phase: 'CHILDREN' | 'VERSIONS'; cursor?: string };
 /**
  * `budget` is the part of the item's bytes already taken out of `storageUsedBytes` (moved to
  * `purgingBytes`) when it was emptied or permanently deleted; the purge draws it down.
  */
-type PurgeMeta = { userId: string; id: string; budget?: number };
+type PurgeMeta = {
+  userId: string;
+  id: string;
+  budget?: number;
+  // Only the item's contents go; the item stays (a folder removed from sync everywhere).
+  keepRoot?: boolean;
+};
 /** Bytes counted so far for a trashed item; `deletedAt` ties it to one stay in the trash. */
 type TrashSize = { deletedAt: string; bytes: number };
 const sizeKey = (id: string) => `TRASHSIZE#${id}`;
@@ -203,6 +211,74 @@ export class DeletionWorkflows {
     }
     return false;
   }
+  /**
+   * A folder removed from sync on every device: each device keeps its own copy, so its files
+   * leave the cloud. The folder stays, empty, so devices still learn it was removed and keep
+   * their local files. Its size comes off the storage total now; the files go in the background.
+   * A folder shared with someone, or holding something shared, keeps its contents.
+   */
+  async discardContents(userId: string, folderId: string, bytes: number) {
+    const s = this.service;
+    await transact(s.repo, async (tx) => {
+      // Removed once already: its contents are on their way out.
+      if (await tx.get(`PURGE#${folderId}`, 'META')) return;
+      const account = await s.account(tx, userId);
+      account.storageUsedBytes -= bytes;
+      account.purgingBytes = (account.purgingBytes ?? 0) + bytes;
+      await s.storageAlert(tx, account);
+      await tx.put(userPK(userId), 'PROFILE', account);
+      await tx.put(`PURGE#${folderId}`, 'META', {
+        userId,
+        id: folderId,
+        budget: bytes,
+        keepRoot: true,
+      } satisfies PurgeMeta);
+      await tx.put(`PURGE#${folderId}`, `WORK#${folderId}`, {
+        itemId: folderId,
+        phase: 'CHILDREN',
+      } satisfies Work);
+      await s.job(tx, {
+        id: `purge-${folderId}`,
+        type: 'PERMANENT_DELETE',
+        entityId: folderId,
+        userId,
+        dueAt: new Date().toISOString(),
+        attempts: 0,
+      });
+      // Signed-in apps read the storage total again.
+      await s.record(tx, userId, 'PROFILE_UPDATED', userId);
+    });
+  }
+  /**
+   * What discarding a folder's contents frees, measured while it is still synced; null when
+   * the folder, or anything in it, is shared and its contents stay.
+   */
+  async discardable(userId: string, folderId: string) {
+    if (await this.sharedWithin(userId, folderId)) return null;
+    const [measured] = (await new UsageService(this.service).usage(userId, [folderId])).items;
+    return measured?.bytes ?? 0;
+  }
+  /** Whether the folder, or anything in it, is shared with someone right now. */
+  private async sharedWithin(userId: string, folderId: string) {
+    const repo = this.service.repo;
+    let cursor: string | undefined;
+    do {
+      const page = await repo.query(userPK(userId), 'SHARE#', 100, cursor);
+      for (const row of page.rows) {
+        const share = row.data as ShareGrant;
+        if (share.revokedAt) continue;
+        let id: string | null | undefined = share.driveItemId;
+        for (let depth = 0; id && depth < 40; depth++) {
+          if (id === folderId) return true;
+          id = ((await repo.get({ pk: userPK(userId), sk: `ITEM#${id}` }))?.data as
+            | DriveItem
+            | undefined)?.parentId;
+        }
+      }
+      cursor = page.cursor ?? undefined;
+    } while (cursor);
+    return false;
+  }
   /** Queues the background pass that detaches every emptied item, restarting any pass under way. */
   async scheduleEmpty(tx: Transaction, userId: string) {
     await tx.put(userPK(userId), 'TRASH_EMPTY', { cursor: null });
@@ -250,6 +326,9 @@ export class DeletionWorkflows {
     const s = this.service;
     let cursor: string | undefined;
     let progressed = false;
+    const keepRoot = !!(
+      (await s.repo.get({ pk: `PURGE#${id}`, sk: 'META' }))?.data as PurgeMeta | undefined
+    )?.keepRoot;
     while (Date.now() < until) {
       const page = await s.repo.query(`PURGE#${id}`, 'WORK#', 1, cursor);
       if (!page.rows.length && !cursor) {
@@ -275,7 +354,8 @@ export class DeletionWorkflows {
         }
         await assertBackupMutable(tx, userId, item.id, true);
         await s.account(tx, userId);
-        if (!item.purging) {
+        const kept = keepRoot && item.id === id;
+        if (!item.purging && !kept) {
           item.purging = true;
           await tx.put(userPK(userId), `ITEM#${item.id}`, item);
         }
@@ -339,6 +419,10 @@ export class DeletionWorkflows {
         }
         if (retained) return true;
         if (versions.cursor) return;
+        if (kept) {
+          await tx.delete(`PURGE#${id}`, key);
+          return;
+        }
         if (!item.deletedAt)
           await s.reserveName(tx, { ...item, deletedAt: new Date().toISOString() }, item);
         // A descendant trashed on its own goes with this item, so its own size no longer applies.

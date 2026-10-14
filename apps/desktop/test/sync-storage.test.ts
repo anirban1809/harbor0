@@ -92,7 +92,7 @@ it('frees the reserved storage of unfinished uploads when their folder stops syn
   await vi.waitFor(async () => expect((await cloud.me()).storage.reservedBytes).toBe(0));
 });
 
-it('pauses uploads that do not fit as the account being full, keeps smaller files syncing, and resumes once storage is freed', async () => {
+it('holds files too big for what is left without calling storage full, keeps smaller files syncing, and resumes once storage is freed', async () => {
   const { computers, cloud, folder, service } = await twoComputers();
   const [first] = computers;
   await setQuota(service, () => 1000);
@@ -118,18 +118,19 @@ it('pauses uploads that do not fit as the account being full, keeps smaller file
     requiredBytes: 2000,
   });
   expect(first.engine.state.issues).toEqual([]);
-  expect(first.engine.state.message).toBe('Storage full · uploads paused');
+  // Room is left, so this is not "full": only the file that doesn't fit waits.
+  expect(first.engine.state.message).toBe('Some files need more storage');
   expect(first.journal.jobs()).toEqual([
     expect.objectContaining({ relativePath: 'big.bin', error: null, attempts: 0 }),
   ]);
-  // The folder says why, instead of "Action required".
+  // The folder says why, instead of "Action required" or "full".
   expect(
     folderState(
       { ...first.root, localPathDisplayName: '', fileCount: 0, folderCount: 0 },
       first.engine.state,
       first.journal.jobs(),
     ),
-  ).toBe('Sync paused · storage full');
+  ).toBe('Needs storage');
   // Later passes leave it waiting instead of being refused again.
   const request = first.api.request.bind(first.api);
   const tried: string[] = [];
