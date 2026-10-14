@@ -62,12 +62,17 @@ export type SyncRuntime = {
   active: SyncProgress | null;
   // Percent complete of the sync or backup under way, by root id; absent when idle.
   progress?: Record<string, number>;
+  // By root: the files saved so far in the backup run under way, of all those in it.
+  backupRuns?: Record<string, { done: number; total: number }>;
   issues: SyncIssue[];
   recent: SyncActivityItem[];
   // The local change ledger by root id: a folder is up to date only when nothing is pending.
   changes?: Record<string, import('./journal').ChangeSummary>;
   // Folders whose contents are still being compared with the cloud.
   reconciling?: string[];
+  // By root: a folder being looked through before its files can be saved. `found` counts the
+  // files seen so far; while a backup gets its run ready, `checked` of `found` are done.
+  checking?: Record<string, { found: number; checked?: number }>;
   // By root: subfolders the last scan could not read, so nothing in them syncs.
   unreadable?: Record<string, string[]>;
 };

@@ -123,6 +123,8 @@ const request = (path: string, method = 'GET', body?: unknown) =>
   bridge.request({ path, method, body });
 const appearanceRequest: Transport = (path, init) => request(path, init?.method, init?.body);
 const backupApi = new ApiClient(appearanceRequest);
+// Reloads caused by live updates and new sync activity are at least this far apart.
+const LIVE_REFRESH_MS = 5000;
 // Bytes read per request when decrypting a preview; previewRange allows up to 16 MiB.
 const PREVIEW_READ_BYTES = 8 * 1024 * 1024;
 const loadPreview: PreviewLoader = async (item, signal) => {
@@ -239,6 +241,8 @@ function App() {
   const [flags, setFlags] = useState<Record<string, boolean>>();
   const [query, setQuery] = useState('');
   const [driveRevision, setDriveRevision] = useState(0);
+  // The latest sync activity the open folder's listing has been reloaded for; see refreshSoon.
+  const [activityKey, setActivityKey] = useState('');
   const trailId = trail.at(-1)?.id ?? null;
   // The sync status lists pending items for the open folder only.
   useEffect(() => {
@@ -504,7 +508,22 @@ function App() {
     let loadedAt = Date.now();
     const refresh = () => {
       loadedAt = Date.now();
+      setActivityKey(latestActivity.current ?? '');
       void load().catch(() => {});
+    };
+    // Every saved file brings a live update and an activity entry. Reloading for each one spent
+    // as many requests as the uploads themselves and ran into the rate limit, so live reloads
+    // wait for each other: at most one per LIVE_REFRESH_MS, the last one always made.
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshSoon = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(
+        () => {
+          refreshTimer = undefined;
+          refresh();
+        },
+        Math.max(250, loadedAt + LIVE_REFRESH_MS - Date.now()),
+      );
     };
     refresh();
     void bridge
@@ -519,9 +538,8 @@ function App() {
       live = event.connected;
       setLiveConnected(live);
       if (event.type) publishLive({ type: event.type });
-      if (event.type === 'changes') refresh();
+      if (event.type === 'changes') refreshSoon();
     });
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     const off = bridge.onStatus((next) => {
       statusVersion.current++;
       setSync(next);
@@ -544,11 +562,7 @@ function App() {
             return [...merged.values()];
           });
         }
-        if (!refreshTimer)
-          refreshTimer = setTimeout(() => {
-            refreshTimer = undefined;
-            void load().catch(() => {});
-          }, 250);
+        refreshSoon();
       }
     });
     const auth = bridge.onAuthenticated(() => {
@@ -817,6 +831,12 @@ function App() {
     roots: backupRoots.map((root) => ({
       ...root,
       progress: sync?.progress?.[root.id],
+      run: sync?.backupRuns?.[root.id],
+      uploading:
+        sync?.active?.rootId === root.id && sync.active.direction === 'upload'
+          ? sync.active.relativePath
+          : undefined,
+      checking: sync?.checking?.[root.id],
       unavailable: unavailable(root),
     })),
     backup: (id) => bridge.backupNow({ id }),
@@ -911,6 +931,10 @@ function App() {
   ];
   const problems = sync ? syncRequirements(syncRoots, sync, jobs).length : 0;
   const backupProblems = [...unavailableBackups, ...failingBackups];
+  const checking = roots
+    .map((root: SyncFolder) => ({ root, progress: sync?.checking?.[root.id] }))
+    .find((entry: { progress?: unknown }) => entry.progress) as
+    { root: SyncFolder; progress: { found: number; checked?: number } } | undefined;
   const syncing = sync
     ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')
     : [];
@@ -980,38 +1004,63 @@ function App() {
                         activity: { tone: 'paused', label: 'Offline · changes wait' },
                         open: () => openPlace('synced', status.deviceId ?? undefined),
                       }
-                    : syncing.length
+                    : checking
                       ? {
+                          // Looked through before anything is saved: show what has been found.
                           activity: {
                             tone: 'busy',
-                            label: 'Syncing…',
-                            percent: average(syncing.map((root) => sync.progress?.[root.id])),
+                            label:
+                              checking.progress.checked === undefined
+                                ? `Found ${checking.progress.found.toLocaleString()} files in ${checking.root.localPathDisplayName}…`
+                                : `Getting ${checking.root.localPathDisplayName} ready…`,
+                            percent:
+                              checking.progress.checked === undefined || !checking.progress.found
+                                ? undefined
+                                : Math.min(
+                                    99,
+                                    Math.floor(
+                                      (checking.progress.checked / checking.progress.found) * 100,
+                                    ),
+                                  ),
                           },
-                          open: () => openPlace('synced', status.deviceId ?? undefined),
+                          open: () =>
+                            openPlace(
+                              checking.root.mode === 'backup' ? 'backups' : 'synced',
+                              status.deviceId ?? undefined,
+                            ),
                         }
-                      : backingUp.length
+                      : syncing.length
                         ? {
                             activity: {
                               tone: 'busy',
-                              label:
-                                backingUp.length === 1
-                                  ? `Backing up ${backingUp[0].localPathDisplayName}…`
-                                  : `Backing up ${backingUp.length} folders…`,
-                              percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                              label: 'Syncing…',
+                              percent: average(syncing.map((root) => sync.progress?.[root.id])),
                             },
-                            open: () => openPlace('backups', status.deviceId ?? undefined),
+                            open: () => openPlace('synced', status.deviceId ?? undefined),
                           }
-                        : {
-                            activity: {
-                              tone: 'ok',
-                              label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                            },
-                            open: () =>
-                              openPlace(
-                                syncRoots.length ? 'synced' : 'backups',
-                                status.deviceId ?? undefined,
-                              ),
-                          };
+                        : backingUp.length
+                          ? {
+                              activity: {
+                                tone: 'busy',
+                                label:
+                                  backingUp.length === 1
+                                    ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                                    : `Backing up ${backingUp.length} folders…`,
+                                percent: average(backingUp.map((root) => sync.progress?.[root.id])),
+                              },
+                              open: () => openPlace('backups', status.deviceId ?? undefined),
+                            }
+                          : {
+                              activity: {
+                                tone: 'ok',
+                                label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                              },
+                              open: () =>
+                                openPlace(
+                                  syncRoots.length ? 'synced' : 'backups',
+                                  status.deviceId ?? undefined,
+                                ),
+                            };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
@@ -1221,7 +1270,7 @@ function App() {
               onClearSearch={() => setQuery('')}
               userId={status.accountId}
               storage={storage}
-              refreshKey={`${driveRevision}:${sync?.recent?.[0]?.id ?? ''}`}
+              refreshKey={`${driveRevision}:${activityKey}`}
               pendingItems={sync?.driveItems}
               localSyncDevices={Object.fromEntries(
                 status.roots

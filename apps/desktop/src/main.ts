@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { rendererRequestSchema } from './request-schema';
 import { ApiClient, ApiError, createTransport, LiveUpdates } from '@harbor/api-client';
+import { budgeted, foreground, RequestBudget } from './request-budget';
 import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { DeviceKey } from './device-key';
@@ -278,11 +279,15 @@ const session = new DesktopSession({
     }
   },
 });
+// Each attempt, retries included, waits for room under the server's request limit.
 const transport = retrying(
-  createTransport(
-    apiUrl,
-    () => session.token(),
-    () => session.refresh(),
+  budgeted(
+    createTransport(
+      apiUrl,
+      () => session.token(),
+      () => session.refresh(),
+    ),
+    new RequestBudget(),
   ),
 );
 /** This computer's copy of the account key, sealed by the OS keychain in the account's journal. */
@@ -928,8 +933,11 @@ app
         return finishSignIn(data);
       },
     );
+    // The window's own requests go ahead of background sync and backups; see RequestBudget.
     ipc('request', rendererRequestSchema, async (input) =>
-      api.request(input.path, { method: input.method, body: input.body }),
+      foreground.run(true, () =>
+        api.request(input.path, { method: input.method, body: input.body }),
+      ),
     );
     ipc('testNotification', z.undefined(), async () => {
       if (!Notification.isSupported())

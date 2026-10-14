@@ -393,11 +393,26 @@ export class SyncEngine {
   }
   /** Compare the whole folder with the journal: catches anything the watcher missed. */
   private async scanLocal(root: Root) {
-    // A folder's first look can take minutes; say so rather than "up to date".
-    if (!this.scannedAt.has(root.id) && !this.journal.pendingCount(root.id)) {
+    // A folder's first look this session can take minutes: count the files found as it goes.
+    if (this.scannedAt.has(root.id)) return this.scanLocalPass(root);
+    if (!this.journal.pendingCount(root.id))
       this.state.message = `Checking ${path.basename(root.localPath)}…`;
-      this.emit();
+    this.setChecking(root.id, { found: 0 });
+    try {
+      await this.scanLocalPass(root, (found) => this.setChecking(root.id, { found }));
+    } finally {
+      this.setChecking(root.id, undefined);
     }
+  }
+  /** A folder's progress while it is looked through; see SyncRuntime.checking. */
+  private setChecking(rootId: string, progress: { found: number; checked?: number } | undefined) {
+    const { [rootId]: _, ...rest } = this.state.checking ?? {};
+    this.state.checking = progress ? { ...rest, [rootId]: progress } : rest;
+    // Progress-only updates are throttled; the last one always goes out.
+    this.emit(!!progress);
+  }
+  private async scanLocalPass(root: Root, report?: (found: number) => void) {
+    let files = 0;
     const seen = new Set<string>();
     // Subfolders harbor0 may not read: skipped, and what was synced from them is not deleted.
     const unreadable: string[] = [];
@@ -439,11 +454,13 @@ export class SyncEngine {
           for (const [index, name] of batch.entries()) {
             const info: Stats | null = infos[index];
             if (!info) continue;
+            if (info.isFile()) files++;
             seen.add(name);
             if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
             if (info.isDirectory()) folders.push(name);
           }
         });
+        report?.(files);
         for (const name of folders) await walk(name);
       }
     };
@@ -525,6 +542,15 @@ export class SyncEngine {
     this.state.queued = this.journal.jobCount();
     this.state.waiting = [...this.waiting.values()];
     this.state.progress = this.progress();
+    this.state.backupRuns = Object.fromEntries(
+      this.journal
+        .roots()
+        .filter((root) => root.mode === 'backup')
+        .flatMap((root) => {
+          const run = this.backups.run(root.id);
+          return run?.total ? [[root.id, run]] : [];
+        }),
+    );
     this.changed({ ...this.state });
   }
   /**
@@ -1420,11 +1446,16 @@ export class SyncEngine {
                 (r, job) => this.localJob(r, job),
                 () =>
                   stopped() || (yielded = this.hurried && Date.now() - resumed >= BACKUP_YIELD_MS),
+                (checked, found) => this.setChecking(root.id, { found, checked }),
               );
             } finally {
               // Files still waiting for their quiet hour start no run; nothing is being prepared.
               if (this.state.message === preparing) this.state.message = previous;
+              if (this.state.checking?.[root.id]) this.setChecking(root.id, undefined);
             }
+            // A run with files left is work in progress: check in again promptly rather than
+            // backing off as if idle, which left a backup waiting up to a minute between turns.
+            if (yielded || this.backups.run(root.id)) active = true;
             if (yielded) continue;
           }
           const current = this.journal.roots().find((r) => r.id === root.id);

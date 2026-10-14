@@ -951,6 +951,12 @@
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
+.backup-summary-main p.backup-uploading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
 .backup-summary-title {
   display: flex;
   flex-wrap: wrap;

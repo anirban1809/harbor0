@@ -387,3 +387,30 @@ it.skipIf(globalThis.process.platform === 'win32')(
     }
   },
 );
+it('reports how many waiting files it has checked while getting a run ready', async () => {
+  for (let index = 0; index < 1200; index++)
+    journal.enqueue(root.id, `missing-${index}.txt`, 'upsert');
+  const progress: [number, number][] = [];
+  await backups.process(
+    root,
+    perform,
+    () => false,
+    (checked, total) => progress.push([checked, total]),
+  );
+  expect(progress).toEqual([
+    [500, 1200],
+    [1000, 1200],
+  ]);
+});
+it('pauses on too many requests instead of failing the file', async () => {
+  await file('old.txt', BACKUP_QUIET_MS + 5000);
+  perform.mockRejectedValueOnce(new ApiError('RATE_LIMITED', 'Too many requests.', 429));
+  await expect(process()).rejects.toMatchObject({ status: 429 });
+  const [job] = journal.jobs();
+  expect(job).toMatchObject({ error: null, attempts: 0 });
+  expect(job.payload.retryAfter).toBeUndefined();
+  expect(journal.roots()[0].lastBackupError).toBeUndefined();
+  // The same run carries on afterwards.
+  await process();
+  expect(journal.jobs()).toHaveLength(0);
+});

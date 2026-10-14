@@ -682,7 +682,10 @@ export function SyncFolderPanel({
     const label = folderState(root, state, jobs);
     const percent = label === 'Syncing' ? state.progress?.[root.id] : undefined;
     const issues = syncRequirements([root], state, jobs).filter((issue) => issue.rootId === root.id);
-    const synced = root.lastSyncedAt
+    const checking = state.checking?.[root.id];
+    const synced = checking
+        ? `Checking files · found ${checking.found.toLocaleString()} so far…`
+        : root.lastSyncedAt
         ? `Last synced ${ago(root.lastSyncedAt)}`
         : root.needsReconcile
             ? 'Preparing first sync'

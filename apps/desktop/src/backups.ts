@@ -36,6 +36,8 @@ type PendingRun = {
   // Files left for a later run because they did not fit.
   tooBig?: number;
 };
+// Waiting files checked between progress reports while a run is got ready.
+const CHECK_REPORT = 500;
 // Unreadable subfolders named in a run's error; the rest are counted.
 const UNREADABLE_NAMED = 5;
 const ARCHIVE_ATTEMPTS = 3;
@@ -169,10 +171,17 @@ export class FolderBackups {
    * Settle this folder's queue: drop entries with nothing to save (missing, excluded, or content
    * identical to the last saved version) and return the jobs due for a backup now.
    */
-  private async changed(root: Root, manual: boolean) {
+  private async changed(
+    root: Root,
+    manual: boolean,
+    onCheck?: (checked: number, total: number) => void,
+  ) {
     const ready: { id: string; size: number }[] = [];
     const checked = new Set<string>();
-    for (const job of this.journal.jobs(root.id)) {
+    const jobs = this.journal.jobs(root.id);
+    let done = 0;
+    for (const job of jobs) {
+      if (++done % CHECK_REPORT === 0) onCheck?.(done, jobs.length);
       if (this.ignored(root, job.relativePath)) {
         this.journal.drop(job.id);
         continue;
@@ -236,6 +245,8 @@ export class FolderBackups {
     root: Root,
     perform: (root: Root, job: LocalJob) => Promise<void>,
     stopped: () => boolean,
+    // While a run is got ready: how many of the waiting files have been checked.
+    onCheck?: (checked: number, total: number) => void,
   ) {
     if (!root.backupId) {
       const { items } = await this.api.request('/v1/backups');
@@ -264,7 +275,7 @@ export class FolderBackups {
     }
     if (!run) {
       const manual = !!this.journal.get(`backup-now:${root.id}`);
-      const ready = await this.changed(root, manual);
+      const ready = await this.changed(root, manual, onCheck);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
         this.storageShort(root, undefined);
@@ -407,6 +418,8 @@ export class FolderBackups {
             )
               throw error;
             if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
+            // Too many requests: the pass pauses and this file is tried again, not failed.
+            if (error instanceof ApiError && error.status === 429) throw error;
             if (job.payload.upload?.uploadId)
               await cancelUpload(this.api, job.payload.upload.uploadId);
             // The retry belongs to a new run, a different request to the server, so it needs a new

@@ -215,6 +215,35 @@ it('lists files nested too deep for harbor0 as one problem and retries them a da
   }
 });
 
+it('counts the files found while a folder is first checked, then clears the count', async () => {
+  const { local, journal, close } = await fixture();
+  const api = new ApiClient(async (endpoint) =>
+    endpoint.startsWith('/v1/sync/changes') ? { changes: [], nextCursor: 1, hasMore: false } : {},
+  );
+  const seen: (Record<string, { found: number }> | undefined)[] = [];
+  const engine = new SyncEngine(api, journal, 'device', (state) =>
+    seen.push((state as { checking?: Record<string, { found: number }> }).checking),
+  );
+  try {
+    for (let folder = 0; folder < 3; folder++) {
+      await mkdir(path.join(local, `f${folder}`));
+      for (let index = 0; index < 20; index++)
+        await writeFile(path.join(local, `f${folder}`, `${index}.txt`), 'x');
+    }
+    await engine.tick();
+    // Updates are throttled, so a quick check may show only its first count.
+    expect(seen.some((checking) => checking?.root !== undefined)).toBe(true);
+    expect(engine.state.checking?.root).toBeUndefined();
+    // The count the scan reports as it goes reaches every file.
+    let last = 0;
+    await (engine as any).scanLocalPass(journal.roots()[0], (found: number) => (last = found));
+    expect(last).toBe(60);
+  } finally {
+    await engine.stop();
+    await close();
+  }
+});
+
 it('does not mistake one missing file for a missing sync folder', () => {
   const missing = Object.assign(new Error('gone'), { code: 'ENOENT' });
   expect(syncIssueCode(missing)).toBe('FOLDER_MISSING');
