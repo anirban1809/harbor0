@@ -240,6 +240,10 @@ function App() {
   const [query, setQuery] = useState('');
   const [driveRevision, setDriveRevision] = useState(0);
   const trailId = trail.at(-1)?.id ?? null;
+  // The sync status lists pending items for the open folder only.
+  useEffect(() => {
+    void bridge.viewFolder({ id: section === 'My Drive' ? trailId : null }).catch(() => {});
+  }, [section, trailId]);
   const parentId = sync?.folderIds?.[trailId] ?? trailId;
   const localFolderPending = parentId?.startsWith('local-sync:') ?? false;
   const trashChanges = useOptimisticRemoval(

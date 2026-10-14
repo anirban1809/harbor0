@@ -37,14 +37,6 @@ export const LOCAL_SCAN_INTERVAL = 5 * 60_000;
  * a deletion and an addition, in any order); deleting the folder in the cloud first would delete
  * the file with it.
  */
-function foldersDeletedLast(jobs: LocalJob[], isFolder: (job: LocalJob) => boolean) {
-  const folders = jobs.filter((job) => job.kind === 'delete' && isFolder(job));
-  const depth = (job: LocalJob) => job.relativePath.split('/').length;
-  return [
-    ...jobs.filter((job) => !folders.includes(job)),
-    ...folders.sort((a, b) => depth(b) - depth(a)),
-  ];
-}
 // A pass waiting this long on one server request is aborted and started again.
 export const STALL_TIMEOUT = 3 * 60_000;
 // How often a folder whose drive is away looks for it mounted somewhere else.
@@ -56,6 +48,14 @@ export const NETWORK_TIMEOUT = 15_000;
 export const NETWORK_SCAN_INTERVAL = 30 * 60_000;
 // Files looked up at once while scanning, which matters most on high-latency shares.
 const SCAN_BATCH = 16;
+// While both have work, a backup run and the sync queue each run this long before the other gets a
+// turn; otherwise whichever started first would take the whole request allowance.
+const BACKUP_YIELD_MS = 15_000;
+const SYNC_SLICE_MS = 15_000;
+// Jobs read from the queue at a time.
+const QUEUE_PAGE = 500;
+// A path harbor0 never accepts (nested too deep) is retried this rarely.
+const REFUSED_PATH_RETRY_MS = 24 * 3600_000;
 // Unreadable subfolders listed as separate problems; the last one counts the rest.
 const UNREADABLE_SHOWN = 10;
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
@@ -87,6 +87,8 @@ export class SyncEngine {
   private scannedAt = new Map<string, number>();
   // By root: subfolders the last scan could not read, until a scan reads them.
   private unreadable = new Map<string, string[]>();
+  // By root: queued files refused for being nested too deep; see tooDeep.
+  private deepJobs = new Map<string, Set<string>>();
   private api: ApiClient;
   private tickController = new AbortController();
   // Start times of the server requests still waiting for an answer.
@@ -391,6 +393,11 @@ export class SyncEngine {
   }
   /** Compare the whole folder with the journal: catches anything the watcher missed. */
   private async scanLocal(root: Root) {
+    // A folder's first look can take minutes; say so rather than "up to date".
+    if (!this.scannedAt.has(root.id) && !this.journal.pendingCount(root.id)) {
+      this.state.message = `Checking ${path.basename(root.localPath)}…`;
+      this.emit();
+    }
     const seen = new Set<string>();
     // Subfolders harbor0 may not read: skipped, and what was synced from them is not deleted.
     const unreadable: string[] = [];
@@ -799,6 +806,51 @@ export class SyncEngine {
     const current = this.journal.roots().find((item) => item.id === root.id);
     if (current && !current.needsReconcile) this.journal.root({ ...current, needsReconcile: true });
     this.issue(root.id, error);
+  }
+  /**
+   * The sync queue, a page at a time: deleted folders go last, deepest first, so their contents
+   * are handled before them. Jobs queued while this pass runs wait for the next.
+   */
+  private *syncQueue(rootIds: string[]) {
+    const folders: LocalJob[] = [];
+    const before = Date.now();
+    let after: { createdAt: number; id: string } | null = null;
+    for (;;) {
+      const page = this.journal.jobsPage(rootIds, after, before, QUEUE_PAGE);
+      if (!page.jobs.length) break;
+      after = page.last;
+      for (const job of page.jobs)
+        if (
+          job.kind === 'delete' &&
+          this.journal.file(job.rootId, job.relativePath)?.type === 'FOLDER'
+        )
+          folders.push(job);
+        else yield job;
+    }
+    const depth = (job: LocalJob) => job.relativePath.split('/').length;
+    yield* folders.sort((a, b) => depth(b) - depth(a));
+  }
+  /** Files nested deeper than harbor0 stores, listed as one problem per folder. */
+  private tooDeep(root: Root, job: LocalJob) {
+    const jobs = this.deepJobs.get(root.id) ?? new Set<string>();
+    jobs.add(job.id);
+    this.deepJobs.set(root.id, jobs);
+    for (const id of jobs) if (!this.journal.job(id)) jobs.delete(id);
+    const id = `${root.id}:too-deep`;
+    this.state.issues = this.state.issues.filter((issue) => issue.id !== id);
+    this.state.issues.push({
+      id,
+      rootId: root.id,
+      code: 'SYNC_ERROR',
+      scope: 'item',
+      // Kept while any of them waits; see the issue filter in runTick.
+      jobId: jobs.values().next().value,
+      relativePath: job.relativePath.split('/')[0],
+      message: `${jobs.size === 1 ? '1 item is' : `${jobs.size} items are`} inside folders nested more than 32 levels deep, which harbor0 cannot store. Move ${jobs.size === 1 ? 'it' : 'them'} to a shallower folder to sync ${jobs.size === 1 ? 'it' : 'them'}.`,
+      at: new Date().toISOString(),
+    });
+    this.persistIssues();
+    this.emit();
   }
   /** Subfolders harbor0 may not read, shown one by one; the rest of the folder still syncs. */
   private unreadableIssues(root: Root) {
@@ -1352,12 +1404,27 @@ export class SyncEngine {
           if (root.archive !== 'removing') {
             // A backup run resumes from the journal, so it pauses between files when a
             // local edit or live update arrives instead of holding up sync for the whole run.
+            // Every saved file brings a live update of its own, so it gives way at most every
+            // few seconds rather than starting a new pass after each file.
+            const previous = this.state.message;
+            const preparing = `Getting ${path.basename(root.localPath)} ready to back up…`;
+            if (!this.backups.run(root.id) && this.journal.pendingCount(root.id)) {
+              this.state.message = preparing;
+              this.emit();
+            }
             let yielded = false;
-            await this.backups.process(
-              root,
-              (r, job) => this.localJob(r, job),
-              () => stopped() || (yielded = this.hurried),
-            );
+            const resumed = Date.now();
+            try {
+              await this.backups.process(
+                root,
+                (r, job) => this.localJob(r, job),
+                () =>
+                  stopped() || (yielded = this.hurried && Date.now() - resumed >= BACKUP_YIELD_MS),
+              );
+            } finally {
+              // Files still waiting for their quiet hour start no run; nothing is being prepared.
+              if (this.state.message === preparing) this.state.message = previous;
+            }
             if (yielded) continue;
           }
           const current = this.journal.roots().find((r) => r.id === root.id);
@@ -1379,12 +1446,27 @@ export class SyncEngine {
       await this.releaseUploads();
       // Free cloud storage by folder, once an upload was refused for lack of it this pass.
       const full = new Map<string, number>();
-      for (const job of foldersDeletedLast(
-        this.journal.jobs(),
-        (job) => this.journal.file(job.rootId, job.relativePath)?.type === 'FOLDER',
-      )) {
+      // Backup jobs are saved by their runs above; a backup can queue hundreds of thousands, too
+      // many to read again on every pass.
+      const syncRoots = new Map(
+        this.journal
+          .roots()
+          .filter((r) => r.mode === 'sync')
+          .map((r) => [r.id, r]),
+      );
+      const backupsWaiting = this.journal
+        .roots()
+        .some((r) => r.mode === 'backup' && !r.paused && this.journal.pendingCount(r.id));
+      const slice = Date.now();
+      let seen = 0;
+      for (const job of this.syncQueue([...syncRoots.keys()])) {
         if (this.stopped || this.state.paused) return;
-        const root = this.journal.roots().find((r) => r.id === job.rootId);
+        // Asked to check in again with a backup waiting: give it its turn; this queue resumes after.
+        if (backupsWaiting && this.hurried && Date.now() - slice >= SYNC_SLICE_MS) break;
+        // Settings changed by this pass (pausing, exclusions) apply to the jobs after it.
+        if (++seen % QUEUE_PAGE === 0)
+          for (const r of this.journal.roots()) if (syncRoots.has(r.id)) syncRoots.set(r.id, r);
+        const root = syncRoots.get(job.rootId);
         if (
           !root ||
           root.mode === 'backup' ||
@@ -1417,6 +1499,14 @@ export class SyncEngine {
           if (this.interrupts(e)) {
             this.journal.saveJob(job);
             throw e;
+          }
+          // A path harbor0 never accepts waits a day and is listed with the others like it.
+          if (e instanceof ApiError && e.code === 'PATH_TOO_DEEP') {
+            job.payload.retryAt = Date.now() + REFUSED_PATH_RETRY_MS;
+            this.journal.saveJob(job);
+            this.tooDeep(root, job);
+            this.state.active = null;
+            continue;
           }
           // One failing file waits for its own retry; the rest of the queue keeps moving.
           job.payload.retryAt = Date.now() + retryDelay(job.attempts);
@@ -1499,9 +1589,14 @@ export class SyncEngine {
       this.state.lastSync = new Date().toISOString();
       this.journal.set('lastSync', this.state.lastSync);
       this.state.confirmationPendingRoots = this.receipts.pendingRoots();
+      const backingUp = this.journal
+        .roots()
+        .find((r) => r.mode === 'backup' && !r.paused && this.backups.run(r.id));
       this.state.message = this.state.confirmationPendingRoots.length
         ? 'Files transferred; waiting for backend confirmation'
-        : 'Everything is up to date';
+        : backingUp
+          ? `Backing up ${path.basename(backingUp.localPath)}`
+          : 'Everything is up to date';
     } catch (e) {
       if (e instanceof ApiError && e.code === 'SYNC_REMOVED') {
         const root = this.journal.roots().find((r) => r.id === this.currentRootId);
@@ -1525,12 +1620,16 @@ export class SyncEngine {
       }
       // Not reaching the server, or the server failing, is an outage for the whole pass.
       const unavailable = e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
-      if (unavailable || (e instanceof ApiError && e.status === 429))
+      // Too many requests: a short wait, not a problem to show. Large folders reach it routinely.
+      const throttled = e instanceof ApiError && e.status === 429;
+      if (unavailable || throttled)
         this.outageUntil = Date.now() + Math.min(60_000, retryDelay(++this.outages));
       this.state.online = !unavailable;
       this.state.message = unavailable
         ? 'harbor0 is unavailable right now. Sync resumes automatically.'
-        : (e as Error).message;
+        : throttled
+          ? 'harbor0 is limiting how fast this computer uploads. It continues in a moment.'
+          : (e as Error).message;
       // A pass ended by the watchdog simply starts again; there is nothing to fix.
       const restarted = this.tickController.signal.aborted;
       // An ended session returns the app to sign-in by itself; there is nothing to fix here.
@@ -1539,6 +1638,7 @@ export class SyncEngine {
         (e.status === 401 || ['AUTH_INVALID', 'DEVICE_REVOKED'].includes(e.code));
       if (
         !unavailable &&
+        !throttled &&
         !restarted &&
         !sessionEnded &&
         !(e instanceof ApiError && e.code === 'SYNC_CURSOR_EXPIRED') &&
@@ -1636,11 +1736,13 @@ export class SyncEngine {
         .filter((issue) => issue.code === 'STORAGE_QUOTA_EXCEEDED' && issue.jobId)
         .map((issue) => issue.jobId),
     );
-    for (const job of this.journal.jobs())
-      if (refused.has(job.id) && job.payload.retryAt) {
+    for (const id of refused) {
+      const job = this.journal.job(id!);
+      if (job?.payload.retryAt) {
         delete job.payload.retryAt;
         this.journal.saveJob(job);
       }
+    }
   }
   /** The job's partial upload will never complete: free the storage it reserved. */
   private abandonUpload(job: LocalJob) {
@@ -1952,10 +2054,10 @@ export class SyncEngine {
    * nothing is uploaded again, and the cloud copy never leaves, even when storage is full.
    */
   private async renamedTo(root: Root, known: LocalFile) {
-    for (const other of this.journal.jobs())
+    for (const other of this.journal.jobsOfKind(root.id, 'upsert'))
       if (
-        other.rootId === root.id &&
-        other.kind === 'upsert' &&
+        // A file seen at a different size cannot hold the same content; skip reading it.
+        (other.payload.entry?.sizeBytes ?? known.sizeBytes) === known.sizeBytes &&
         !this.journal.file(root.id, other.relativePath) &&
         (await this.sameContent(root, other.relativePath, known)) &&
         (await this.moveRemote(root, known, other.relativePath))
@@ -1966,8 +2068,7 @@ export class SyncEngine {
     return false;
   }
   private async renamedFrom(root: Root, relative: string) {
-    for (const other of this.journal.jobs()) {
-      if (other.rootId !== root.id || other.kind !== 'delete') continue;
+    for (const other of this.journal.jobsOfKind(root.id, 'delete')) {
       const known = this.journal.file(root.id, other.relativePath);
       if (known?.type !== 'FILE' || (await this.exists(root, other.relativePath))) continue;
       if (

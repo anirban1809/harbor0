@@ -347,7 +347,11 @@ it('keeps a large run in one stored list and finishes a run saved by an older ve
   expect(calls.filter((c) => c.url.endsWith('/runs')).every((c) => c.body.id === 'legacy')).toBe(
     true,
   );
-  expect(perform.mock.calls.map(([, job]) => job.relativePath)).toEqual(['one.txt', 'two.txt']);
+  // In the order the run listed them; both were queued in the same millisecond.
+  expect(perform.mock.calls.map(([, job]) => job.relativePath)).toEqual([
+    first.relativePath,
+    second.relativePath,
+  ]);
   expect(journal.get('backup-run:local')).toBeNull();
   expect(journal.get('backup-run-jobs:local')).toBeNull();
   expect(journal.jobs()).toHaveLength(0);

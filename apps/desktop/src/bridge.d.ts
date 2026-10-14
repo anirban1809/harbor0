@@ -121,6 +121,8 @@ declare global {
       openWebdavDrive: () => Promise<WebdavState>;
       disconnectWebdavDrive: () => Promise<WebdavState>;
       copyText: (input: { text: string }) => Promise<void>;
+      /** The folder the window shows, so the sync status lists only its pending items. */
+      viewFolder: (input: { id: string | null }) => Promise<void>;
       onWebdav: (callback: (state: WebdavState) => void) => () => void;
       onUpdate: (callback: (status: import('./updater').UpdateStatus) => void) => () => void;
       onStatus: (callback: (state: any) => void) => () => void;

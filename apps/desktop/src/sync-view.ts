@@ -1,13 +1,28 @@
 import path from 'node:path';
-import type { Journal } from './journal';
+import type { Journal, LocalJob } from './journal';
 import type { SyncRuntime } from './sync-state';
 import { localSyncId, type SyncDriveItem } from './sync-drive';
 
-// A local projection only: unfinished files are never published as cloud files.
-export function syncView(journal: Journal, state: SyncRuntime) {
+/**
+ * A local projection only: unfinished files are never published as cloud files. `view` is the
+ * folder the window shows (a cloud folder ID or a local-sync ID; null for none): only its pending
+ * items are listed, read without loading the whole queue. Without it, every folder's are.
+ */
+export function syncView(journal: Journal, state: SyncRuntime, view?: string | null) {
+  const viewing = view !== undefined;
   const driveItems = new Map<string, SyncDriveItem>();
   const folderIds: Record<string, string> = {};
   for (const root of journal.roots().filter((root) => root.mode === 'sync' && root.remoteId)) {
+    // Where the viewed folder is in this root: '' for its top, 'a/b/' for a subfolder.
+    let prefix: string | undefined;
+    if (viewing && view) {
+      const local = localSyncId(root.id, '');
+      const known = view.startsWith(local) ? undefined : journal.fileByItem(root.id, view);
+      if (view === root.remoteId) prefix = '';
+      else if (view.startsWith(local)) prefix = decodeURIComponent(view.slice(local.length)) + '/';
+      else if (known?.type === 'FOLDER') prefix = known.relativePath + '/';
+    }
+    if (viewing && prefix === undefined) continue;
     const known = new Map(journal.folders(root.id).map((file) => [file.relativePath, file]));
     for (const file of known.values())
       if (file.type === 'FOLDER') folderIds[localSyncId(root.id, file.relativePath)] = file.itemId;
@@ -16,15 +31,25 @@ export function syncView(journal: Journal, state: SyncRuntime) {
         ? root.remoteId!
         : (known.get(relative)?.itemId ?? localSyncId(root.id, relative));
     // Backup folders show no pending files, so their queue, often the largest, is never read.
-    const rootJobs = journal
-      .jobs(root.id)
-      .filter(
-        (job) =>
-          !root.excluded.some(
-            (excluded) =>
-              job.relativePath === excluded || job.relativePath.startsWith(excluded + '/'),
-          ),
-      );
+    let queued: LocalJob[];
+    if (prefix === undefined) queued = journal.jobs(root.id);
+    else {
+      const { direct, deeper } = journal.pendingChildren(root.id, prefix);
+      // The file being uploaded marks the subfolder it is in as syncing.
+      const active = state.active?.rootId === root.id ? state.active.relativePath : undefined;
+      const current =
+        active?.startsWith(prefix) && journal.pendingJob(root.id, active, 'upsert')?.id;
+      queued = [...new Set([...direct, ...deeper, ...(current ? [current] : [])])]
+        .map((id) => journal.job(id))
+        .filter((job): job is LocalJob => !!job);
+    }
+    const rootJobs = queued.filter(
+      (job) =>
+        !root.excluded.some(
+          (excluded) =>
+            job.relativePath === excluded || job.relativePath.startsWith(excluded + '/'),
+        ),
+    );
     for (const job of rootJobs) {
       if (job.kind === 'delete') continue;
       const tracked = journal.file(root.id, job.relativePath);
@@ -114,12 +139,16 @@ export function syncView(journal: Journal, state: SyncRuntime) {
       });
     }
   }
+  // A viewed folder's own items; the walk above also passes through the folders around them.
+  const shown = viewing ? (view ? (folderIds[view] ?? view) : null) : undefined;
   return {
     ...state,
     // Enough to tell which folders are busy or failing; the full queue can be enormous.
     jobs: journal.jobSummary(),
-    driveItems: [...driveItems.values()],
-    folderIds,
+    driveItems: [...driveItems.values()].filter(
+      (item) => shown === undefined || item.parentId === shown,
+    ),
+    folderIds: viewing ? (view && folderIds[view] ? { [view]: folderIds[view] } : {}) : folderIds,
     changes: Object.fromEntries(journal.changeSummaries()),
     // Live, unlike the folder list the page loaded earlier.
     reconciling: journal

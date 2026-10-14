@@ -356,8 +356,10 @@ const davDriveItems = (): SyncDriveItem[] =>
 /** Files this app is uploading, which the WebDAV server lists until they land. */
 const appUploads = new Map<string, AppUpload>();
 const sendAppUploads = () => webdav.appUploads([...appUploads.values()]);
+// The folder the window shows, whose pending sync items the status lists; null for none.
+let visibleFolder: string | null = null;
 const statusView = (activeJournal: Journal, state: SyncRuntime) => {
-  const view = syncView(activeJournal, state);
+  const view = syncView(activeJournal, state, visibleFolder);
   return {
     ...view,
     driveItems: [...view.driveItems, ...davDriveItems()],
@@ -1570,6 +1572,15 @@ app
       await webdavTask(disconnectWebdav);
       return webdavView();
     });
+    ipc(
+      'viewFolder',
+      z.object({ id: z.string().max(2000).nullable() }).strict(),
+      async ({ id }) => {
+        if (id === visibleFolder) return;
+        visibleFolder = id;
+        if (engine && accountReady) sendEngineStatus(journal, engine.state);
+      },
+    );
     ipc('copyText', z.object({ text: z.string().max(10_000) }).strict(), async ({ text }) => {
       clipboard.writeText(text);
     });

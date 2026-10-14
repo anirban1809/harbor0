@@ -140,6 +140,15 @@ it('lists only the items directly inside a folder', () => {
 it('finds one queued job by id or path and summarizes a large queue for the window', () => {
   const journal = new Journal(':memory:');
   try {
+    for (const id of ['one', 'two'])
+      journal.root({
+        id,
+        localPath: `/${id}`,
+        remoteId: id,
+        mode: 'sync',
+        paused: false,
+        excluded: [],
+      });
     const id = journal.enqueue('one', 'a.txt', 'upsert');
     journal.enqueue('one', 'b.txt', 'upsert');
     journal.enqueue('two', 'c.txt', 'delete');
@@ -184,3 +193,32 @@ it('queues a hundred thousand files in seconds, not hours', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('reads the queue a page at a time and leaves out jobs queued after the pass began', () => {
+  const journal = new Journal(':memory:');
+  try {
+    for (let index = 0; index < 7; index++) journal.enqueue('one', `f${index}`, 'upsert');
+    journal.enqueue('two', 'other', 'upsert');
+    const before = Date.now();
+    const seen: string[] = [];
+    let after: { createdAt: number; id: string } | null = null;
+    for (;;) {
+      const page = journal.jobsPage(['one'], after, before, 3);
+      if (!page.jobs.length) break;
+      expect(page.jobs.length).toBeLessThanOrEqual(3);
+      seen.push(...page.jobs.map((job) => job.relativePath));
+      after = page.last;
+      // Queued during the pass: it waits for the next one.
+      journal.enqueue('one', `late${seen.length}`, 'upsert');
+      const db = (journal as any).db;
+      db.prepare('UPDATE jobs SET created_at=? WHERE relative_path LIKE ?').run(
+        before + 1,
+        'late%',
+      );
+    }
+    expect(seen.sort()).toEqual(['f0', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6']);
+    expect(journal.jobsOfKind('one', 'upsert')).toHaveLength(10);
+  } finally {
+    journal.close();
+  }
+});

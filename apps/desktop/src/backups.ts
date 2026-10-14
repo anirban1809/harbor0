@@ -5,7 +5,14 @@ import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
 import { isEncryptedName, type DriveItem } from '@harbor/contracts';
-import { contained, internalPath, metadataSegment, safeParents, safeSegment } from './paths';
+import {
+  contained,
+  internalPath,
+  metadataSegment,
+  safeParents,
+  safeSegment,
+  verifyParents,
+} from './paths';
 import { cancelUpload, downloadFile, hashFile, uploadFile, type UploadState } from './transfers';
 import { fileSize } from '../../web/lib/file-metadata';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
@@ -57,6 +64,7 @@ function refused(error: unknown) {
 export type BackupConversion = { form: () => 'encrypted' | 'plain' | null; raw: ApiClient };
 export class FolderBackups {
   private nextRestoreCheck = new Map<string, number>();
+  private runJobs = new Map<string, { id: string; jobs: string[] }>();
   conversion?: BackupConversion;
   constructor(
     private api: ApiClient,
@@ -163,6 +171,7 @@ export class FolderBackups {
    */
   private async changed(root: Root, manual: boolean) {
     const ready: { id: string; size: number }[] = [];
+    const checked = new Set<string>();
     for (const job of this.journal.jobs(root.id)) {
       if (this.ignored(root, job.relativePath)) {
         this.journal.drop(job.id);
@@ -172,7 +181,7 @@ export class FolderBackups {
       const filename = contained(root.localPath, job.relativePath);
       let info;
       try {
-        await safeParents(root.localPath, job.relativePath, false);
+        await verifyParents(root.localPath, job.relativePath, checked);
         info = await lstat(filename);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -313,7 +322,13 @@ export class FolderBackups {
       if (skipped && current && !current.lastBackupError)
         this.journal.root({ ...current, lastBackupError: skipped });
     }
-    const runJobs = this.journal.get<string[]>(jobsKey) ?? [];
+    // A run's list is read once; with a hundred thousand files it is megabytes of JSON.
+    let cached = this.runJobs.get(root.id);
+    if (cached?.id !== run.id) {
+      cached = { id: run.id, jobs: this.journal.get<string[]>(jobsKey) ?? [] };
+      this.runJobs.set(root.id, cached);
+    }
+    const runJobs = cached.jobs;
     await this.api.request(`${url}/runs`, {
       method: 'POST',
       body: { id: run.id, trigger: run.trigger },
@@ -398,7 +413,10 @@ export class FolderBackups {
             // operation ID even when no upload was recorded: one may have been made unseen.
             if (job.payload.upload) job.payload.upload = { operationId: crypto.randomUUID() };
             job.attempts++;
-            job.payload.retryAfter = Date.now() + 60000;
+            // A path harbor0 never accepts waits a day; retrying each minute cannot help.
+            job.payload.retryAfter =
+              Date.now() +
+              (error instanceof ApiError && error.code === 'PATH_TOO_DEEP' ? 24 * 3600_000 : 60000);
             job.error = (error as Error).message;
             this.journal.saveJob(job);
             if (error instanceof ApiError && error.code === 'STORAGE_QUOTA_EXCEEDED') {

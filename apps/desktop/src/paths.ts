@@ -98,6 +98,25 @@ export async function safeParents(root: string, relative: string, create = true)
   }
   return target;
 }
+/**
+ * safeParents for checking without creating: each folder above `relative` must be a real
+ * directory. Folders in `checked` passed earlier in the same pass and are not looked at again,
+ * so checking a queue of many files in few folders costs one look per folder, not per file.
+ */
+export async function verifyParents(root: string, relative: string, checked: Set<string>) {
+  const look = async (directory: string, message: string) => {
+    if (checked.has(directory)) return;
+    const stat = await lstat(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(message);
+    checked.add(directory);
+  };
+  await look(root, 'The selected folder must be a real directory.');
+  let current = root;
+  for (const piece of relative.split('/').slice(0, -1)) {
+    current = contained(current, piece);
+    await look(current, 'A symbolic link or file blocks this destination.');
+  }
+}
 export function conflictName(name: string, device: string, operationId: string) {
   const ext = path.extname(name);
   const label =

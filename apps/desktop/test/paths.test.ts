@@ -9,6 +9,7 @@ import {
   safeSegment,
   safeParents,
   conflictName,
+  verifyParents,
 } from '../src/paths';
 it('blocks path escapes and adapts unsafe Windows names deterministically', () => {
   expect(() => contained('/tmp/root', '../../outside')).toThrow();
@@ -58,4 +59,24 @@ it('treats OS metadata files as internal at any depth without hiding ordinary do
   expect(internalPath('.Spotlight-V100/Store-V2/index')).toBe(true);
   for (const name of ['.gitignore', '.env', 'a/DS_Store.txt', 'thumbs.db.bak', 'notes.txt'])
     expect(internalPath(name)).toBe(false);
+});
+
+it('checks each parent folder once per pass and still refuses a symlinked one', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'harbor-parents-'));
+  try {
+    await mkdir(path.join(root, 'real', 'deeper'), { recursive: true });
+    await mkdir(path.join(root, 'outside'));
+    await symlink(path.join(root, 'outside'), path.join(root, 'link'));
+    const checked = new Set<string>();
+    await verifyParents(root, 'real/deeper/a.txt', checked);
+    expect(checked).toEqual(
+      new Set([root, path.join(root, 'real'), path.join(root, 'real', 'deeper')]),
+    );
+    await expect(verifyParents(root, 'link/b.txt', checked)).rejects.toThrow('symbolic link');
+    await expect(verifyParents(root, 'missing/c.txt', checked)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

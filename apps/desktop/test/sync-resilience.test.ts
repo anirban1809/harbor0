@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { ApiClient } from '@harbor/api-client';
+import { ApiClient, ApiError } from '@harbor/api-client';
 import type { DriveItem } from '@harbor/contracts';
 import { Journal, type Root } from '../src/journal';
 import { SyncEngine } from '../src/sync';
@@ -177,6 +177,43 @@ it.skipIf(process.platform === 'win32')(
     }
   },
 );
+
+it('lists files nested too deep for harbor0 as one problem and retries them a day later', async () => {
+  const { local, journal, root, close } = await fixture();
+  const api = new ApiClient(async (endpoint, init) => {
+    if (endpoint.startsWith('/v1/sync/changes'))
+      return { changes: [], nextCursor: 1, hasMore: false };
+    if (init?.method === 'POST' && !endpoint.startsWith('/v1/sync/'))
+      throw new ApiError('PATH_TOO_DEEP', 'Folders can be nested up to 32 levels.', 400);
+    return {};
+  });
+  const engine = new SyncEngine(api, journal, 'device', () => {});
+  try {
+    const deep = path.join(local, 'Archive', 'a', 'b');
+    await mkdir(deep, { recursive: true });
+    for (const name of ['one.txt', 'two.txt', 'three.txt']) {
+      await writeFile(path.join(deep, name), name);
+      journal.enqueue(root.id, `Archive/a/b/${name}`, 'upsert');
+    }
+    await engine.tick();
+    const deepIssues = engine.state.issues.filter((issue) => issue.id === `${root.id}:too-deep`);
+    expect(deepIssues).toEqual([
+      expect.objectContaining({
+        relativePath: 'Archive',
+        // The three files and the three folders holding them.
+        message: expect.stringContaining('6 items are inside folders nested more than 32 levels'),
+      }),
+    ]);
+    expect(engine.state.issues.filter((issue) => issue.relativePath?.includes('/'))).toEqual([]);
+    for (const name of ['one.txt', 'two.txt', 'three.txt'])
+      expect(
+        journal.pendingJob(root.id, `Archive/a/b/${name}`, 'upsert')?.payload.retryAt,
+      ).toBeGreaterThan(Date.now() + 23 * 3600_000);
+  } finally {
+    await engine.stop();
+    await close();
+  }
+});
 
 it('does not mistake one missing file for a missing sync folder', () => {
   const missing = Object.assign(new Error('gone'), { code: 'ENOENT' });

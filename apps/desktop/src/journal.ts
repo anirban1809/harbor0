@@ -85,6 +85,8 @@ const jobFromRow = (r: JobRow): LocalJob => ({
   attempts: r.attempts,
   error: r.error,
 });
+// Pending items one folder lists; a folder with more shows the first of them.
+const PENDING_CHILDREN = 5000;
 // Failed jobs sent to the window; past this many it only needs to know there are failures.
 const JOB_SUMMARY_FAILURES = 500;
 export class Journal {
@@ -103,6 +105,10 @@ export class Journal {
  CREATE INDEX IF NOT EXISTS changes_pending ON changes(root_id,synced_at);
  CREATE INDEX IF NOT EXISTS changes_job ON changes(job_id);
  CREATE INDEX IF NOT EXISTS jobs_path ON jobs(root_id,relative_path,kind);
+ CREATE INDEX IF NOT EXISTS jobs_kind ON jobs(root_id,kind);
+ CREATE INDEX IF NOT EXISTS jobs_failed ON jobs(created_at,id) WHERE error IS NOT NULL;
+ CREATE INDEX IF NOT EXISTS changes_detected ON changes(root_id,detected_at);
+ CREATE INDEX IF NOT EXISTS files_type ON files(root_id,json_extract(data, '$.type'));
  `);
     this.db.prepare('DELETE FROM changes WHERE synced_at < ?').run(Date.now() - CHANGE_HISTORY_MS);
     // Changes whose job is gone (an older version, a crash between statements) cannot finish.
@@ -180,6 +186,27 @@ export class Journal {
   jobCount(): number {
     return (this.db.prepare('SELECT COUNT(*) AS count FROM jobs').get() as { count: number }).count;
   }
+  /**
+   * Queued uploads seen from one folder (`prefix` is '' or ends in '/'): the jobs directly in it,
+   * and one job from each subfolder holding more. A folder shows its pending children this way
+   * without reading a queue that can hold hundreds of thousands of files.
+   */
+  pendingChildren(rootId: string, prefix: string): { direct: string[]; deeper: string[] } {
+    const length = [...prefix].length;
+    const under = `SELECT id, relative_path, instr(substr(relative_path, ? + 1), '/') AS slash
+      FROM jobs WHERE root_id = ? AND kind = 'upsert' AND substr(relative_path, 1, ?) = ?`;
+    const args = [length, rootId, length, prefix];
+    const direct = this.db
+      .prepare(`SELECT id FROM (${under}) WHERE slash = 0 LIMIT ?`)
+      .all(...args, PENDING_CHILDREN) as { id: string }[];
+    const deeper = this.db
+      .prepare(
+        `SELECT MIN(id) AS id FROM (${under}) WHERE slash > 0
+         GROUP BY substr(relative_path, 1, ? + slash - 1) LIMIT ?`,
+      )
+      .all(...args, length, PENDING_CHILDREN) as { id: string }[];
+    return { direct: direct.map((row) => row.id), deeper: deeper.map((row) => row.id) };
+  }
   /** Paths with a job queued in one folder, without reading the jobs themselves. */
   pendingPaths(rootId: string): Set<string> {
     const rows = this.db.prepare('SELECT relative_path FROM jobs WHERE root_id=?').all(rootId) as {
@@ -224,15 +251,16 @@ export class Journal {
     ).map((row) => JSON.parse(row.data));
   }
   fileCounts(rootId: string): { fileCount: number; folderCount: number } {
-    return this.db
-      .prepare(
-        `
-      SELECT COALESCE(SUM(json_extract(data, '$.type') = 'FILE'), 0) AS fileCount,
-             COALESCE(SUM(json_extract(data, '$.type') = 'FOLDER'), 0) AS folderCount
-      FROM files WHERE root_id = ?
-    `,
-      )
-      .get(rootId) as { fileCount: number; folderCount: number };
+    // Counted from the files_type index, so no row's JSON is read.
+    const count = (type: string) =>
+      (
+        this.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM files WHERE root_id = ? AND json_extract(data, '$.type') = ?",
+          )
+          .get(rootId, type) as { count: number }
+      ).count;
+    return { fileCount: count('FILE'), folderCount: count('FOLDER') };
   }
   putFile(file: LocalFile) {
     this.db
@@ -294,6 +322,46 @@ export class Journal {
     ) as JobRow[];
     return rows.map(jobFromRow);
   }
+  /** One folder's queued uploads or deletions. */
+  jobsOfKind(rootId: string, kind: 'upsert' | 'delete'): LocalJob[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM jobs WHERE root_id=? AND kind=? ORDER BY created_at,id')
+        .all(rootId, kind) as JobRow[]
+    ).map(jobFromRow);
+  }
+  /**
+   * The queued jobs of some folders a page at a time, in queue order, starting after `after` and
+   * leaving out jobs queued after `before`. Reading a large queue whole costs hundreds of
+   * megabytes; a page costs little, and later pages see changes made meanwhile.
+   */
+  jobsPage(
+    rootIds: string[],
+    after: { createdAt: number; id: string } | null,
+    before: number,
+    limit: number,
+  ): { jobs: LocalJob[]; last: { createdAt: number; id: string } | null } {
+    if (!rootIds.length) return { jobs: [], last: null };
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM jobs WHERE root_id IN (${rootIds.map(() => '?').join(',')})
+           AND created_at <= ? AND (created_at > ? OR (created_at = ? AND id > ?))
+         ORDER BY created_at,id LIMIT ?`,
+      )
+      .all(
+        ...rootIds,
+        before,
+        after?.createdAt ?? -1,
+        after?.createdAt ?? -1,
+        after?.id ?? '',
+        limit,
+      ) as (JobRow & { created_at: number })[];
+    const end = rows.at(-1);
+    return {
+      jobs: rows.map(jobFromRow),
+      last: end ? { createdAt: end.created_at, id: end.id } : null,
+    };
+  }
   job(id: string): LocalJob | undefined {
     const row = this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id) as JobRow | undefined;
     return row && jobFromRow(row);
@@ -316,17 +384,17 @@ export class Journal {
    */
   jobSummary(): Omit<LocalJob, 'payload'>[] {
     const columns = 'id, root_id, relative_path, kind, attempts, error';
+    const first = this.db.prepare(`SELECT ${columns} FROM jobs WHERE root_id=? LIMIT 1`);
     const rows = [
+      // Read from the jobs_failed index.
       ...(this.db
         .prepare(
           `SELECT ${columns} FROM jobs WHERE error IS NOT NULL ORDER BY created_at,id LIMIT ?`,
         )
         .all(JOB_SUMMARY_FAILURES) as JobRow[]),
-      ...(this.db
-        .prepare(
-          `SELECT ${columns} FROM jobs WHERE rowid IN (SELECT MIN(rowid) FROM jobs GROUP BY root_id)`,
-        )
-        .all() as JobRow[]),
+      ...(this.db.prepare('SELECT id FROM roots').all() as { id: string }[])
+        .map(({ id }) => first.get(id) as JobRow | undefined)
+        .filter((row): row is JobRow => !!row),
     ];
     const seen = new Set<string>();
     return rows
@@ -400,16 +468,28 @@ export class Journal {
       .run(Date.now(), id);
   }
   changeSummaries(): Map<string, ChangeSummary> {
-    const rows = this.db
-      .prepare(
-        `SELECT root_id AS rootId, SUM(synced_at IS NULL) AS pending,
-                MAX(detected_at) AS lastDetectedAt, MAX(synced_at) AS lastSyncedAt
-         FROM changes GROUP BY root_id`,
-      )
-      .all() as (ChangeSummary & { rootId: string })[];
-    return new Map(
-      rows.map(({ rootId, ...summary }) => [rootId, { ...summary, pending: summary.pending ?? 0 }]),
-    );
+    // Folder by folder, each answered from an index: totalling the whole ledger on every status
+    // update cost tens of milliseconds once a folder queued a few hundred thousand files.
+    const summaries = new Map<string, ChangeSummary>();
+    const value = (sql: string, rootId: string) =>
+      (this.db.prepare(sql).get(rootId) as { value: number | null }).value;
+    for (const { id } of this.db.prepare('SELECT id FROM roots').all() as { id: string }[]) {
+      const lastDetectedAt = value(
+        'SELECT MAX(detected_at) AS value FROM changes WHERE root_id=?',
+        id,
+      );
+      if (lastDetectedAt === null) continue;
+      summaries.set(id, {
+        pending:
+          value(
+            'SELECT COUNT(*) AS value FROM changes WHERE root_id=? AND synced_at IS NULL',
+            id,
+          ) ?? 0,
+        lastDetectedAt,
+        lastSyncedAt: value('SELECT MAX(synced_at) AS value FROM changes WHERE root_id=?', id),
+      });
+    }
+    return summaries;
   }
   changes(rootId: string, limit = 100): ChangeRecord[] {
     return (

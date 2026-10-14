@@ -191,3 +191,47 @@ it('marks subfolders harbor0 may not read as not synced, even ones the cloud alr
   );
   expect(merged[0]).toMatchObject({ syncStatus: 'Not synced' });
 });
+
+it('lists only the viewed folder’s pending items, with subfolders holding more as pending', () => {
+  queueFile('top.txt');
+  queueFile('Photos/2024/a.jpg');
+  queueFile('Photos/2024/b.jpg');
+  queueFile('Photos/cover.jpg');
+  const atTop = syncView(journal, state, 'cloud').driveItems;
+  expect(atTop.map((item) => [item.name, item.type, item.syncStatus]).sort()).toEqual([
+    ['Photos', 'FOLDER', 'Pending'],
+    ['top.txt', 'FILE', 'Pending'],
+  ]);
+  const photos = localSyncId(root.id, 'Photos');
+  const inPhotos = syncView(journal, state, photos).driveItems;
+  expect(inPhotos.map((item) => item.name).sort()).toEqual(['2024', 'cover.jpg']);
+  expect(inPhotos.every((item) => item.parentId === photos)).toBe(true);
+  // A folder in another place, or none at all, lists nothing.
+  expect(syncView(journal, state, 'elsewhere').driveItems).toEqual([]);
+  expect(syncView(journal, state, null).driveItems).toEqual([]);
+});
+
+it('shows the folder holding the file being uploaded as syncing', () => {
+  queueFile('Photos/2024/a.jpg');
+  state.active = {
+    rootId: root.id,
+    relativePath: 'Photos/2024/a.jpg',
+    direction: 'upload',
+    loaded: 1,
+    total: 2,
+  };
+  expect(syncView(journal, state, 'cloud').driveItems).toEqual([
+    expect.objectContaining({ name: 'Photos', syncStatus: 'Syncing' }),
+  ]);
+});
+
+it('builds a folder’s view quickly with a quarter of a million files queued', () => {
+  journal.transaction(() => {
+    for (let index = 0; index < 250_000; index++)
+      journal.enqueue(root.id, `tree/${index % 64}/${index % 997}/file-${index}.dat`, 'upsert');
+  });
+  const started = Date.now();
+  const view = syncView(journal, state, 'cloud');
+  expect(view.driveItems).toEqual([expect.objectContaining({ name: 'tree', type: 'FOLDER' })]);
+  expect(Date.now() - started).toBeLessThan(2000);
+}, 60_000);

@@ -43,6 +43,7 @@ const channels = [
   'openWebdavDrive',
   'disconnectWebdavDrive',
   'copyText',
+  'viewFolder',
 ] as const;
 const bridge = Object.fromEntries(
   channels.map((name) => [
