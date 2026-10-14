@@ -493,11 +493,14 @@ export class Transaction {
     await this.repo.commit([...this.writes.values()], checks);
   }
 }
+const TRANSACT_ATTEMPTS = 12;
 export async function transact<T>(
   repo: Repository,
   fn: (tx: Transaction) => Promise<T>,
 ): Promise<T> {
-  for (let attempt = 0; attempt < 8; attempt++) {
+  // Every change to an account also writes its profile (the change sequence), so a person's
+  // computers saving at once contend for it: retry for a few seconds, not a fraction of one.
+  for (let attempt = 0; attempt < TRANSACT_ATTEMPTS; attempt++) {
     const tx = new Transaction(repo);
     try {
       const result = await fn(tx);
@@ -505,7 +508,7 @@ export async function transact<T>(
       return result;
     } catch (error) {
       if (!(error instanceof RetryTransaction)) throw error;
-      await new Promise((r) => setTimeout(r, Math.random() * Math.min(200, 5 * 2 ** attempt)));
+      await new Promise((r) => setTimeout(r, Math.random() * Math.min(1000, 5 * 2 ** attempt)));
     }
   }
   throw new DomainError(

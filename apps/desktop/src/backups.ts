@@ -421,8 +421,10 @@ export class FolderBackups {
       )
         throw error;
       if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
-      // Too many requests: the pass pauses and this file is tried again, not failed.
-      if (error instanceof ApiError && error.status === 429) throw error;
+      // Too many requests, or the account busy with another change: the pass pauses and this
+      // file is tried again, not failed.
+      if (error instanceof ApiError && (error.status === 429 || error.code === 'CONCURRENT_UPDATE'))
+        throw error;
       if (job.payload.upload?.uploadId) await cancelUpload(this.api, job.payload.upload.uploadId);
       // The retry belongs to a new run, a different request to the server, so it needs a new
       // operation ID even when no upload was recorded: one may have been made unseen.

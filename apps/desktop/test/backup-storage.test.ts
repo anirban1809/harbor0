@@ -279,6 +279,30 @@ it('records no run while none of the waiting files fit', async () => {
   });
 });
 
+it('backs up a file again, not as a failure, when the account is busy with another change', async () => {
+  const { directory, journal, engine, api, remote } = await backupFolder();
+  // Over the batch size, so it goes on its own.
+  await writeFile(path.join(directory, 'large.bin'), Buffer.alloc(9 * 1024 * 1024, 1));
+  const request = api.request.bind(api);
+  let busy = 1;
+  vi.spyOn(api, 'request').mockImplementation(async (url, init) => {
+    if (/\/runs\/[^/]+\/uploads$/.test(url) && busy-- > 0)
+      throw new ApiError(
+        'CONCURRENT_UPDATE',
+        'Another change is in progress. Retry with the same operation ID.',
+        409,
+      );
+    return request(url, init);
+  });
+  await engine.backupNow('local');
+  await engine.tick();
+  await engine.tick();
+  expect(journal.jobs()).toEqual([]);
+  expect(journal.roots()[0].lastBackupError).toBeUndefined();
+  const { items } = await request(`/v1/backups/${remote.id}/runs`);
+  expect(items).toEqual([expect.objectContaining({ state: 'COMPLETED', fileCount: 1 })]);
+});
+
 describe('small files in batches', () => {
   const watch = (api: ApiClient) => {
     const requests: string[] = [];

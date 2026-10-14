@@ -939,7 +939,9 @@ export class SyncEngine {
     message?: string;
     details?: unknown;
   }): BatchOutcome {
-    if (error?.code === 'BATCH_NOT_REACHED') return { notReached: true };
+    // Not reached, or the account busy with another change: sent again.
+    if (error?.code === 'BATCH_NOT_REACHED' || error?.code === 'CONCURRENT_UPDATE')
+      return { notReached: true };
     // Already in the cloud, or an upload of its own got further: the single-file path sorts it out.
     if (
       [
@@ -1937,6 +1939,11 @@ export class SyncEngine {
         } catch (e) {
           // An ended pass is not this file's failure; it simply runs again next pass.
           if (this.tickController.signal.aborted) throw e;
+          // The account was busy with another change: this file simply goes again shortly.
+          if (e instanceof ApiError && e.code === 'CONCURRENT_UPDATE') {
+            this.journal.saveJob(job);
+            throw e;
+          }
           // The account is full: not this file's problem. It waits, untried, with every other
           // upload, until space is freed (see storageFreed); the rest of the queue carries on.
           if (
@@ -2166,16 +2173,20 @@ export class SyncEngine {
       }
       // Not reaching the server, or the server failing, is an outage for the whole pass.
       const unavailable = e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
-      // Too many requests: a short wait, not a problem to show. Large folders reach it routinely.
-      const throttled = e instanceof ApiError && e.status === 429;
+      // Too many requests, or the account busy with another change (another of the person's
+      // computers saving at the same moment): a short wait, not a problem to show.
+      const busy = e instanceof ApiError && e.code === 'CONCURRENT_UPDATE';
+      const throttled = e instanceof ApiError && (e.status === 429 || busy);
       if (unavailable || throttled)
         this.outageUntil = Date.now() + Math.min(60_000, retryDelay(++this.outages));
       this.state.online = !unavailable;
       this.state.message = unavailable
         ? 'harbor0 is unavailable right now. Sync resumes automatically.'
-        : throttled
-          ? 'harbor0 is limiting how fast this computer uploads. It continues in a moment.'
-          : (e as Error).message;
+        : busy
+          ? 'Your account is busy with another change. Syncing continues in a moment.'
+          : throttled
+            ? 'harbor0 is limiting how fast this computer uploads. It continues in a moment.'
+            : (e as Error).message;
       // A pass ended by the watchdog simply starts again; there is nothing to fix.
       const restarted = this.tickController.signal.aborted;
       // An ended session returns the app to sign-in by itself; there is nothing to fix here.

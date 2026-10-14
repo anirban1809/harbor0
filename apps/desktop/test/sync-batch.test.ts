@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ApiClient } from '@harbor/api-client';
+import { ApiError, type ApiClient } from '@harbor/api-client';
 import type { Journal, Root } from '../src/journal';
 import { tick, twoComputers } from './two-computers';
 
@@ -138,4 +138,30 @@ it('confirms a synced batch in one request, without looking its own uploads up a
   await receipts.audit();
   await receipts.flush();
   expect(confirmations()).toBe(sent);
+});
+
+it('sends files again, without an error, when the account is busy with another change', async () => {
+  const { computers, folder, cloud } = await twoComputers();
+  const [first] = computers;
+  const request = first.api.request.bind(first.api);
+  let busy = 1;
+  vi.spyOn(first.api, 'request').mockImplementation(async (url, init) => {
+    if (url === '/v1/uploads/batch' && busy-- > 0)
+      throw new ApiError(
+        'CONCURRENT_UPDATE',
+        'Another change is in progress. Retry with the same operation ID.',
+        409,
+      );
+    return request(url, init);
+  });
+  for (const name of ['a.txt', 'b.txt']) await write(first, name, name);
+  await first.engine.tick();
+  expect(first.engine.state.issues).toEqual([]);
+  expect(first.journal.jobs().every((job) => job.error === null)).toBe(true);
+  await tick(first);
+  expect((await cloud.list(folder.id)).items.map((item) => item.name).sort()).toEqual([
+    'a.txt',
+    'b.txt',
+  ]);
+  expect(first.engine.state.issues).toEqual([]);
 });
