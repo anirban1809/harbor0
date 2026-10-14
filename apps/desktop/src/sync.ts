@@ -176,6 +176,8 @@ export class SyncEngine {
   private outages = 0;
   // Off once the server turns out to have no batch upload routes; see syncBatch.
   private syncBatches = true;
+  // A restore asked for from this computer; a long catch-up on the feed stops for it.
+  private restoreRequested = false;
   private outageUntil = 0;
   // Files finished per sync folder since it was last idle; the base for its percent complete.
   private syncDone = new Map<string, number>();
@@ -472,6 +474,7 @@ export class SyncEngine {
   /** A restore was just requested from this computer: start it without waiting. */
   restoreSoon() {
     this.backups.restoreSoon();
+    this.restoreRequested = true;
     this.wake();
   }
   private async scanLocalPass(root: Root, report?: (found: number) => void) {
@@ -1709,6 +1712,8 @@ export class SyncEngine {
     const remote = Date.now() >= this.nextRemoteAt;
     let active = false;
     this.hurried = false;
+    // This pass looks for restores before anything else.
+    this.restoreRequested = false;
     try {
       for (const root of this.journal.roots())
         if (root.mode === 'sync' && root.remoteId && this.removedRemoteIds.has(root.remoteId))
@@ -2015,7 +2020,16 @@ export class SyncEngine {
       let yielded = false;
       const localWaiting = () =>
         Date.now() - feedStarted >= SYNC_SLICE_MS &&
-        [...syncRoots.keys()].some((id) => this.journal.pendingCount(id) > 0);
+        (this.restoreRequested ||
+          this.journal
+            .roots()
+            .some(
+              (root) =>
+                !root.paused &&
+                (root.mode === 'sync'
+                  ? this.journal.pendingCount(root.id) > 0
+                  : !!this.backups.run(root.id)),
+            ));
       while (more && !this.stopped) {
         const page = await this.api.changes(cursor);
         if (page.changes.length) active = true;
