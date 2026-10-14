@@ -92,7 +92,7 @@ it('frees the reserved storage of unfinished uploads when their folder stops syn
   await vi.waitFor(async () => expect((await cloud.me()).storage.reservedBytes).toBe(0));
 });
 
-it('explains a refused upload with sizes, keeps smaller files syncing, and resumes once storage is freed', async () => {
+it('pauses uploads that do not fit as the account being full, keeps smaller files syncing, and resumes once storage is freed', async () => {
   const { computers, cloud, folder, service } = await twoComputers();
   const [first] = computers;
   await setQuota(service, () => 1000);
@@ -112,17 +112,27 @@ it('explains a refused upload with sizes, keeps smaller files syncing, and resum
   }
   await first.engine.tick();
   expect((await cloud.list(folder.id)).items.map((i) => i.name)).toEqual(['small.txt']);
-  const [issue] = first.engine.state.issues;
-  expect(issue).toMatchObject({
-    code: 'STORAGE_QUOTA_EXCEEDED',
-    relativePath: 'big.bin',
-    storage: { requiredBytes: 2000, availableBytes: 1000 },
+  // One account-wide state, not a problem per file; the refused file waits without an error.
+  expect(first.engine.state.storageFull).toMatchObject({
+    availableBytes: 1000,
+    requiredBytes: 2000,
   });
-  expect(storageText(issue)).toBe(
-    'This file is too big for your remaining cloud storage (needs 2 KB, 1 KB free). Smaller files keep syncing.',
-  );
+  expect(first.engine.state.issues).toEqual([]);
+  expect(first.engine.state.message).toBe('Storage full · uploads paused');
+  expect(first.journal.jobs()).toEqual([
+    expect.objectContaining({ relativePath: 'big.bin', error: null, attempts: 0 }),
+  ]);
+  // Later passes leave it waiting instead of being refused again.
+  const request = first.api.request.bind(first.api);
+  const tried: string[] = [];
+  vi.spyOn(first.api, 'request').mockImplementation(async (url, init) => {
+    if (/^\/v1\/uploads(\/batch)?$/.test(url)) tried.push(url);
+    return request(url, init);
+  });
+  await first.engine.tick();
+  expect(tried).toEqual([]);
 
-  // More storage arrives through the feed; the refused file does not wait out its retry delay.
+  // More storage arrives through the feed; the waiting file goes up and the state clears.
   await setQuota(service, () => 10_000, true);
   await first.engine.tick();
   await first.engine.tick();
@@ -130,6 +140,7 @@ it('explains a refused upload with sizes, keeps smaller files syncing, and resum
     'big.bin',
     'small.txt',
   ]);
+  expect(first.engine.state.storageFull).toBeUndefined();
   expect(first.engine.state.issues).toEqual([]);
 });
 

@@ -104,6 +104,8 @@ export class FolderBackups {
   private runJobs = new Map<string, { id: string; jobs: string[] }>();
   conversion?: BackupConversion;
   batch?: BackupBatch;
+  // The account's storage turned out to be full: nothing more can be uploaded until space is freed.
+  onStorageFull?: (need: { requiredBytes: number; availableBytes: number }) => void;
   // Restores under way by root, cleared with a summary of how they went when they are done.
   onRestore?: (
     rootId: string,
@@ -267,7 +269,8 @@ export class FolderBackups {
     return ready;
   }
   /** Record whether the files waiting need more cloud storage than is free. */
-  private storageShort(root: Root, short: Root['backupStorage']) {
+  storageShort(root: Root, short: Root['backupStorage']) {
+    if (short) this.onStorageFull?.(short);
     const current = this.journal.roots().find((r) => r.id === root.id);
     if (current && JSON.stringify(current.backupStorage) !== JSON.stringify(short))
       this.journal.root({ ...current, backupStorage: short });

@@ -225,6 +225,7 @@ export class SyncEngine {
       (rootId) => this.unreadable.get(rootId) ?? [],
     );
     this.backups.batch = (root, jobs, runId) => this.backupBatch(root, jobs, runId);
+    this.backups.onStorageFull = (need) => this.storageIsFull(need);
     this.backups.onRestore = (rootId, progress, summary) =>
       this.setRestoring(rootId, progress, summary);
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
@@ -740,13 +741,24 @@ export class SyncEngine {
       // Offline, the run simply waits for the connection as before.
       const available = (await this.api.me().catch(() => null))?.storage.availableBytes;
       let smallest = Infinity;
+      let required = 0;
+      let files = 0;
       for (const job of available === undefined ? [] : this.journal.jobs())
         if (job.rootId === root.id && job.kind === 'upsert') {
           const info = await lstat(contained(root.localPath, job.relativePath)).catch(() => null);
-          if (info?.isFile()) smallest = Math.min(smallest, info.size);
+          if (!info?.isFile()) continue;
+          smallest = Math.min(smallest, info.size);
+          required += info.size;
+          files++;
         }
       if (smallest !== Infinity && smallest > available!) {
         this.journal.set(`backup-now:${root.id}`, false);
+        // Shown on the folder's panel, and as the account being full, until space is freed.
+        this.backups.storageShort(root, {
+          requiredBytes: required,
+          availableBytes: available!,
+          files,
+        });
         throw new Error(
           `There is not enough cloud storage to back up ${changes === 1 ? 'the changed file' : 'any of the changed files'}. They back up automatically once space is freed.`,
         );
@@ -1926,6 +1938,17 @@ export class SyncEngine {
         } catch (e) {
           // An ended pass is not this file's failure; it simply runs again next pass.
           if (this.tickController.signal.aborted) throw e;
+          // The account is full: not this file's problem. It waits, untried, with every other
+          // upload, until space is freed (see storageFreed); the rest of the queue carries on.
+          if (
+            e instanceof ApiError &&
+            syncIssueCode(e) === 'STORAGE_QUOTA_EXCEEDED' &&
+            !root.shareId
+          ) {
+            this.storageIsFull(storageNeed(e, false));
+            this.state.active = null;
+            return;
+          }
           job.attempts++;
           job.error = (e as Error).message;
           if (this.interrupts(e)) {
@@ -1995,7 +2018,10 @@ export class SyncEngine {
           (job.payload.retryAt ?? 0) > Date.now() ||
           (job.kind === 'upsert' &&
             job.payload.entry?.type !== 'FOLDER' &&
-            (job.payload.entry?.sizeBytes ?? Infinity) > (full.get(root.id) ?? Infinity))
+            (job.payload.entry?.sizeBytes ?? Infinity) >
+              (full.get(root.id) ??
+                (root.shareId ? undefined : this.state.storageFull?.availableBytes) ??
+                Infinity))
         )
           continue;
         if (this.syncBatches && this.batchable(root, job)) {
@@ -2111,11 +2137,13 @@ export class SyncEngine {
       const backingUp = this.journal
         .roots()
         .find((r) => r.mode === 'backup' && !r.paused && this.backups.run(r.id));
-      this.state.message = this.state.confirmationPendingRoots.length
-        ? 'Files transferred; waiting for backend confirmation'
-        : backingUp
-          ? `Backing up ${path.basename(backingUp.localPath)}`
-          : 'Everything is up to date';
+      this.state.message = this.state.storageFull
+        ? 'Storage full · uploads paused'
+        : this.state.confirmationPendingRoots.length
+          ? 'Files transferred; waiting for backend confirmation'
+          : backingUp
+            ? `Backing up ${path.basename(backingUp.localPath)}`
+            : 'Everything is up to date';
     } catch (e) {
       if (e instanceof ApiError && e.code === 'SYNC_REMOVED') {
         const root = this.journal.roots().find((r) => r.id === this.currentRootId);
@@ -2248,8 +2276,32 @@ export class SyncEngine {
     });
     return item.id;
   }
+  /** Uploads refused for lack of storage; see SyncRuntime.storageFull. */
+  private storageIsFull(need?: { requiredBytes?: number; availableBytes?: number }) {
+    this.state.storageFull = {
+      availableBytes: need?.availableBytes ?? 0,
+      ...(need?.requiredBytes !== undefined ? { requiredBytes: need.requiredBytes } : {}),
+      at: new Date().toISOString(),
+    };
+    // Earlier passes may have listed refused files one by one; one notice says it all now.
+    const before = this.state.issues.length;
+    this.state.issues = this.state.issues.filter(
+      (issue) =>
+        !(
+          issue.code === 'STORAGE_QUOTA_EXCEEDED' &&
+          issue.jobId &&
+          !this.journal.roots().find((root) => root.id === issue.rootId)?.shareId
+        ),
+    );
+    if (this.state.issues.length !== before) this.persistIssues();
+    this.emit();
+  }
   /** Uploads refused for lack of storage try again now instead of waiting out their delay. */
   storageFreed() {
+    if (this.state.storageFull) {
+      this.state.storageFull = undefined;
+      this.emit();
+    }
     const refused = new Set(
       this.state.issues
         .filter((issue) => issue.code === 'STORAGE_QUOTA_EXCEEDED' && issue.jobId)

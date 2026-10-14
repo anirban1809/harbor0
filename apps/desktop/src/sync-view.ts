@@ -64,7 +64,11 @@ export function syncView(journal: Journal, state: SyncRuntime, view?: string | n
           ? 'Sync is paused'
           : !state.online
             ? 'Waiting for a connection'
-            : 'Waiting to upload';
+            : state.storageFull &&
+                !root.shareId &&
+                (job.payload.entry?.sizeBytes ?? Infinity) > state.storageFull.availableBytes
+              ? 'Waiting for storage: your cloud storage is full'
+              : 'Waiting to upload';
       let relative = job.relativePath;
       while (relative !== '.') {
         const file = known.get(relative);

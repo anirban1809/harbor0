@@ -182,6 +182,13 @@ it('refuses "Back up now" up front when none of the changed files fit', async ()
     'There is not enough cloud storage to back up the changed file.',
   );
   expect(journal.get('backup-now:local')).toBe(false);
+  // Kept on screen, not only in the refusal: the folder needs storage, and the account is full.
+  expect(journal.roots()[0].backupStorage).toEqual({
+    requiredBytes: 100,
+    availableBytes: 10,
+    files: 1,
+  });
+  expect(engine.state.storageFull).toMatchObject({ availableBytes: 10 });
 });
 
 it('remembers that the last backup skipped files until a clean run', async () => {

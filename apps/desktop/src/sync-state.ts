@@ -78,6 +78,9 @@ export type SyncRuntime = {
   // By root: backed-up files being put back on this computer, and how the last restores went.
   restoring?: Record<string, RestoreProgress>;
   restored?: Record<string, RestoreSummary>;
+  // The account's cloud storage is full: uploads wait, everything else carries on, until space
+  // is freed or the limit is raised. `availableBytes` is what was free when it was last refused.
+  storageFull?: { availableBytes: number; requiredBytes?: number; at: string };
 };
 export type RestoreProgress = {
   // Files restored so far of those requested, and the one downloading now by its bytes.

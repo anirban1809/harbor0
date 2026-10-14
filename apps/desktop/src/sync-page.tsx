@@ -145,6 +145,34 @@ const issueText: Record<SyncIssue['code'], string> = {
     SYNC_DETACHED: 'This folder no longer syncs. Your local files were kept.',
     SYNC_ERROR: 'A change could not be synchronized.',
 };
+/** The account's storage is full: uploads wait, and say why, until space is freed. */
+export function StorageFullNotice({
+    full,
+    storage,
+}: {
+    full: NonNullable<SyncRuntime['storageFull']>;
+    storage: () => void;
+}) {
+    return (
+        <article className="sync-problem" role="status">
+            <AlertCircle size={16} aria-hidden="true" />
+            <div>
+                <h3>Your cloud storage is full</h3>
+                <p>
+                    {full.availableBytes > 0
+                        ? `Only ${storageSize(full.availableBytes)} is left, so files bigger than that aren’t uploaded.`
+                        : 'New and changed files aren’t uploaded until you free up space or get more storage.'}{' '}
+                    Everything else keeps syncing, and uploads resume by themselves once there’s room.
+                </p>
+                <div className="sync-problem-actions">
+                    <Button variant="outline" size="sm" onClick={storage}>
+                        Manage storage
+                    </Button>
+                </div>
+            </div>
+        </article>
+    );
+}
 export function SyncProblem({
     issue,
     root,
@@ -751,8 +779,11 @@ export function SyncFolderPanel({
                 </div>
             </Card>
             {error && <Alert tone="error">{error}</Alert>}
-            {issues.length > 0 && (
+            {(issues.length > 0 || (state.storageFull && !root.shareId)) && (
                 <section className="sync-problems" aria-label="Needs attention">
+                    {state.storageFull && !root.shareId && (
+                        <StorageFullNotice full={state.storageFull} storage={manageStorage} />
+                    )}
                     {issues.map((issue) => (
                         <SyncProblem
                             key={issue.id}

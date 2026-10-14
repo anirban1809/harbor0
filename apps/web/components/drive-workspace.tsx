@@ -1391,7 +1391,11 @@ export function DriveWorkspace({
           storage.quotaBytes > 0 &&
           (storage.usedBytes + storage.reservedBytes) / storage.quotaBytes >= 0.9 && (
             <Alert
-              tone="warning"
+              tone={
+                storage.usedBytes + storage.reservedBytes >= storage.quotaBytes
+                  ? 'error'
+                  : 'warning'
+              }
               className="drive-capacity"
               action={
                 <Button variant="link" onClick={onManageStorage}>
@@ -1399,8 +1403,12 @@ export function DriveWorkspace({
                 </Button>
               }
             >
-              {fileSize(storage.usedBytes)} of {fileSize(storage.quotaBytes)} used. You’re running
-              low on storage.
+              {storage.usedBytes > storage.quotaBytes
+                ? // A lowered limit, or files saved just before it: more is stored than it allows.
+                  `You’re using ${fileSize(storage.usedBytes)}, more than your ${fileSize(storage.quotaBytes)} of storage. New files can’t be uploaded or synced until you free up space or get more storage.`
+                : storage.usedBytes + storage.reservedBytes >= storage.quotaBytes
+                  ? `Your storage is full (${fileSize(storage.quotaBytes)}). New files can’t be uploaded or synced until you free up space or get more storage.`
+                  : `${fileSize(storage.usedBytes)} of ${fileSize(storage.quotaBytes)} used. You’re running low on storage.`}
             </Alert>
           )}
         {loadError && !sessionEnd && !unavailable && <Alert tone="error">{loadError}</Alert>}

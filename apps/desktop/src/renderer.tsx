@@ -980,132 +980,141 @@ function App() {
               activity: { tone: 'error', label: 'Paused for encryption' },
               open: () => openPlace('synced', status.deviceId ?? undefined),
             }
-          : problems
+          : sync.storageFull
             ? {
-                activity: {
-                  tone: 'error',
-                  // Naming only sync would hide a backup problem behind it.
-                  label: backupProblems.length
-                    ? 'Sync and backup problems'
-                    : problems === 1
-                      ? 'Sync needs attention'
-                      : `${problems} sync problems`,
-                },
-                // My Drive lists both synced folders and backups.
-                open: backupProblems.length
-                  ? () => goToPlace(null)
-                  : () => openPlace('synced', status.deviceId ?? undefined),
+                // One reason for every upload waiting, synced or backed up.
+                activity: { tone: 'error', label: 'Storage full · uploads paused' },
+                open: () => setSection('Storage'),
               }
-            : unavailableBackups.length
+            : problems
               ? {
                   activity: {
                     tone: 'error',
-                    label:
-                      unavailableBackups.length === 1
-                        ? `${unavailableBackups[0].localPathDisplayName} · ${unavailable(unavailableBackups[0])!.label.toLowerCase()}`
-                        : `${unavailableBackups.length} backup folders unavailable`,
+                    // Naming only sync would hide a backup problem behind it.
+                    label: backupProblems.length
+                      ? 'Sync and backup problems'
+                      : problems === 1
+                        ? 'Sync needs attention'
+                        : `${problems} sync problems`,
                   },
-                  open: () => openPlace('backups', status.deviceId ?? undefined),
+                  // My Drive lists both synced folders and backups.
+                  open: backupProblems.length
+                    ? () => goToPlace(null)
+                    : () => openPlace('synced', status.deviceId ?? undefined),
                 }
-              : failingBackups.length
+              : unavailableBackups.length
                 ? {
                     activity: {
                       tone: 'error',
                       label:
-                        failingBackups.length > 1
-                          ? `${failingBackups.length} backups need attention`
-                          : 'backupStorage' in failingBackups[0] && failingBackups[0].backupStorage
-                            ? `${failingBackups[0].localPathDisplayName} · needs storage`
-                            : `${failingBackups[0].localPathDisplayName} needs attention`,
+                        unavailableBackups.length === 1
+                          ? `${unavailableBackups[0].localPathDisplayName} · ${unavailable(unavailableBackups[0])!.label.toLowerCase()}`
+                          : `${unavailableBackups.length} backup folders unavailable`,
                     },
-                    open: () => openPlace('backups'),
+                    open: () => openPlace('backups', status.deviceId ?? undefined),
                   }
-                : sync.paused
+                : failingBackups.length
                   ? {
-                      activity: { tone: 'paused', label: 'Sync and backups paused' },
-                      open: () => setSection('Settings'),
+                      activity: {
+                        tone: 'error',
+                        label:
+                          failingBackups.length > 1
+                            ? `${failingBackups.length} backups need attention`
+                            : 'backupStorage' in failingBackups[0] &&
+                                failingBackups[0].backupStorage
+                              ? `${failingBackups[0].localPathDisplayName} · needs storage`
+                              : `${failingBackups[0].localPathDisplayName} needs attention`,
+                      },
+                      open: () => openPlace('backups'),
                     }
-                  : !sync.online
+                  : sync.paused
                     ? {
-                        activity: { tone: 'paused', label: 'Offline · changes wait' },
-                        open: () => openPlace('synced', status.deviceId ?? undefined),
+                        activity: { tone: 'paused', label: 'Sync and backups paused' },
+                        open: () => setSection('Settings'),
                       }
-                    : restoring
+                    : !sync.online
                       ? {
-                          activity: {
-                            tone: 'busy',
-                            label:
-                              restoring.progress.total === 1
-                                ? `Restoring ${restoring.progress.relativePath.split('/').pop()}…`
-                                : `Restoring ${restoring.progress.done + 1} of ${restoring.progress.total} files…`,
-                            percent: restoreShown(restoring.progress)?.percent,
-                          },
-                          open: () => openPlace('backups', status.deviceId ?? undefined),
+                          activity: { tone: 'paused', label: 'Offline · changes wait' },
+                          open: () => openPlace('synced', status.deviceId ?? undefined),
                         }
-                      : checking
+                      : restoring
                         ? {
-                            // Looked through before anything is saved: show what has been found.
                             activity: {
                               tone: 'busy',
                               label:
-                                checking.progress.checked === undefined
-                                  ? `Found ${checking.progress.found.toLocaleString()} files in ${checking.root.localPathDisplayName}…`
-                                  : `Getting ${checking.root.localPathDisplayName} ready…`,
-                              percent:
-                                checking.progress.checked === undefined || !checking.progress.found
-                                  ? undefined
-                                  : Math.min(
-                                      99,
-                                      Math.floor(
-                                        (checking.progress.checked / checking.progress.found) * 100,
-                                      ),
-                                    ),
+                                restoring.progress.total === 1
+                                  ? `Restoring ${restoring.progress.relativePath.split('/').pop()}…`
+                                  : `Restoring ${restoring.progress.done + 1} of ${restoring.progress.total} files…`,
+                              percent: restoreShown(restoring.progress)?.percent,
                             },
-                            open: () =>
-                              openPlace(
-                                checking.root.mode === 'backup' ? 'backups' : 'synced',
-                                status.deviceId ?? undefined,
-                              ),
+                            open: () => openPlace('backups', status.deviceId ?? undefined),
                           }
-                        : syncing.length
+                        : checking
                           ? {
+                              // Looked through before anything is saved: show what has been found.
                               activity: {
                                 tone: 'busy',
-                                label: 'Syncing…',
-                                percent: average(syncing.map((root) => sync.progress?.[root.id])),
+                                label:
+                                  checking.progress.checked === undefined
+                                    ? `Found ${checking.progress.found.toLocaleString()} files in ${checking.root.localPathDisplayName}…`
+                                    : `Getting ${checking.root.localPathDisplayName} ready…`,
+                                percent:
+                                  checking.progress.checked === undefined ||
+                                  !checking.progress.found
+                                    ? undefined
+                                    : Math.min(
+                                        99,
+                                        Math.floor(
+                                          (checking.progress.checked / checking.progress.found) *
+                                            100,
+                                        ),
+                                      ),
                               },
-                              open: () => openPlace('synced', status.deviceId ?? undefined),
+                              open: () =>
+                                openPlace(
+                                  checking.root.mode === 'backup' ? 'backups' : 'synced',
+                                  status.deviceId ?? undefined,
+                                ),
                             }
-                          : backingUp.length
+                          : syncing.length
                             ? {
                                 activity: {
                                   tone: 'busy',
-                                  label:
-                                    backingUp.length === 1
-                                      ? `Backing up ${backingUp[0].localPathDisplayName}…`
-                                      : `Backing up ${backingUp.length} folders…`,
-                                  percent: average(
-                                    backingUp.map((root) => sync.progress?.[root.id]),
-                                  ),
+                                  label: 'Syncing…',
+                                  percent: average(syncing.map((root) => sync.progress?.[root.id])),
                                 },
-                                open: () => openPlace('backups', status.deviceId ?? undefined),
+                                open: () => openPlace('synced', status.deviceId ?? undefined),
                               }
-                            : checkingSync.length
+                            : backingUp.length
                               ? {
-                                  activity: { tone: 'busy', label: 'Checking sync…' },
-                                  open: () => openPlace('synced', status.deviceId ?? undefined),
-                                }
-                              : {
                                   activity: {
-                                    tone: 'ok',
-                                    label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                                  },
-                                  open: () =>
-                                    openPlace(
-                                      syncRoots.length ? 'synced' : 'backups',
-                                      status.deviceId ?? undefined,
+                                    tone: 'busy',
+                                    label:
+                                      backingUp.length === 1
+                                        ? `Backing up ${backingUp[0].localPathDisplayName}…`
+                                        : `Backing up ${backingUp.length} folders…`,
+                                    percent: average(
+                                      backingUp.map((root) => sync.progress?.[root.id]),
                                     ),
-                                };
+                                  },
+                                  open: () => openPlace('backups', status.deviceId ?? undefined),
+                                }
+                              : checkingSync.length
+                                ? {
+                                    activity: { tone: 'busy', label: 'Checking sync…' },
+                                    open: () => openPlace('synced', status.deviceId ?? undefined),
+                                  }
+                                : {
+                                    activity: {
+                                      tone: 'ok',
+                                      label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                                    },
+                                    open: () =>
+                                      openPlace(
+                                        syncRoots.length ? 'synced' : 'backups',
+                                        status.deviceId ?? undefined,
+                                      ),
+                                  };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
