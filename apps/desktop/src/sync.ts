@@ -1945,7 +1945,7 @@ export class SyncEngine {
             syncIssueCode(e) === 'STORAGE_QUOTA_EXCEEDED' &&
             !root.shareId
           ) {
-            this.storageIsFull(storageNeed(e, false));
+            this.storageIsFull(storageNeed(e, false), e.message);
             this.state.active = null;
             return;
           }
@@ -2277,12 +2277,17 @@ export class SyncEngine {
     return item.id;
   }
   /** Uploads refused for lack of storage; see SyncRuntime.storageFull. */
-  private storageIsFull(need?: { requiredBytes?: number; availableBytes?: number }) {
+  private storageIsFull(
+    need?: { requiredBytes?: number; availableBytes?: number },
+    // The server's words for the refusal: files refused before, by any version, carry them.
+    refusal?: string,
+  ) {
     this.state.storageFull = {
       availableBytes: need?.availableBytes ?? 0,
       ...(need?.requiredBytes !== undefined ? { requiredBytes: need.requiredBytes } : {}),
       at: new Date().toISOString(),
     };
+    this.state.message = 'Storage full · uploads paused';
     // Earlier passes, or versions, listed refused files one by one with an error and a retry
     // delay; they now simply wait with the rest, and one notice says why.
     const refused = this.state.issues.filter(
@@ -2291,9 +2296,19 @@ export class SyncEngine {
         issue.jobId &&
         !this.journal.roots().find((root) => root.id === issue.rootId)?.shareId,
     );
-    for (const issue of refused) {
-      const job = this.journal.job(issue.jobId!);
-      if (!job) continue;
+    const own = new Set(
+      this.journal
+        .roots()
+        .filter((root) => root.mode === 'sync' && !root.shareId)
+        .map((root) => root.id),
+    );
+    const waiting = new Set(refused.map((issue) => issue.jobId!));
+    if (refusal)
+      for (const rootId of own)
+        for (const job of this.journal.jobs(rootId)) if (job.error === refusal) waiting.add(job.id);
+    for (const id of waiting) {
+      const job = this.journal.job(id);
+      if (!job?.error) continue;
       job.error = null;
       job.attempts = 0;
       delete job.payload.retryAt;

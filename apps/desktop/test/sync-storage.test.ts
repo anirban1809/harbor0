@@ -179,6 +179,26 @@ it('blames the folder owner, not the user, when a shared folder owner is out of 
   expect(storageText(issue({}))).not.toMatch(/full/);
 });
 
+it('clears a refusal an older version left on a file without a problem of its own', async () => {
+  const { computers, service } = await twoComputers();
+  const [first] = computers;
+  await setQuota(service, () => 10);
+  for (const name of ['a.bin', 'b.bin']) {
+    await writeFile(path.join(first.localPath, name), Buffer.alloc(100));
+    first.journal.enqueue(first.root.id, name, 'upsert', {
+      type: 'FILE',
+      sizeBytes: 100,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  const [job] = first.journal.jobs();
+  // Only the error, as the server worded it; no retry delay, so the other file is refused first.
+  first.journal.saveJob({ ...job, error: 'There is not enough available storage.', attempts: 1 });
+  await first.engine.tick();
+  expect(first.engine.state.storageFull).toBeDefined();
+  expect(first.journal.jobs().map((j) => j.error)).toEqual([null, null]);
+});
+
 it('turns files an older version refused one by one into ones waiting for storage', async () => {
   const { computers, service } = await twoComputers();
   const [first] = computers;
