@@ -349,3 +349,23 @@
   margin: 0;
   font-size: var(--text-sm);
 }
+
+/* Shown while the session saved in the keychain is restored at startup. */
+.restoring-screen {
+  gap: 20px;
+}
+.restoring-screen .brand {
+  gap: 10px;
+  color: var(--text);
+  font-size: 26px;
+}
+.restoring-screen .brand-mark {
+  width: 34px;
+  height: 34px;
+}
+.restoring-screen p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}

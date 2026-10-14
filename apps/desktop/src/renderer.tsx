@@ -637,10 +637,13 @@ function App() {
   // A session saved in the keychain is being restored; the login page would only flash past.
   if (!status.signedIn && status.restoring)
     return (
-      <main className="loading-screen" aria-busy="true">
-        <BrandLogo />
+      <main className="loading-screen restoring-screen" aria-busy="true">
+        <div className="brand">
+          <BrandLogo />
+        </div>
         <p role="status">
-          <Loader2 className="spin" size={16} aria-hidden="true" /> Signing you in…
+          <Loader2 className="spin" size={14} aria-hidden="true" />
+          Signing you in…
         </p>
       </main>
     );
