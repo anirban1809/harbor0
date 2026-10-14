@@ -1,6 +1,6 @@
 import { open, lstat } from 'node:fs/promises';
 import { ApiClient, ApiError } from '@harbor/api-client';
-import type { DriveItem, SyncItemStatus } from '@harbor/contracts';
+import { SYNC_ACKNOWLEDGE_ITEMS, type DriveItem, type SyncItemStatus } from '@harbor/contracts';
 import { Journal, type Root } from './journal';
 import { safeParents } from './paths';
 import { hashFile } from './transfers';
@@ -43,6 +43,8 @@ export class SyncReceipts {
   private passFound = false;
   // Shrinks while the server is slow to answer, so a large folder still gets through.
   private batchSize = AUDIT_BATCH;
+  // Off once the server turns out to have no batch confirmation route.
+  private batches = true;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -145,8 +147,12 @@ export class SyncReceipts {
       this.batchSize = Math.max(AUDIT_BATCH_MIN, Math.floor(this.batchSize / 2));
       return;
     }
+    // Copies already waiting in the outbox are confirmed by flush; looking them up again here
+    // only sends a second confirmation.
+    const queued = this.pending();
     for (const candidate of batch) {
       if (signal?.aborted) return;
+      if (queued[candidate.itemId]) continue;
       const root = this.journal.roots().find((r) => r.id === candidate.rootId);
       if (!root || root.paused || root.mode !== 'sync') continue;
       const known = candidate.isRoot
@@ -184,8 +190,13 @@ export class SyncReceipts {
     this.candidates.splice(0, batch.length);
     if (!this.candidates.length) this.passEnded();
   }
+  /**
+   * Confirms the copies in the outbox: each is checked on disk first, then up to
+   * SYNC_ACKNOWLEDGE_ITEMS are confirmed in one request.
+   */
   async flush(signal?: AbortSignal) {
     const deadline = Date.now() + 5000;
+    let ready: Ready[] = [];
     for (const [id, receipt] of Object.entries(this.pending())) {
       if (signal?.aborted || Date.now() >= deadline) break;
       const root = this.journal.roots().find((r) => r.id === receipt.rootId);
@@ -200,67 +211,129 @@ export class SyncReceipts {
       }
       if (root.paused) continue;
       try {
-        // Only checks what is there: recreating a parent would undo the user deleting it.
-        const full = await safeParents(root.localPath, receipt.relative, false);
-        const stat = await lstat(full);
-        if (receipt.item.type === 'FILE') {
-          if (!stat.isFile() || (await hashFile(full)) !== receipt.hash) {
-            this.remove(id, receipt);
-            continue;
-          }
-          const { file, flushable } = await openToFlush(full);
-          try {
-            const verified = await file.stat();
-            if (
-              verified.size !== stat.size ||
-              verified.mtimeMs !== stat.mtimeMs ||
-              verified.ino !== stat.ino
-            ) {
-              this.remove(id, receipt);
-              continue;
-            }
-            if (flushable) await file.sync();
-          } finally {
-            await file.close();
-          }
-        } else if (!stat.isDirectory()) {
+        const body = await this.verified(id, root, receipt);
+        if (!body) continue;
+        ready.push({ id, root, receipt, body });
+      } catch (error) {
+        this.failed(id, root, receipt, error);
+        continue;
+      }
+      if (ready.length >= SYNC_ACKNOWLEDGE_ITEMS) {
+        await this.confirm(ready, signal);
+        ready = [];
+      }
+    }
+    if (ready.length && !signal?.aborted) await this.confirm(ready, signal);
+  }
+  /**
+   * What confirming a copy sends, once the file on disk is checked to be that version and
+   * flushed to it. Undefined when the copy no longer matches: the receipt is dropped.
+   */
+  private async verified(id: string, root: Root, receipt: Receipt) {
+    // Only checks what is there: recreating a parent would undo the user deleting it.
+    const full = await safeParents(root.localPath, receipt.relative, false);
+    const stat = await lstat(full);
+    if (receipt.item.type === 'FILE') {
+      if (!stat.isFile() || (await hashFile(full)) !== receipt.hash) {
+        this.remove(id, receipt);
+        return undefined;
+      }
+      const { file, flushable } = await openToFlush(full);
+      try {
+        const verified = await file.stat();
+        if (
+          verified.size !== stat.size ||
+          verified.mtimeMs !== stat.mtimeMs ||
+          verified.ino !== stat.ino
+        ) {
           this.remove(id, receipt);
-          continue;
+          return undefined;
         }
-        // An encrypted version is confirmed by its stored hash, read from its versions when the
-        // item didn't carry it.
-        let stored = receipt.storedHash;
-        if (stored === null) {
-          const { items } = await this.api.request(`/v1/drive/items/${id}/versions`);
-          stored =
-            items.find((v: { id: string }) => v.id === receipt.item.currentVersionId)
-              ?.contentHash ?? null;
+        if (flushable) await file.sync();
+      } finally {
+        await file.close();
+      }
+    } else if (!stat.isDirectory()) {
+      this.remove(id, receipt);
+      return undefined;
+    }
+    // An encrypted version is confirmed by its stored hash, read from its versions when the
+    // item didn't carry it.
+    let stored = receipt.storedHash;
+    if (stored === null) {
+      const { items } = await this.api.request(`/v1/drive/items/${id}/versions`);
+      stored =
+        items.find((v: { id: string }) => v.id === receipt.item.currentVersionId)?.contentHash ??
+        null;
+    }
+    return {
+      versionId: receipt.item.currentVersionId,
+      revision: receipt.item.revision,
+      contentHash: stored === undefined ? receipt.hash : stored,
+    };
+  }
+  private async confirm(ready: Ready[], signal?: AbortSignal) {
+    const timeout = (ms: number) =>
+      signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
+    if (this.batches && ready.length > 1) {
+      try {
+        const { results } = await this.api.request('/v1/sync/items/acknowledge', {
+          method: 'POST',
+          body: { items: ready.map(({ id, body }) => ({ itemId: id, ...body })) },
+          signal: timeout(25_000),
+        });
+        ready.forEach(({ id, root, receipt }, n) => {
+          const result = results?.[n];
+          if (result?.error) {
+            const { code, message } = result.error;
+            this.failed(id, root, receipt, new ApiError(code, message, 409));
+          } else this.confirmed(id, receipt, result?.ok === true);
+        });
+        return;
+      } catch (error) {
+        // An older server confirms one copy at a time.
+        if (error instanceof ApiError && error.code === 'NOT_FOUND') this.batches = false;
+        else {
+          for (const { id, receipt } of ready) this.remove(id, receipt, true);
+          return;
         }
+      }
+    }
+    for (const { id, root, receipt, body } of ready) {
+      if (signal?.aborted) return;
+      try {
         const response = await this.api.request(`/v1/sync/items/${id}/acknowledge`, {
           method: 'POST',
-          body: {
-            versionId: receipt.item.currentVersionId,
-            revision: receipt.item.revision,
-            contentHash: stored === undefined ? receipt.hash : stored,
-          },
-          signal: signal
-            ? AbortSignal.any([signal, AbortSignal.timeout(8000)])
-            : AbortSignal.timeout(8000),
+          body,
+          signal: timeout(8000),
         });
-        if (response?.ok === true) {
-          this.remove(id, receipt);
-          this.journal.set('syncConfirmedAt', new Date().toISOString());
-        } else this.remove(id, receipt, true);
+        this.confirmed(id, receipt, response?.ok === true);
       } catch (error) {
-        if (
-          (error as NodeJS.ErrnoException).code === 'ENOENT' ||
-          (error instanceof ApiError &&
-            ['REVISION_CONFLICT', 'ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(error.code))
-        ) {
-          this.reconcile(root);
-          this.remove(id, receipt);
-        } else this.remove(id, receipt, true);
+        this.failed(id, root, receipt, error);
       }
     }
   }
+  private confirmed(id: string, receipt: Receipt, ok: boolean) {
+    if (!ok) return this.remove(id, receipt, true);
+    this.remove(id, receipt);
+    this.journal.set('syncConfirmedAt', new Date().toISOString());
+  }
+  /** A copy that could not be confirmed: looked at again, or retried after the others. */
+  private failed(id: string, root: Root, receipt: Receipt, error: unknown) {
+    if (
+      (error as NodeJS.ErrnoException).code === 'ENOENT' ||
+      (error instanceof ApiError &&
+        ['REVISION_CONFLICT', 'ITEM_NOT_FOUND', 'PARENT_NOT_FOUND'].includes(error.code))
+    ) {
+      this.reconcile(root);
+      this.remove(id, receipt);
+    } else this.remove(id, receipt, true);
+  }
 }
+/** A checked copy waiting to be confirmed; see SyncReceipts.flush. */
+type Ready = {
+  id: string;
+  root: Root;
+  receipt: Receipt;
+  body: { versionId: string | null; revision: number; contentHash: string | null };
+};

@@ -112,3 +112,30 @@ it('uploads a large file on its own alongside a batch', async () => {
     'small.txt',
   ]);
 });
+
+it('confirms a synced batch in one request, without looking its own uploads up again', async () => {
+  const { computers } = await twoComputers();
+  const [first] = computers;
+  const count = watch(first);
+  for (let index = 0; index < 30; index++) await write(first, `notes-${index}.txt`, `${index}`);
+  await tick(first);
+  const receipts = (
+    first.engine as unknown as {
+      receipts: { flush(): Promise<void>; audit(): Promise<void>; pendingRoots(): string[] };
+    }
+  ).receipts;
+  await receipts.flush();
+  // The uploads coming back in the change feed are revisions this computer already has.
+  expect(count(/\/versions$/)).toBe(0);
+  // 31 copies (the files and the folder itself): one batch, or two if the background check
+  // took one of them first.
+  const confirmations = () => count(/^POST \/v1\/sync\/items\/(:id\/)?acknowledge$/);
+  expect(confirmations()).toBeLessThanOrEqual(2);
+  expect(count(/^POST \/v1\/sync\/items\/acknowledge$/)).toBe(1);
+  expect(receipts.pendingRoots()).toEqual([]);
+  // Every copy is confirmed, so a check finds nothing to send again.
+  const sent = confirmations();
+  await receipts.audit();
+  await receipts.flush();
+  expect(confirmations()).toBe(sent);
+});

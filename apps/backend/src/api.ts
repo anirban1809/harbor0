@@ -1902,6 +1902,54 @@ export function createApp(
       return new SyncRelay(service).acknowledge(userId(ctx), deviceId, p(ctx, 'id'), input);
     },
   );
+  // Many copies at once, as a desktop confirms a folder it just synced.
+  add(
+    'post',
+    '/v1/sync/items/acknowledge',
+    'Confirm several verified local copies at once',
+    z
+      .object({
+        items: z
+          .array(
+            z
+              .object({
+                itemId: c.id,
+                versionId: c.id.nullable(),
+                revision: z.number().int().positive(),
+                contentHash: c.hash.nullable(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(c.SYNC_ACKNOWLEDGE_ITEMS),
+      })
+      .strict(),
+    z.object({ results: z.array(anyObject) }),
+    async (ctx, i) => {
+      const deviceId = ctx.get('identity').deviceId;
+      assert(deviceId, 'FORBIDDEN', 'A registered device is required.', 403);
+      const relay = new SyncRelay(service);
+      const started = Date.now();
+      const results = [];
+      for (const { itemId, ...input } of i.items as {
+        itemId: string;
+        versionId: string | null;
+        revision: number;
+        contentHash: string | null;
+      }[]) {
+        if (Date.now() - started > BATCH_DEADLINE_MS) {
+          results.push(notReached);
+          continue;
+        }
+        try {
+          results.push(await relay.acknowledge(userId(ctx), deviceId, itemId, input));
+        } catch (error) {
+          results.push(batchError(error));
+        }
+      }
+      return { results };
+    },
+  );
   add(
     'post',
     '/v1/sync/items/:id/request-content',

@@ -173,7 +173,7 @@ it('audits idle copies and empty roots, and repairs a missing backend confirmati
     } as DriveItem;
     const confirmed = new Set<string>();
     const posted: string[] = [];
-    const api = new ApiClient(async (p) => {
+    const api = new ApiClient(async (p, init) => {
       if (p.startsWith('/v1/sync/status'))
         return {
           items: [item, folder].map((i) => ({
@@ -182,6 +182,15 @@ it('audits idle copies and empty roots, and repairs a missing backend confirmati
             deviceConfirmed: confirmed.has(i.id),
           })),
         };
+      // Several copies confirmed in one request.
+      if (p === '/v1/sync/items/acknowledge') {
+        const { items } = init?.body as { items: { itemId: string }[] };
+        for (const { itemId } of items) {
+          confirmed.add(itemId);
+          posted.push(itemId);
+        }
+        return { results: items.map(() => ({ ok: true })) };
+      }
       if (p.endsWith('/acknowledge')) {
         const id = p.split('/')[4];
         confirmed.add(id);

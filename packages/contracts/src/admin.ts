@@ -313,6 +313,7 @@ const ENGINE_REQUESTS = [
   'DELETE /v1/uploads/:id',
   'POST /v1/downloads',
   'POST /v1/sync/operations',
+  'POST /v1/sync/items/acknowledge',
   'POST /v1/sync/items/:id/request-content',
   'POST /v1/backups/:id/runs',
   'POST /v1/backups/:id/runs/:runId/folders',

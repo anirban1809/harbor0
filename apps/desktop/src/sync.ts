@@ -2808,6 +2808,16 @@ export class SyncEngine {
     const known = this.journal.fileByItem(root.id, eventItem.id);
     if (known && this.ignored(root, known.relativePath)) return;
     if (eventItem.deletedAt && known && known.revision >= eventItem.revision) return;
+    // A revision this computer already has, such as a file it just uploaded coming back in the
+    // feed: renames, moves and new versions all raise the revision, so nothing has changed.
+    // A folder walk (listedPath) still looks at every item, to repair copies that went astray.
+    if (
+      listedPath === undefined &&
+      !eventItem.deletedAt &&
+      known?.type === eventItem.type &&
+      eventItem.revision <= known.revision
+    )
+      return;
     if (eventItem.deletedAt) {
       this.waiting.delete(eventItem.id);
       if (known) await this.removeLocal(root, known);

@@ -13,3 +13,5 @@ export function bulkTransferPath(path: string) {
 export const BATCH_UPLOAD_FILES = 25;
 /** Files up to this size go in batches: one storage part each. Larger ones upload alone. */
 export const BATCH_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+/** Synced copies a desktop confirms in one request; see POST /v1/sync/items/acknowledge. */
+export const SYNC_ACKNOWLEDGE_ITEMS = 50;
