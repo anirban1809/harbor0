@@ -4,6 +4,7 @@ import { StorageService, userPK } from '../src/domain';
 import { MemoryRepository, Transaction, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { SyncRelay } from '../src/sync-relay';
+import { UsageService } from '../src/usage';
 import type { DriveItem, FileVersion } from '@harbor/contracts';
 
 let service: StorageService,
@@ -281,6 +282,32 @@ it('removes a sync folder account-wide, deletes its cloud copy (devices keep the
   expect(removed).toBeDefined();
   expect(deleted.length).toBeGreaterThan(0);
   expect(deleted.every((c) => c.sequence > removed!.sequence)).toBe(true);
+});
+
+it('frees the whole size of a removed sync folder, counting files added since its size was last read', async () => {
+  await upload();
+  // Read (and remembered) while the folder had one file.
+  await new UsageService(service).usage('alice', [folder.id]);
+  const second = (
+    await service.createFolder('alice', {
+      parentId: folder.id,
+      name: 'more',
+      operationId: randomUUID(),
+    })
+  ).item;
+  const { upload: next } = await service.createUpload('alice', {
+    operationId: randomUUID(),
+    name: 'later.txt',
+    parentId: second.id,
+    sizeBytes: 5,
+    mimeType: 'text/plain',
+    contentHash: hash,
+  });
+  const stored = await service.getUpload('alice', next.id);
+  storage.uploads.get(stored.providerUploadId!)!.parts.set(1, Buffer.from('hello'));
+  await service.completeUpload('alice', next.id, [{ partNumber: 1, etag: 'one' }], hash);
+  await service.removeSyncFolder('alice', folder.id);
+  expect((await service.me('alice')).storage.usedBytes).toBe(0);
 });
 
 it('keeps the cloud copy of a removed sync folder that is shared with someone', async () => {

@@ -25,7 +25,8 @@ export class UsageService {
     private itemBudget = USAGE_ITEM_BUDGET,
   ) {}
 
-  async usage(userId: string, ids: string[]) {
+  /** `fresh`: count again rather than reuse a recent count, when the exact size matters. */
+  async usage(userId: string, ids: string[], { fresh = false } = {}) {
     const tx = new Transaction(this.s.repo);
     const budget = { items: this.itemBudget };
     const items: FolderUsage[] = [];
@@ -36,17 +37,21 @@ export class UsageService {
         throw error;
       });
       if (found)
-        items.push({ itemId: id, ...(await this.measure(found.owner, found.item, budget)) });
+        items.push({ itemId: id, ...(await this.measure(found.owner, found.item, budget, fresh)) });
     }
     return { items };
   }
 
-  private async measure(owner: string, item: DriveItem, budget: { items: number }) {
+  private async measure(owner: string, item: DriveItem, budget: { items: number }, fresh = false) {
     const repo = this.s.repo;
     const key = `USAGE#${item.id}`;
     const sequence = (await row<{ sequence: number }>(repo, userPK(owner), 'PROFILE'))!.sequence;
     const cached = await row<Cached>(repo, userPK(owner), key);
-    if (cached && (cached.sequence === sequence || Date.now() - cached.computedAt < USAGE_CACHE_MS))
+    if (
+      !fresh &&
+      cached &&
+      (cached.sequence === sequence || Date.now() - cached.computedAt < USAGE_CACHE_MS)
+    )
       return { bytes: cached.bytes, files: cached.files, complete: cached.complete };
     const total = { bytes: 0, files: 0, complete: true };
     if (item.type === 'FILE') await this.file(owner, item.id, total);

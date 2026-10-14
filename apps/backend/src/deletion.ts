@@ -255,7 +255,10 @@ export class DeletionWorkflows {
    */
   async discardable(userId: string, folderId: string) {
     if (await this.sharedWithin(userId, folderId)) return null;
-    const [measured] = (await new UsageService(this.service).usage(userId, [folderId])).items;
+    // Counted now: a recent count can miss the folder's last uploads.
+    const [measured] = (
+      await new UsageService(this.service).usage(userId, [folderId], { fresh: true })
+    ).items;
     return measured?.bytes ?? 0;
   }
   /** Whether the folder, or anything in it, is shared with someone right now. */
@@ -270,9 +273,10 @@ export class DeletionWorkflows {
         let id: string | null | undefined = share.driveItemId;
         for (let depth = 0; id && depth < 40; depth++) {
           if (id === folderId) return true;
-          id = ((await repo.get({ pk: userPK(userId), sk: `ITEM#${id}` }))?.data as
-            | DriveItem
-            | undefined)?.parentId;
+          id = (
+            (await repo.get({ pk: userPK(userId), sk: `ITEM#${id}` }))?.data as
+              DriveItem | undefined
+          )?.parentId;
         }
       }
       cursor = page.cursor ?? undefined;
