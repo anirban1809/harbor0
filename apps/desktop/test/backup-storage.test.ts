@@ -285,11 +285,25 @@ it('stops a run as soon as storage is full, leaving the rest queued without look
       error: '30 files were not backed up: there is not enough cloud storage (50 B free).',
     }),
   ]);
-  // The next pass records no run at all while storage stays full.
-  await engine.backupNow('local');
+  // The next pass records no run at all while storage stays full, and doesn't check the
+  // waiting files again.
+  const checks = vi.spyOn((engine as any).backups, 'changed');
+  await expect(engine.backupNow('local')).resolves.toEqual({
+    queued: false,
+    changes: 30,
+    storage: true,
+  });
   await engine.tick();
   expect((await api.request(`/v1/backups/${remote.id}/runs`)).items).toHaveLength(1);
   expect(journal.roots()[0].backupStorage).toMatchObject({ availableBytes: 50 });
+  expect(checks).not.toHaveBeenCalled();
+  // Once there is space, the rest are backed up.
+  await quota(20_000);
+  await engine.backupNow('local');
+  await engine.tick();
+  expect(journal.jobs()).toEqual([]);
+  expect(journal.file('local', 'small-29.txt')).toBeTruthy();
+  expect(journal.roots()[0].backupStorage).toBeUndefined();
 });
 
 it('records no run while none of the waiting files fit', async () => {

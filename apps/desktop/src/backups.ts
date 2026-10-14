@@ -323,6 +323,17 @@ export class FolderBackups {
     }
     if (!run) {
       const manual = !!this.journal.get(`backup-now:${root.id}`);
+      // Storage is full and files are already waiting for it: checking each of them again, which
+      // takes minutes on a network share, cannot make any fit. They wait until space is freed.
+      const waiting = this.journal.roots().find((r) => r.id === root.id)?.backupStorage;
+      if (waiting && this.journal.pendingCount(root.id)) {
+        const storage = (await this.api.me().catch(() => null))?.storage;
+        if (storage && storage.availableBytes < fullBelow(storage.quotaBytes)) {
+          if (manual) this.journal.set(`backup-now:${root.id}`, false);
+          this.storageShort(root, { ...waiting, availableBytes: storage.availableBytes });
+          return;
+        }
+      }
       const ready = await this.changed(root, manual, onCheck);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);

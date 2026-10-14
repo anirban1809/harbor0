@@ -737,6 +737,16 @@ export class SyncEngine {
       const issue = this.state.issues.find((item) => item.rootId === id && !item.jobId);
       throw new Error(issue?.message ?? 'This folder is unavailable.');
     }
+    // Storage is full and files are already waiting for it: say so at once rather than looking
+    // through the whole folder, which takes minutes on a network share, to find the same.
+    const waiting = checked.backupStorage;
+    if (waiting && this.journal.pendingCount(root.id)) {
+      const storage = (await this.api.me().catch(() => null))?.storage;
+      if (storage && storage.availableBytes < fullBelow(storage.quotaBytes)) {
+        this.backups.storageShort(checked, { ...waiting, availableBytes: storage.availableBytes });
+        return { queued: false, changes: this.journal.pendingCount(root.id), storage: true };
+      }
+    }
     const changes = await this.backups.request(checked);
     if (changes) {
       // Saying "Backing up" and failing a moment later helps no one: check there is room first.
