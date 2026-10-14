@@ -112,6 +112,8 @@ export type SyncJob = {
   attempts: number;
 };
 export const WAITING = 'Waiting for another device';
+// Every file has moved; what is left is confirming the copies or comparing with the cloud.
+export const CHECKING = 'Checking sync';
 // The live status knows when a check ends; the folder list is only as fresh as its last load.
 const reconciling = (root: SyncFolder, state: SyncRuntime) =>
   state.reconciling ? state.reconciling.includes(root.id) : !!root.needsReconcile;
@@ -137,7 +139,7 @@ export function folderState(root: SyncFolder, state: SyncRuntime, jobs: SyncJob[
     return 'Syncing';
   if (state.waiting?.some((item) => item.rootId === root.id)) return WAITING;
   return reconciling(root, state) || state.confirmationPendingRoots?.includes(root.id)
-    ? 'Syncing'
+    ? CHECKING
     : 'Up to date';
 }
 export function globalSyncState(roots: SyncFolder[], state: SyncRuntime, jobs: SyncJob[]) {
@@ -149,15 +151,15 @@ export function globalSyncState(roots: SyncFolder[], state: SyncRuntime, jobs: S
   if (jobs.some((job) => ids.has(job.rootId) && job.error)) return 'Action required';
   if (
     (state.active && ids.has(state.active.rootId)) ||
-    state.confirmationPendingRoots?.some((id) => ids.has(id)) ||
     [...ids].some((id) => (state.changes?.[id]?.pending ?? 0) > 0) ||
-    roots.some(
-      (root) =>
-        !root.paused && (reconciling(root, state) || jobs.some((job) => job.rootId === root.id)),
-    )
+    roots.some((root) => !root.paused && jobs.some((job) => job.rootId === root.id))
   )
     return 'Syncing';
-  return state.waiting?.some((item) => ids.has(item.rootId)) ? WAITING : 'Up to date';
+  if (state.waiting?.some((item) => ids.has(item.rootId))) return WAITING;
+  return state.confirmationPendingRoots?.some((id) => ids.has(id)) ||
+    roots.some((root) => !root.paused && reconciling(root, state))
+    ? CHECKING
+    : 'Up to date';
 }
 // Requirements are derived from current engine state, so resolved problems disappear immediately.
 export function syncRequirements(roots: SyncFolder[], state: SyncRuntime, jobs: SyncJob[]) {

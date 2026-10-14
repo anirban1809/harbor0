@@ -26,6 +26,7 @@ import {
     folderState,
     syncRequirements,
     WAITING,
+    CHECKING,
     type SyncFolder,
     type SyncIssue,
     type SyncJob,
@@ -63,7 +64,8 @@ function StateIcon({ state }: { state: string; }) {
     if (state === 'Up to date') return <Check aria-hidden="true" />;
     if (state === 'Paused') return <Pause aria-hidden="true" />;
     if (state === 'Offline') return <WifiOff aria-hidden="true" />;
-    if (state === 'Syncing') return <RefreshCw className="spin" aria-hidden="true" />;
+    if (state === 'Syncing' || state === CHECKING)
+        return <RefreshCw className="spin" aria-hidden="true" />;
     if (state === WAITING) return <Clock aria-hidden="true" />;
     return <AlertCircle aria-hidden="true" />;
 }
@@ -76,7 +78,7 @@ function StateBadge({ state, className }: { state: string; className?: string; }
                     ? 'danger'
                     : state === 'Up to date'
                         ? 'success'
-                        : state === 'Syncing'
+                        : state === 'Syncing' || state === CHECKING
                             ? 'accent'
                             : 'neutral'
             }

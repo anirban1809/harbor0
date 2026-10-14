@@ -235,6 +235,16 @@ describe('sync states and error actions', () => {
         [],
       ),
     ).toBe('Syncing');
+    // Every file moved: confirming the copies, or comparing with the cloud, is a check.
+    expect(folderState(root, { ...state, confirmationPendingRoots: [root.id] }, [])).toBe(
+      'Checking sync',
+    );
+    expect(folderState(root, { ...state, reconciling: [root.id] }, [])).toBe('Checking sync');
+    expect(
+      folderState(root, { ...state, confirmationPendingRoots: [root.id] }, [
+        { id: 'job', rootId: root.id, relativePath: 'a', kind: 'upsert', error: null, attempts: 0 },
+      ]),
+    ).toBe('Syncing');
     expect(folderState(root, { ...state, paused: true }, [])).toBe('Paused');
     expect(folderState(root, { ...state, online: false }, [])).toBe('Offline');
     for (const [code, label] of [

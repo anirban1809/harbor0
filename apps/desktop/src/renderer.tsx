@@ -80,6 +80,7 @@ import {
 } from '../../web/components/drive-account';
 import { AddSyncFolderDialog, OpenFolderProgress, SyncFolderPanel } from './sync-page';
 import {
+  CHECKING,
   folderState,
   syncRequirements,
   type SyncFolder,
@@ -959,6 +960,10 @@ function App() {
   const syncing = sync
     ? syncRoots.filter((root) => folderState(root, sync, jobs) === 'Syncing')
     : [];
+  // Everything moved; the copies are being confirmed or compared with the cloud.
+  const checkingSync = sync
+    ? syncRoots.filter((root) => folderState(root, sync, jobs) === CHECKING)
+    : [];
   const backingUp = backupRoots.filter(
     (root) => !root.paused && sync?.progress?.[root.id] !== undefined,
   );
@@ -1085,17 +1090,22 @@ function App() {
                                 },
                                 open: () => openPlace('backups', status.deviceId ?? undefined),
                               }
-                            : {
-                                activity: {
-                                  tone: 'ok',
-                                  label: syncRoots.length ? 'All synced' : 'Backups up to date',
-                                },
-                                open: () =>
-                                  openPlace(
-                                    syncRoots.length ? 'synced' : 'backups',
-                                    status.deviceId ?? undefined,
-                                  ),
-                              };
+                            : checkingSync.length
+                              ? {
+                                  activity: { tone: 'busy', label: 'Checking sync…' },
+                                  open: () => openPlace('synced', status.deviceId ?? undefined),
+                                }
+                              : {
+                                  activity: {
+                                    tone: 'ok',
+                                    label: syncRoots.length ? 'All synced' : 'Backups up to date',
+                                  },
+                                  open: () =>
+                                    openPlace(
+                                      syncRoots.length ? 'synced' : 'backups',
+                                      status.deviceId ?? undefined,
+                                    ),
+                                };
   return (
     <div className="app-shell desktop-shell">
       <a className="skip-to-content" href="#workspace-content">
