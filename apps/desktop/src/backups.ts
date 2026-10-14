@@ -29,6 +29,7 @@ import {
   type UploadState,
 } from './transfers';
 import { fileSize } from '../../web/lib/file-metadata';
+import { fullBelow } from '../../web/lib/storage-state';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 // Saved files' modification times; see transfers.ts.
 export { modifiedAt };
@@ -49,6 +50,8 @@ type PendingRun = {
   // Cloud storage still free for this run, once it is known to be short; files bigger than this
   // are left queued without being tried. Unset while everything fits.
   room?: number;
+  // The account's storage limit, which sets when what is free counts as full.
+  quota?: number;
   // Files left for a later run because they did not fit.
   tooBig?: number;
 };
@@ -341,7 +344,8 @@ export class FolderBackups {
       // Compare what is waiting with the free cloud storage before uploading any of it. Offline,
       // or against an older server, the run goes ahead and uploads are refused one by one.
       const required = ready.reduce((sum, file) => sum + file.size, 0);
-      const available = (await this.api.me().catch(() => null))?.storage?.availableBytes;
+      const storage = (await this.api.me().catch(() => null))?.storage;
+      const available = storage?.availableBytes;
       const short = available !== undefined && required > available;
       this.storageShort(
         root,
@@ -353,8 +357,11 @@ export class FolderBackups {
             }
           : undefined,
       );
-      if (short && !ready.some((file) => file.size <= available)) {
-        // Nothing fits: no run to record. The files wait until space is freed.
+      if (
+        short &&
+        (available < fullBelow(storage?.quotaBytes) || !ready.some((file) => file.size <= available))
+      ) {
+        // Storage is full, or nothing fits: no run to record. The files wait until space is freed.
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
         return;
       }
@@ -363,7 +370,7 @@ export class FolderBackups {
         trigger: manual ? 'MANUAL' : 'AUTOMATIC',
         total: ready.length,
         next: 0,
-        ...(short ? { room: available } : {}),
+        ...(short ? { room: available, quota: storage?.quotaBytes } : {}),
       };
       this.journal.transaction(() => {
         this.journal.set(
@@ -451,6 +458,14 @@ export class FolderBackups {
     };
     for (let index = run.next ?? 0; index < runJobs.length; index++) {
       if (stopped()) return;
+      if (run.room !== undefined && run.room < fullBelow(run.quota)) {
+        // Storage is full: the rest wait for space to be freed rather than each being looked at,
+        // which on a network share takes a long time to find that none of them fit.
+        run.tooBig = (run.tooBig ?? 0) + runJobs.length - index;
+        run.next = runJobs.length;
+        this.journal.set(key, run);
+        break;
+      }
       // Small new files go several at a time; the rest, one by one below.
       const group = this.batch ? await this.batchGroup(root, run, runJobs, index) : [];
       if (group.length > 1) {
@@ -559,6 +574,8 @@ export class FolderBackups {
     // The storage left once the files already in the group are saved.
     let left = run.room;
     for (let at = start; at < runJobs.length && group.length < BATCH_UPLOAD_FILES; at++) {
+      // Storage full once these are saved: the run stops there.
+      if (left !== undefined && left < fullBelow(run.quota)) break;
       const job = this.journal.job(runJobs[at]);
       if (!job) continue;
       if (

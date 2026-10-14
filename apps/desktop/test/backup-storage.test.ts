@@ -261,6 +261,37 @@ it('backs up what fits and leaves bigger files queued without trying them', asyn
   ]);
 });
 
+it('stops a run as soon as storage is full, leaving the rest queued without looking at each', async () => {
+  const { directory, journal, engine, quota, api, remote } = await backupFolder();
+  // Full below 1% of the limit: 100 B here.
+  await quota(10_000);
+  await writeFile(path.join(directory, 'big.bin'), Buffer.alloc(9_950));
+  journal.enqueue('local', 'big.bin', 'upsert');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let index = 0; index < 30; index++) {
+    await writeFile(path.join(directory, `small-${index}.txt`), Buffer.alloc(10));
+    journal.enqueue('local', `small-${index}.txt`, 'upsert');
+  }
+  await engine.backupNow('local');
+  await engine.tick();
+  // 50 B were left after the big file: small files would fit, but storage counts as full.
+  expect(journal.file('local', 'big.bin')).toBeTruthy();
+  const waiting = journal.jobs().filter((job) => !journal.file('local', job.relativePath));
+  expect(waiting).toHaveLength(30);
+  expect(waiting.every((job) => job.attempts === 0 && job.error === null)).toBe(true);
+  expect((await api.request(`/v1/backups/${remote.id}/runs`)).items).toEqual([
+    expect.objectContaining({
+      state: 'PARTIAL',
+      error: '30 files were not backed up: there is not enough cloud storage (50 B free).',
+    }),
+  ]);
+  // The next pass records no run at all while storage stays full.
+  await engine.backupNow('local');
+  await engine.tick();
+  expect((await api.request(`/v1/backups/${remote.id}/runs`)).items).toHaveLength(1);
+  expect(journal.roots()[0].backupStorage).toMatchObject({ availableBytes: 50 });
+});
+
 it('records no run while none of the waiting files fit', async () => {
   const { directory, journal, engine, quota, api, remote } = await backupFolder();
   await quota(50);
