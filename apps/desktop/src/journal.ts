@@ -21,6 +21,9 @@ export type Root = {
   lastSyncedAt?: string;
   // Backup folders only: why the last run skipped files or failed; cleared by a clean run.
   lastBackupError?: string;
+  // Backup folders only: the files waiting to be saved need more cloud storage than is free.
+  // Files that fit still back up; set when a run starts or an upload is refused for storage.
+  backupStorage?: { requiredBytes: number; availableBytes: number; files: number };
   // The removable or secondary drive the folder is on, recorded when it is first seen there.
   volume?: Volume;
   // On a network share, which is checked with time limits; kept while the share is away.

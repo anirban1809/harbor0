@@ -7,6 +7,7 @@ import { Journal, type Root, type LocalJob } from './journal';
 import { isEncryptedName, type DriveItem } from '@harbor/contracts';
 import { contained, internalPath, metadataSegment, safeParents, safeSegment } from './paths';
 import { cancelUpload, downloadFile, hashFile, uploadFile, type UploadState } from './transfers';
+import { fileSize } from '../../web/lib/file-metadata';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
@@ -22,6 +23,11 @@ type PendingRun = {
   total?: number;
   next?: number;
   error?: string;
+  // Cloud storage still free for this run, once it is known to be short; files bigger than this
+  // are left queued without being tried. Unset while everything fits.
+  room?: number;
+  // Files left for a later run because they did not fit.
+  tooBig?: number;
 };
 // Unreadable subfolders named in a run's error; the rest are counted.
 const UNREADABLE_NAMED = 5;
@@ -156,7 +162,7 @@ export class FolderBackups {
    * identical to the last saved version) and return the jobs due for a backup now.
    */
   private async changed(root: Root, manual: boolean) {
-    const ready: string[] = [];
+    const ready: { id: string; size: number }[] = [];
     for (const job of this.journal.jobs(root.id)) {
       if (this.ignored(root, job.relativePath)) {
         this.journal.drop(job.id);
@@ -196,9 +202,15 @@ export class FolderBackups {
         this.journal.finish(job.id);
         continue;
       }
-      ready.push(job.id);
+      ready.push({ id: job.id, size: info.size });
     }
     return ready;
+  }
+  /** Record whether the files waiting need more cloud storage than is free. */
+  private storageShort(root: Root, short: Root['backupStorage']) {
+    const current = this.journal.roots().find((r) => r.id === root.id);
+    if (current && JSON.stringify(current.backupStorage) !== JSON.stringify(short))
+      this.journal.root({ ...current, backupStorage: short });
   }
   /**
    * Nothing new records no run, so harbor0 is told the folder is still backed up; otherwise an
@@ -246,6 +258,7 @@ export class FolderBackups {
       const ready = await this.changed(root, manual);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
+        this.storageShort(root, undefined);
         // Nothing left that failed (deleted, or saved meanwhile): the folder is backed up, apart
         // from any subfolders it may not read.
         const current = this.journal.roots().find((r) => r.id === root.id);
@@ -259,14 +272,38 @@ export class FolderBackups {
         await this.upToDate(root, url);
         return;
       }
+      // Compare what is waiting with the free cloud storage before uploading any of it. Offline,
+      // or against an older server, the run goes ahead and uploads are refused one by one.
+      const required = ready.reduce((sum, file) => sum + file.size, 0);
+      const available = (await this.api.me().catch(() => null))?.storage?.availableBytes;
+      const short = available !== undefined && required > available;
+      this.storageShort(
+        root,
+        short
+          ? {
+              requiredBytes: required,
+              availableBytes: available,
+              files: ready.filter((file) => file.size > available).length,
+            }
+          : undefined,
+      );
+      if (short && !ready.some((file) => file.size <= available)) {
+        // Nothing fits: no run to record. The files wait until space is freed.
+        if (manual) this.journal.set(`backup-now:${root.id}`, false);
+        return;
+      }
       run = {
         id: crypto.randomUUID(),
         trigger: manual ? 'MANUAL' : 'AUTOMATIC',
         total: ready.length,
         next: 0,
+        ...(short ? { room: available } : {}),
       };
       this.journal.transaction(() => {
-        this.journal.set(jobsKey, ready);
+        this.journal.set(
+          jobsKey,
+          ready.map((file) => file.id),
+        );
         this.journal.set(key, run);
         this.journal.set(`backup-now:${root.id}`, false);
       });
@@ -293,7 +330,11 @@ export class FolderBackups {
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         }
-        if (
+        // Too big for the storage left: it waits for a later run instead of being refused.
+        const tooBig =
+          !job.payload.backupEntry && !!before && run.room !== undefined && before.size > run.room;
+        if (tooBig) run.tooBig = (run.tooBig ?? 0) + 1;
+        else if (
           job.payload.backupEntry ||
           (before?.isFile() &&
             (run.trigger === 'MANUAL' || backupReady(before.mtimeMs, job.payload.observedAt ?? 0)))
@@ -322,6 +363,7 @@ export class FolderBackups {
             }
             await this.api.request(`${url}/runs/${run.id}/files`, { method: 'POST', body: entry });
             this.journal.finish(job.id);
+            if (run.room !== undefined) run.room = Math.max(0, run.room - entry.sizeBytes);
             // Changes observed during a transfer must survive completion of its old queue entry.
             const after = await lstat(contained(root.localPath, job.relativePath)).catch(
               () => null,
@@ -359,7 +401,21 @@ export class FolderBackups {
             job.payload.retryAfter = Date.now() + 60000;
             job.error = (error as Error).message;
             this.journal.saveJob(job);
-            run.error = `${job.relativePath}: ${job.error}`.slice(0, 2000);
+            if (error instanceof ApiError && error.code === 'STORAGE_QUOTA_EXCEEDED') {
+              // From here on only files that fit in what is left are tried.
+              const details = (error.details ?? {}) as { availableBytes?: number };
+              run.room = details.availableBytes ?? 0;
+              run.tooBig = (run.tooBig ?? 0) + 1;
+              const current = this.journal.roots().find((r) => r.id === root.id);
+              this.storageShort(root, {
+                requiredBytes: Math.max(
+                  current?.backupStorage?.requiredBytes ?? 0,
+                  before?.size ?? 0,
+                ),
+                availableBytes: run.room,
+                files: Math.max(current?.backupStorage?.files ?? 0, run.tooBig),
+              });
+            } else run.error = `${job.relativePath}: ${job.error}`.slice(0, 2000);
           }
         }
       }
@@ -367,9 +423,13 @@ export class FolderBackups {
       this.journal.set(key, run);
     }
     const error = run.error ?? this.skipped(root);
+    const storage = run.tooBig
+      ? `${run.tooBig.toLocaleString('en-US')} ${run.tooBig === 1 ? 'file was' : 'files were'} not backed up: there is not enough cloud storage (${fileSize(run.room ?? 0)} free).`
+      : undefined;
+    const reported = [storage, error].filter(Boolean).join(' ');
     await this.api.request(`${url}/runs/${run.id}/complete`, {
       method: 'POST',
-      body: error ? { error } : {},
+      body: reported ? { error: reported.slice(0, 2000) } : {},
     });
     this.journal.transaction(() => {
       this.journal.set(key, null);

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ApiClient, ApiError } from '@harbor/api-client';
@@ -113,11 +113,61 @@ it('remembers that the last backup skipped files until a clean run', async () =>
       .map((run) => run.state)
       .sort();
   expect(await states()).toEqual(['PARTIAL']);
-  expect(journal.roots()[0].lastBackupError).toMatch(/storage/);
+  expect(journal.roots()[0].backupStorage).toEqual({
+    requiredBytes: 200,
+    availableBytes: 150,
+    files: 0,
+  });
 
   await quota(10_000);
   await engine.backupNow('local');
   await engine.tick();
   expect(await states()).toEqual(['COMPLETED', 'PARTIAL']);
   expect(journal.roots()[0].lastBackupError).toBeUndefined();
+  expect(journal.roots()[0].backupStorage).toBeUndefined();
+});
+
+it('backs up what fits and leaves bigger files queued without trying them', async () => {
+  const { directory, journal, engine, quota, api, remote } = await backupFolder();
+  await quota(150);
+  await writeFile(path.join(directory, 'first.txt'), Buffer.alloc(100));
+  await writeFile(path.join(directory, 'second.txt'), Buffer.alloc(100));
+  const requests: string[] = [];
+  const request = api.request.bind(api);
+  vi.spyOn(api, 'request').mockImplementation(async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    return request(url, init);
+  });
+  await engine.backupNow('local');
+  await engine.tick();
+  // Only one upload was started: the second file no longer fit once the first was saved.
+  expect(requests.filter((r) => /^POST \/v1\/backups\/.+\/uploads$/.test(r))).toHaveLength(1);
+  // The file that did not fit waits, untried and without an error, for space to be freed.
+  const waiting = journal.jobs().find((job) => job.relativePath === 'second.txt');
+  expect(waiting).toMatchObject({ error: null, attempts: 0 });
+  const { items } = await request(`/v1/backups/${remote.id}/runs`);
+  expect(items).toEqual([
+    expect.objectContaining({
+      state: 'PARTIAL',
+      error: '1 file was not backed up: there is not enough cloud storage (50 B free).',
+    }),
+  ]);
+});
+
+it('records no run while none of the waiting files fit', async () => {
+  const { directory, journal, engine, quota, api, remote } = await backupFolder();
+  await quota(50);
+  const file = path.join(directory, 'video.mov');
+  await writeFile(file, Buffer.alloc(100));
+  const old = new Date(Date.now() - 2 * 3600_000);
+  await utimes(file, old, old);
+  await engine.tick();
+  await engine.tick();
+  expect((await api.request(`/v1/backups/${remote.id}/runs`)).items).toEqual([]);
+  expect(journal.jobs().map((job) => job.relativePath)).toEqual(['video.mov']);
+  expect(journal.roots()[0].backupStorage).toEqual({
+    requiredBytes: 100,
+    availableBytes: 50,
+    files: 1,
+  });
 });

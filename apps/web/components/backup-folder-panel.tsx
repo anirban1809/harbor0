@@ -71,6 +71,10 @@ export type LocalBackupRoot = {
   progress?: number;
   // Why this device can't read the folder right now, such as its drive being disconnected.
   unavailable?: { label: string; message: string };
+  // Why the last run on this device skipped files or failed, such as subfolders it may not read.
+  lastBackupError?: string;
+  // The files waiting to be saved need more cloud storage than is free.
+  backupStorage?: { requiredBytes: number; availableBytes: number; files: number };
 };
 /** What the desktop app can do with a folder it backs up itself. */
 export type BackupDesktop = {
@@ -82,6 +86,7 @@ export type BackupDesktop = {
   download: (input: { itemId: string; versionId: string; name: string }) => Promise<unknown>;
   options: (root: LocalBackupRoot) => void;
   refresh: () => Promise<unknown>;
+  manageStorage?: () => void;
 };
 type Props = {
   api: ApiClient;
@@ -530,6 +535,30 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
           </div>
         )}
       </Card>
+      {local?.backupStorage && !local.paused && !removed && !archived && (
+        <Alert
+          tone="error"
+          className="backup-error"
+          action={
+            desktop?.manageStorage && (
+              <Button variant="outline" size="sm" onClick={desktop.manageStorage}>
+                Manage storage
+              </Button>
+            )
+          }
+        >
+          {name} needs {fileSize(local.backupStorage.requiredBytes)}, you have{' '}
+          {fileSize(local.backupStorage.availableBytes)} free.{' '}
+          {local.backupStorage.files > 0 &&
+            `${count(local.backupStorage.files, 'file')} ${local.backupStorage.files === 1 ? 'is' : 'are'} too big to fit and will back up once space is freed. `}
+          Files that fit keep backing up.
+        </Alert>
+      )}
+      {local?.lastBackupError && !local.paused && !removed && !archived && (
+        <Alert tone="error" className="backup-error">
+          {local.lastBackupError}
+        </Alert>
+      )}
       {local?.archiveError && (!local.archive || local.archive === 'archived') && (
         <Alert tone="error" className="backup-error">
           {name}{' '}

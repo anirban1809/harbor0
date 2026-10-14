@@ -824,6 +824,7 @@ function App() {
       bridge.download({ driveItemId: itemId, versionId, name }),
     options: (root) => setModal({ mode: 'root', item: root }),
     refresh: load,
+    manageStorage: () => setSection('Storage'),
   };
   // The open folder's own sync or backup, shown above its files.
   const localSync = trailId
@@ -895,7 +896,7 @@ function App() {
   const unavailableBackups = backupRoots.filter((root) => !root.paused && unavailable(root));
   // The server flags only some failures; this computer knows its own last run skipped files.
   const failingBackups = [
-    ...backupRoots.filter((root) => root.lastBackupError && !root.paused),
+    ...backupRoots.filter((root) => (root.lastBackupError || root.backupStorage) && !root.paused),
     ...(placeData.backups ?? []).filter(
       (backup) =>
         backup.state === 'ERROR' &&
@@ -2324,9 +2325,7 @@ function EncryptionPanel({
         <p className="muted">—</p>
       )}
       <div className="e2ee-footer">
-        <p className="muted">
-          Remove a device or change your passphrase in the web app.
-        </p>
+        <p className="muted">Remove a device or change your passphrase in the web app.</p>
         {manage}
       </div>
     </Card>
