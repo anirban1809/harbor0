@@ -136,3 +136,51 @@ it('lists only the items directly inside a folder', () => {
     journal.close();
   }
 });
+
+it('finds one queued job by id or path and summarizes a large queue for the window', () => {
+  const journal = new Journal(':memory:');
+  try {
+    const id = journal.enqueue('one', 'a.txt', 'upsert');
+    journal.enqueue('one', 'b.txt', 'upsert');
+    journal.enqueue('two', 'c.txt', 'delete');
+    expect(journal.job(id)?.relativePath).toBe('a.txt');
+    expect(journal.pendingJob('one', 'b.txt', 'upsert')?.relativePath).toBe('b.txt');
+    expect(journal.pendingJob('one', 'b.txt', 'delete')).toBeUndefined();
+    expect(journal.jobs('two').map((job) => job.relativePath)).toEqual(['c.txt']);
+    expect(journal.pendingPaths('one')).toEqual(new Set(['a.txt', 'b.txt']));
+    const failed = journal.pendingJob('one', 'b.txt', 'upsert')!;
+    journal.saveJob({ ...failed, attempts: 1, error: 'Denied' });
+    // One job per busy folder plus every failure, never the whole queue.
+    expect(journal.jobSummary()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rootId: 'one', relativePath: 'b.txt', error: 'Denied' }),
+        expect.objectContaining({ rootId: 'two' }),
+      ]),
+    );
+    expect(journal.jobSummary().filter((job) => job.rootId === 'one')).toHaveLength(2);
+  } finally {
+    journal.close();
+  }
+});
+
+it('queues a hundred thousand files in seconds, not hours', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-journal-'));
+  const journal = new Journal(path.join(directory, 'journal.sqlite'));
+  try {
+    const started = Date.now();
+    for (let start = 0; start < 100_000; start += 16)
+      journal.transaction(() => {
+        for (let index = start; index < start + 16; index++) {
+          const relative = `Photos/${index % 500}/IMG_${index}.jpg`;
+          // What a folder scan does for every file it finds.
+          journal.pendingJob('root', relative, 'upsert');
+          journal.enqueue('root', relative, 'upsert');
+        }
+      });
+    expect(journal.jobCount()).toBe(100_000);
+    expect(Date.now() - started).toBeLessThan(30_000);
+  } finally {
+    journal.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);

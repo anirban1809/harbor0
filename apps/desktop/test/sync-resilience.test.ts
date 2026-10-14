@@ -127,6 +127,57 @@ it.skipIf(process.platform === 'win32')(
   },
 );
 
+// chmod can't take away read access on Windows.
+it.skipIf(process.platform === 'win32')(
+  'skips a subfolder it may not read without deleting what was synced from it',
+  async () => {
+    const { local, journal, root, close } = await fixture();
+    const requests: string[] = [];
+    const api = new ApiClient(async (endpoint, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${endpoint}`);
+      return endpoint.startsWith('/v1/sync/changes')
+        ? { changes: [], nextCursor: 7, hasMore: false }
+        : {};
+    });
+    const engine = new SyncEngine(api, journal, 'device', () => {});
+    await mkdir(path.join(local, 'Private'));
+    await writeFile(path.join(local, 'Private', 'old.txt'), 'synced earlier');
+    await writeFile(path.join(local, 'notes.txt'), 'new');
+    for (const [relativePath, type] of [
+      ['Private', 'FOLDER'],
+      ['Private/old.txt', 'FILE'],
+    ] as const)
+      journal.putFile({
+        rootId: root.id,
+        relativePath,
+        itemId: relativePath,
+        revision: 1,
+        hash: null,
+        type,
+      });
+    await chmod(path.join(local, 'Private'), 0o000);
+    try {
+      await engine.tick();
+      expect(requests.some((request) => request.startsWith('DELETE'))).toBe(false);
+      expect(journal.pendingJob(root.id, 'Private/old.txt', 'delete')).toBeUndefined();
+      expect(journal.file(root.id, 'Private/old.txt')).toBeTruthy();
+      expect(engine.state.issues).toContainEqual(
+        expect.objectContaining({
+          code: 'PERMISSION_DENIED',
+          scope: 'item',
+          relativePath: 'Private',
+        }),
+      );
+      // The rest of the folder was still scanned.
+      expect(requests.some((request) => request.includes('/v1/uploads'))).toBe(true);
+    } finally {
+      await chmod(path.join(local, 'Private'), 0o755).catch(() => {});
+      await engine.stop();
+      await close();
+    }
+  },
+);
+
 it('does not mistake one missing file for a missing sync folder', () => {
   const missing = Object.assign(new Error('gone'), { code: 'ENOENT' });
   expect(syncIssueCode(missing)).toBe('FOLDER_MISSING');

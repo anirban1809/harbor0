@@ -395,6 +395,33 @@ const api = new ApiClient(async (endpoint, init) => {
     throw error;
   }
 });
+/**
+ * Sync progress arrives up to ten times a second, and with a large queue building the status
+ * takes long enough to stall the app. Sends wait so building them stays a small share of time;
+ * the latest state is the one sent.
+ */
+let engineStatus: { journal: Journal; state: SyncRuntime } | undefined;
+let engineStatusTimer: ReturnType<typeof setTimeout> | undefined;
+let engineStatusSentAt = 0;
+let engineStatusCost = 0;
+function sendEngineStatus(activeJournal: Journal, state: SyncRuntime) {
+  engineStatus = { journal: activeJournal, state };
+  if (engineStatusTimer) return;
+  const gap = Math.max(100, engineStatusCost * 5);
+  engineStatusTimer = setTimeout(
+    () => {
+      engineStatusTimer = undefined;
+      const pending = engineStatus;
+      engineStatus = undefined;
+      if (!pending || !accountReady || journal !== pending.journal) return;
+      const started = performance.now();
+      window?.webContents.send('harbor:status', statusView(pending.journal, pending.state));
+      engineStatusCost = performance.now() - started;
+      engineStatusSentAt = Date.now();
+    },
+    Math.max(0, engineStatusSentAt + gap - Date.now()),
+  );
+}
 async function connected() {
   e2eeBlocked = false;
   const { user } = await api.me();
@@ -441,10 +468,7 @@ async function connected() {
     api,
     activeJournal,
     response.device.id,
-    (state) => {
-      if (accountReady && journal === activeJournal)
-        window?.webContents.send('harbor:status', statusView(activeJournal, state as SyncRuntime));
-    },
+    (state) => sendEngineStatus(activeJournal, state as SyncRuntime),
     (title, body) => {
       if (accountReady && journal === activeJournal) notify(title, body);
     },
@@ -807,14 +831,7 @@ app
             : r.localPath,
         })),
         sync: engine ? statusView(journal, engine.state) : { message: 'Sign in to start syncing' },
-        jobs: (accountReady ? journal.jobs() : []).map((j) => ({
-          id: j.id,
-          rootId: j.rootId,
-          relativePath: j.relativePath,
-          kind: j.kind,
-          error: j.error,
-          attempts: j.attempts,
-        })),
+        jobs: accountReady ? journal.jobSummary() : [],
         deviceName: journal.get('deviceName') ?? os.hostname(),
         deviceId: accountReady ? journal.get('deviceId') : undefined,
         accountId: accountReady ? journal.get('accountId') : null,
@@ -1495,7 +1512,8 @@ app
                   lastSync: engine.state.lastSync,
                 }
               : null,
-            queued: journal.jobs().map((j) => ({ kind: j.kind, attempts: j.attempts })),
+            queued: journal.jobCount(),
+            failing: journal.jobSummary().filter((j) => j.error).length,
             roots: (accountReady ? journal.roots() : []).map((r) => ({
               mode: r.mode,
               paused: r.paused,

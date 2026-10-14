@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, readFile, mkdir, utimes, symlink, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, writeFile, readFile, mkdir, utimes, symlink, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -326,3 +326,60 @@ it('keeps the run and operation ID when a request times out', async () => {
   expect(new Set(calls.filter((c) => c.url.endsWith('/runs')).map((c) => c.body.id)).size).toBe(1);
   expect(journal.jobs()).toHaveLength(0);
 });
+it('keeps a large run in one stored list and finishes a run saved by an older version', async () => {
+  await file('one.txt', BACKUP_QUIET_MS + 5000);
+  await file('two.txt', BACKUP_QUIET_MS + 5000);
+  const [first, second] = journal.jobs();
+  // Older versions kept the remaining job IDs in the run itself.
+  journal.set('backup-run:local', {
+    id: 'legacy',
+    trigger: 'AUTOMATIC',
+    jobs: [first.id, second.id],
+    total: 2,
+  });
+  failEntry = true;
+  await expect(process()).rejects.toThrow('Offline');
+  expect(journal.get('backup-run:local')).toMatchObject({ id: 'legacy', next: 0, total: 2 });
+  expect(journal.get('backup-run:local')).not.toHaveProperty('jobs');
+  expect(journal.get('backup-run-jobs:local')).toEqual([first.id, second.id]);
+  expect(backups.run('local')).toEqual({ done: 0, total: 2 });
+  await process();
+  expect(calls.filter((c) => c.url.endsWith('/runs')).every((c) => c.body.id === 'legacy')).toBe(
+    true,
+  );
+  expect(perform.mock.calls.map(([, job]) => job.relativePath)).toEqual(['one.txt', 'two.txt']);
+  expect(journal.get('backup-run:local')).toBeNull();
+  expect(journal.get('backup-run-jobs:local')).toBeNull();
+  expect(journal.jobs()).toHaveLength(0);
+});
+it('reports subfolders it may not read with the run instead of failing it', async () => {
+  backups = new FolderBackups(api, journal, undefined, () => ['Private', 'Locked']);
+  await file('old.txt', BACKUP_QUIET_MS + 5000);
+  failEntry = true;
+  await expect(process()).rejects.toThrow('Offline');
+  // Shown while the run is still under way.
+  expect(journal.roots()[0].lastBackupError).toContain('Private, Locked');
+  await process();
+  expect(perform).toHaveBeenCalledTimes(1);
+  const complete = calls.find((c) => c.url.endsWith('/complete'));
+  expect(complete?.body.error).toBe(
+    'harbor0 does not have permission to read these folders: Private, Locked.',
+  );
+  expect(journal.roots()[0].lastBackupError).toBe(complete?.body.error);
+});
+// chmod can't take away read access on Windows.
+it.skipIf(globalThis.process.platform === 'win32')(
+  'backs up the rest of the folder on demand when a subfolder cannot be read',
+  async () => {
+    await file('readable.txt');
+    await file('locked/secret.txt');
+    for (const job of journal.jobs()) journal.finish(job.id);
+    await chmod(path.join(directory, 'locked'), 0o000);
+    try {
+      expect(await backups.request(root)).toBe(1);
+      expect(journal.jobs().map((job) => job.relativePath)).toEqual(['readable.txt']);
+    } finally {
+      await chmod(path.join(directory, 'locked'), 0o755);
+    }
+  },
+);

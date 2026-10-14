@@ -64,8 +64,29 @@ export type LocalJob = {
   attempts: number;
   error: string | null;
 };
+type JobRow = {
+  id: string;
+  root_id: string;
+  relative_path: string;
+  kind: 'upsert' | 'delete';
+  payload: string;
+  attempts: number;
+  error: string | null;
+};
+const jobFromRow = (r: JobRow): LocalJob => ({
+  id: r.id,
+  rootId: r.root_id,
+  relativePath: r.relative_path,
+  kind: r.kind,
+  payload: JSON.parse(r.payload),
+  attempts: r.attempts,
+  error: r.error,
+});
+// Failed jobs sent to the window; past this many it only needs to know there are failures.
+const JOB_SUMMARY_FAILURES = 500;
 export class Journal {
   db: DatabaseSync;
+  private transactionDepth = 0;
   constructor(filename: string) {
     this.db = new DatabaseSync(filename);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -78,6 +99,7 @@ export class Journal {
  CREATE TABLE IF NOT EXISTS changes(id TEXT PRIMARY KEY,job_id TEXT NOT NULL,root_id TEXT NOT NULL,relative_path TEXT NOT NULL,kind TEXT NOT NULL,source TEXT NOT NULL,detected_at INTEGER NOT NULL,synced_at INTEGER);
  CREATE INDEX IF NOT EXISTS changes_pending ON changes(root_id,synced_at);
  CREATE INDEX IF NOT EXISTS changes_job ON changes(job_id);
+ CREATE INDEX IF NOT EXISTS jobs_path ON jobs(root_id,relative_path,kind);
  `);
     this.db.prepare('DELETE FROM changes WHERE synced_at < ?').run(Date.now() - CHANGE_HISTORY_MS);
     // Changes whose job is gone (an older version, a crash between statements) cannot finish.
@@ -154,6 +176,20 @@ export class Journal {
   }
   jobCount(): number {
     return (this.db.prepare('SELECT COUNT(*) AS count FROM jobs').get() as { count: number }).count;
+  }
+  /** Paths with a job queued in one folder, without reading the jobs themselves. */
+  pendingPaths(rootId: string): Set<string> {
+    const rows = this.db.prepare('SELECT relative_path FROM jobs WHERE root_id=?').all(rootId) as {
+      relative_path: string;
+    }[];
+    return new Set(rows.map((row) => row.relative_path));
+  }
+  pendingCount(rootId: string): number {
+    return (
+      this.db.prepare('SELECT COUNT(*) AS count FROM jobs WHERE root_id=?').get(rootId) as {
+        count: number;
+      }
+    ).count;
   }
   jobCounts(): Map<string, number> {
     const rows = this.db
@@ -246,18 +282,76 @@ export class Journal {
       .run(jobId, rootId, relativePath, kind, Date.now(), JSON.stringify({ entry }));
     return jobId;
   }
-  jobs(): LocalJob[] {
-    return (this.db.prepare('SELECT * FROM jobs ORDER BY created_at,id').all() as any[]).map(
-      (r) => ({
+  /** Every queued job, or one folder's. Reads and parses them all, so not once per file. */
+  jobs(rootId?: string): LocalJob[] {
+    const rows = (
+      rootId === undefined
+        ? this.db.prepare('SELECT * FROM jobs ORDER BY created_at,id').all()
+        : this.db.prepare('SELECT * FROM jobs WHERE root_id=? ORDER BY created_at,id').all(rootId)
+    ) as JobRow[];
+    return rows.map(jobFromRow);
+  }
+  job(id: string): LocalJob | undefined {
+    const row = this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id) as JobRow | undefined;
+    return row && jobFromRow(row);
+  }
+  /** The queued job for one path, if there is one. */
+  pendingJob(
+    rootId: string,
+    relativePath: string,
+    kind: 'upsert' | 'delete',
+  ): LocalJob | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM jobs WHERE root_id=? AND relative_path=? AND kind=?')
+      .get(rootId, relativePath, kind) as JobRow | undefined;
+    return row && jobFromRow(row);
+  }
+  /**
+   * What the window shows of the queue: one job per folder with work waiting, so it can tell the
+   * folder is busy, plus the failed ones. A folder can queue over a hundred thousand files, far
+   * too many to send on every progress update.
+   */
+  jobSummary(): Omit<LocalJob, 'payload'>[] {
+    const columns = 'id, root_id, relative_path, kind, attempts, error';
+    const rows = [
+      ...(this.db
+        .prepare(
+          `SELECT ${columns} FROM jobs WHERE error IS NOT NULL ORDER BY created_at,id LIMIT ?`,
+        )
+        .all(JOB_SUMMARY_FAILURES) as JobRow[]),
+      ...(this.db
+        .prepare(
+          `SELECT ${columns} FROM jobs WHERE rowid IN (SELECT MIN(rowid) FROM jobs GROUP BY root_id)`,
+        )
+        .all() as JobRow[]),
+    ];
+    const seen = new Set<string>();
+    return rows
+      .filter((r) => !seen.has(r.id) && !!seen.add(r.id))
+      .map((r) => ({
         id: r.id,
         rootId: r.root_id,
         relativePath: r.relative_path,
         kind: r.kind,
-        payload: JSON.parse(r.payload),
         attempts: r.attempts,
         error: r.error,
-      }),
-    );
+      }));
+  }
+  /** Runs synchronous writes as one commit, which is far faster than one commit each. */
+  transaction<T>(work: () => T): T {
+    if (this.transactionDepth) return work();
+    this.db.exec('BEGIN');
+    this.transactionDepth++;
+    try {
+      const result = work();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    } finally {
+      this.transactionDepth--;
+    }
   }
   saveJob(job: LocalJob) {
     this.db

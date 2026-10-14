@@ -14,11 +14,17 @@ export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
 type PendingRun = {
   id: string;
   trigger: 'MANUAL' | 'AUTOMATIC';
-  jobs: string[];
-  // Files in the run when it started; `jobs` shrinks as each one is saved.
+  // Runs from older versions kept their job IDs here, removing each as it was saved.
+  jobs?: string[];
+  // Files in the run when it started. Their job IDs are stored once, under `backup-run-jobs:`,
+  // and `next` is how many of them have been handled: rewriting a list of a hundred thousand
+  // IDs after every file would cost more than the backup.
   total?: number;
+  next?: number;
   error?: string;
 };
+// Unreadable subfolders named in a run's error; the rest are counted.
+const UNREADABLE_NAMED = 5;
 const ARCHIVE_ATTEMPTS = 3;
 // Files looked up at once while scanning, which matters most on high-latency shares.
 const SCAN_BATCH = 16;
@@ -52,13 +58,26 @@ export class FolderBackups {
     // Time-limits looks at a folder on a network share; see SyncEngine.onShare.
     private onShare: <T>(root: Root, work: () => Promise<T>) => Promise<T> = (_root, work) =>
       work(),
+    // Subfolders the last scan of a folder could not read; see SyncEngine.scanLocal.
+    private unreadable: (rootId: string) => string[] = () => [],
   ) {}
   /** Files saved and files in the backup run under way, if one is. */
   run(rootId: string) {
     const run = this.journal.get<PendingRun | null>(`backup-run:${rootId}`);
     if (!run) return null;
-    const total = Math.max(run.total ?? 0, run.jobs.length);
-    return { done: total - run.jobs.length, total };
+    if (run.jobs) {
+      const total = Math.max(run.total ?? 0, run.jobs.length);
+      return { done: total - run.jobs.length, total };
+    }
+    return { done: Math.min(run.next ?? 0, run.total ?? 0), total: run.total ?? 0 };
+  }
+  /** Why some of the folder could not be backed up: subfolders harbor0 may not read. */
+  private skipped(root: Root) {
+    const folders = this.unreadable(root.id);
+    if (!folders.length) return undefined;
+    const named = folders.slice(0, UNREADABLE_NAMED).join(', ');
+    const more = folders.length - UNREADABLE_NAMED;
+    return `harbor0 does not have permission to read ${folders.length === 1 ? 'this folder' : 'these folders'}: ${named}${more > 0 ? ` and ${more} more` : ''}.`;
   }
   private ignored(root: Root, relative: string) {
     return (
@@ -88,7 +107,15 @@ export class FolderBackups {
     const info = await this.onShare(root, () => lstat(directory));
     if (info.isSymbolicLink() || !info.isDirectory())
       throw new Error('Backup folder is unavailable.');
-    const entries = await this.onShare(root, () => readdir(directory, { withFileTypes: true }));
+    let entries;
+    try {
+      entries = await this.onShare(root, () => readdir(directory, { withFileTypes: true }));
+    } catch (error) {
+      // A subfolder harbor0 may not read is skipped; the rest of the folder still backs up.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (relative && (code === 'EACCES' || code === 'EPERM')) return;
+      throw error;
+    }
     const files: string[] = [];
     for (const entry of entries) {
       const name = relative ? `${relative}/${entry.name}` : entry.name;
@@ -108,18 +135,20 @@ export class FolderBackups {
           ),
         ),
       );
-      for (const [index, name] of batch.entries()) {
-        const file = infos[index];
-        const known = this.journal.file(root.id, name);
-        if (
-          file &&
-          known?.type === 'FILE' &&
-          known.sizeBytes === file.size &&
-          known.mtimeMs === file.mtimeMs
-        )
-          continue;
-        this.journal.enqueue(root.id, name, 'upsert');
-      }
+      this.journal.transaction(() => {
+        for (const [index, name] of batch.entries()) {
+          const file = infos[index];
+          const known = this.journal.file(root.id, name);
+          if (
+            file &&
+            known?.type === 'FILE' &&
+            known.sizeBytes === file.size &&
+            known.mtimeMs === file.mtimeMs
+          )
+            continue;
+          this.journal.enqueue(root.id, name, 'upsert');
+        }
+      });
     }
   }
   /**
@@ -128,7 +157,7 @@ export class FolderBackups {
    */
   private async changed(root: Root, manual: boolean) {
     const ready: string[] = [];
-    for (const job of this.journal.jobs().filter((j) => j.rootId === root.id)) {
+    for (const job of this.journal.jobs(root.id)) {
       if (this.ignored(root, job.relativePath)) {
         this.journal.drop(job.id);
         continue;
@@ -176,7 +205,7 @@ export class FolderBackups {
    * untouched folder would get a stale-backup reminder. Waiting changes don't count.
    */
   private async upToDate(root: Root, url: string) {
-    if (this.journal.jobs().some((j) => j.rootId === root.id)) return;
+    if (this.journal.pendingCount(root.id)) return;
     const key = `backup-checked:${root.id}`;
     if (Date.now() - (this.journal.get<number>(key) ?? 0) < CHECKED_MS) return;
     await this.api.request(`${url}/checked`, { method: 'POST' });
@@ -203,36 +232,59 @@ export class FolderBackups {
       throw new ApiError('BACKUP_DISCONNECTED', 'Backup folder disconnected.', 409);
     await this.restores(root, url);
     const key = `backup-run:${root.id}`;
+    const jobsKey = `backup-run-jobs:${root.id}`;
     if (!this.journal.get(key)) await this.convert(root, url, stopped);
     let run = this.journal.get<PendingRun | null>(key);
+    if (run?.jobs) {
+      const { jobs: legacy, ...rest } = run;
+      this.journal.set(jobsKey, legacy);
+      run = { ...rest, total: legacy.length, next: 0 };
+      this.journal.set(key, run);
+    }
     if (!run) {
       const manual = !!this.journal.get(`backup-now:${root.id}`);
       const ready = await this.changed(root, manual);
       if (!ready.length) {
         if (manual) this.journal.set(`backup-now:${root.id}`, false);
-        // Nothing left that failed (deleted, or saved meanwhile): the folder is backed up.
+        // Nothing left that failed (deleted, or saved meanwhile): the folder is backed up, apart
+        // from any subfolders it may not read.
         const current = this.journal.roots().find((r) => r.id === root.id);
-        if (current?.lastBackupError && !this.journal.jobs().some((j) => j.rootId === root.id))
-          this.journal.root({ ...current, lastBackupError: undefined });
+        const skipped = this.skipped(root);
+        if (
+          current &&
+          current.lastBackupError !== skipped &&
+          (skipped || !this.journal.pendingCount(root.id))
+        )
+          this.journal.root({ ...current, lastBackupError: skipped });
         await this.upToDate(root, url);
         return;
       }
       run = {
         id: crypto.randomUUID(),
         trigger: manual ? 'MANUAL' : 'AUTOMATIC',
-        jobs: ready,
         total: ready.length,
+        next: 0,
       };
-      this.journal.set(key, run);
-      this.journal.set(`backup-now:${root.id}`, false);
+      this.journal.transaction(() => {
+        this.journal.set(jobsKey, ready);
+        this.journal.set(key, run);
+        this.journal.set(`backup-now:${root.id}`, false);
+      });
+      // A large run takes hours; say now, not at the end, which subfolders it will leave out.
+      const skipped = this.skipped(root);
+      const current = this.journal.roots().find((r) => r.id === root.id);
+      if (skipped && current && !current.lastBackupError)
+        this.journal.root({ ...current, lastBackupError: skipped });
     }
+    const runJobs = this.journal.get<string[]>(jobsKey) ?? [];
     await this.api.request(`${url}/runs`, {
       method: 'POST',
       body: { id: run.id, trigger: run.trigger },
     });
-    for (const id of [...run.jobs]) {
+    for (let index = run.next ?? 0; index < runJobs.length; index++) {
+      const id = runJobs[index];
       if (stopped()) return;
-      const job = this.journal.jobs().find((j) => j.id === id);
+      const job = this.journal.job(id);
       if (job) {
         let before;
         try {
@@ -282,14 +334,7 @@ export class FolderBackups {
                 after.mtime.toISOString() !== entry.modifiedAt)
             ) {
               this.journal.enqueue(root.id, job.relativePath, 'upsert');
-              const next = this.journal
-                .jobs()
-                .find(
-                  (j) =>
-                    j.rootId === root.id &&
-                    j.relativePath === job.relativePath &&
-                    j.kind === 'upsert',
-                );
+              const next = this.journal.pendingJob(root.id, job.relativePath, 'upsert');
               if (next) {
                 next.payload.observedAt = Date.now();
                 this.journal.saveJob(next);
@@ -318,17 +363,21 @@ export class FolderBackups {
           }
         }
       }
-      run.jobs = run.jobs.filter((jobId) => jobId !== id);
+      run.next = index + 1;
       this.journal.set(key, run);
     }
+    const error = run.error ?? this.skipped(root);
     await this.api.request(`${url}/runs/${run.id}/complete`, {
       method: 'POST',
-      body: run.error ? { error: run.error } : {},
+      body: error ? { error } : {},
     });
-    this.journal.set(key, null);
+    this.journal.transaction(() => {
+      this.journal.set(key, null);
+      this.journal.set(jobsKey, null);
+    });
     const current = this.journal.roots().find((r) => r.id === root.id);
-    if (current && current.lastBackupError !== run.error)
-      this.journal.root({ ...current, lastBackupError: run.error });
+    if (current && current.lastBackupError !== error)
+      this.journal.root({ ...current, lastBackupError: error });
   }
   /**
    * Brings a folder's backup in line with the account's encryption. Only this computer may change
@@ -492,7 +541,7 @@ export class FolderBackups {
     if (root.archive === 'pending') {
       if (this.journal.get(`backup-run:${root.id}`) || this.journal.get(`backup-now:${root.id}`))
         return;
-      const jobs = this.journal.jobs().filter((job) => job.rootId === root.id);
+      const jobs = this.journal.jobs(root.id);
       const failed = jobs.find((job) => job.error);
       if (failed) return cancel(`${failed.relativePath} could not be backed up: ${failed.error}`);
       const { changed } = jobs.length ? { changed: ['.'] } : await this.saved(root);

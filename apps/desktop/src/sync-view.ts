@@ -5,7 +5,6 @@ import { localSyncId, type SyncDriveItem } from './sync-drive';
 
 // A local projection only: unfinished files are never published as cloud files.
 export function syncView(journal: Journal, state: SyncRuntime) {
-  const jobs = journal.jobs();
   const driveItems = new Map<string, SyncDriveItem>();
   const folderIds: Record<string, string> = {};
   for (const root of journal.roots().filter((root) => root.mode === 'sync' && root.remoteId)) {
@@ -16,14 +15,16 @@ export function syncView(journal: Journal, state: SyncRuntime) {
       relative === '.'
         ? root.remoteId!
         : (known.get(relative)?.itemId ?? localSyncId(root.id, relative));
-    const rootJobs = jobs.filter(
-      (job) =>
-        job.rootId === root.id &&
-        !root.excluded.some(
-          (excluded) =>
-            job.relativePath === excluded || job.relativePath.startsWith(excluded + '/'),
-        ),
-    );
+    // Backup folders show no pending files, so their queue, often the largest, is never read.
+    const rootJobs = journal
+      .jobs(root.id)
+      .filter(
+        (job) =>
+          !root.excluded.some(
+            (excluded) =>
+              job.relativePath === excluded || job.relativePath.startsWith(excluded + '/'),
+          ),
+      );
     for (const job of rootJobs) {
       if (job.kind === 'delete') continue;
       const tracked = journal.file(root.id, job.relativePath);
@@ -99,14 +100,8 @@ export function syncView(journal: Journal, state: SyncRuntime) {
   }
   return {
     ...state,
-    jobs: jobs.map(({ id, rootId, relativePath, kind, error, attempts }) => ({
-      id,
-      rootId,
-      relativePath,
-      kind,
-      error,
-      attempts,
-    })),
+    // Enough to tell which folders are busy or failing; the full queue can be enormous.
+    jobs: journal.jobSummary(),
     driveItems: [...driveItems.values()],
     folderIds,
     changes: Object.fromEntries(journal.changeSummaries()),

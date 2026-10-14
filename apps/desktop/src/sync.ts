@@ -56,6 +56,8 @@ export const NETWORK_TIMEOUT = 15_000;
 export const NETWORK_SCAN_INTERVAL = 30 * 60_000;
 // Files looked up at once while scanning, which matters most on high-latency shares.
 const SCAN_BATCH = 16;
+// Unreadable subfolders listed as separate problems; the last one counts the rest.
+const UNREADABLE_SHOWN = 10;
 // Failed files and folders retry with growing delays (4s up to 5 minutes).
 const retryDelay = (attempts: number) => Math.min(300_000, 2000 * 2 ** Math.min(attempts, 10));
 // Remote checks start every 2s and back off to 30s while nothing changes;
@@ -83,6 +85,8 @@ export class SyncEngine {
   // Shares with a request still stuck after timing out: nothing more is sent until it returns.
   private stalledShares = new Set<string>();
   private scannedAt = new Map<string, number>();
+  // By root: subfolders the last scan could not read, until a scan reads them.
+  private unreadable = new Map<string, string[]>();
   private api: ApiClient;
   private tickController = new AbortController();
   // Start times of the server requests still waiting for an answer.
@@ -162,7 +166,12 @@ export class SyncEngine {
       }
     });
     this.receipts = new SyncReceipts(api, journal);
-    this.backups = new FolderBackups(this.api, journal, (root, work) => this.onShare(root, work));
+    this.backups = new FolderBackups(
+      this.api,
+      journal,
+      (root, work) => this.onShare(root, work),
+      (rootId) => this.unreadable.get(rootId) ?? [],
+    );
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
     // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
     this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
@@ -339,9 +348,7 @@ export class SyncEngine {
     if (!root || !relative || relative.startsWith('..') || this.ignored(root, relative))
       return false;
     const known = this.journal.file(root.id, relative);
-    const pending = this.journal
-      .jobs()
-      .some((job) => job.rootId === root.id && job.relativePath === relative && job.kind === kind);
+    const pending = !!this.journal.pendingJob(root.id, relative, kind);
     if (kind === 'upsert' && info && !pending && known) {
       if (info.isDirectory() && known.type === 'FOLDER') return false;
       if (
@@ -374,9 +381,7 @@ export class SyncEngine {
       source,
     );
     if (root.mode === 'backup' && changed) {
-      const job = this.journal
-        .jobs()
-        .find((j) => j.rootId === root.id && j.relativePath === relative && j.kind === kind);
+      const job = this.journal.pendingJob(root.id, relative, kind);
       if (job) {
         job.payload.observedAt = Date.now();
         this.journal.saveJob(job);
@@ -387,6 +392,8 @@ export class SyncEngine {
   /** Compare the whole folder with the journal: catches anything the watcher missed. */
   private async scanLocal(root: Root) {
     const seen = new Set<string>();
+    // Subfolders harbor0 may not read: skipped, and what was synced from them is not deleted.
+    const unreadable: string[] = [];
     let found = false;
     const walk = async (relative: string) => {
       let entries;
@@ -394,7 +401,12 @@ export class SyncEngine {
         const directory = relative ? contained(root.localPath, relative) : root.localPath;
         entries = await this.onShare(root, () => readdir(directory, { withFileTypes: true }));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') return;
+        if (relative && (code === 'EACCES' || code === 'EPERM')) {
+          unreadable.push(relative);
+          return;
+        }
         throw error;
       }
       const names = entries
@@ -415,24 +427,35 @@ export class SyncEngine {
             ),
           ),
         );
-        for (const [index, name] of batch.entries()) {
-          const info: Stats | null = infos[index];
-          if (!info) continue;
-          seen.add(name);
-          if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
-          if (info.isDirectory()) await walk(name);
-        }
+        const folders: string[] = [];
+        this.journal.transaction(() => {
+          for (const [index, name] of batch.entries()) {
+            const info: Stats | null = infos[index];
+            if (!info) continue;
+            seen.add(name);
+            if (this.observe(root.id, name, 'upsert', info, 'scan')) found = true;
+            if (info.isDirectory()) folders.push(name);
+          }
+        });
+        for (const name of folders) await walk(name);
       }
     };
     await walk('');
     if (this.stopped || this.state.paused) return;
     // The folder itself was checked this pass, so a missing entry was really removed.
-    for (const file of this.journal.files(root.id))
-      if (
-        !seen.has(file.relativePath) &&
-        this.observe(root.id, file.relativePath, 'delete', undefined, 'scan')
-      )
-        found = true;
+    const hidden = (relative: string) =>
+      unreadable.some((folder) => relative === folder || relative.startsWith(folder + '/'));
+    this.journal.transaction(() => {
+      for (const file of this.journal.files(root.id))
+        if (
+          !seen.has(file.relativePath) &&
+          !hidden(file.relativePath) &&
+          this.observe(root.id, file.relativePath, 'delete', undefined, 'scan')
+        )
+          found = true;
+    });
+    if (unreadable.length) this.unreadable.set(root.id, unreadable);
+    else this.unreadable.delete(root.id);
     this.scannedAt.set(root.id, Date.now());
     if (found) this.emit();
   }
@@ -776,6 +799,40 @@ export class SyncEngine {
     if (current && !current.needsReconcile) this.journal.root({ ...current, needsReconcile: true });
     this.issue(root.id, error);
   }
+  /** Subfolders harbor0 may not read, shown one by one; the rest of the folder still syncs. */
+  private unreadableIssues(root: Root) {
+    // A backup reports them with its run instead.
+    const folders = root.mode === 'sync' ? (this.unreadable.get(root.id) ?? []) : [];
+    const shown = folders.slice(0, UNREADABLE_SHOWN);
+    const ids = new Set(shown.map((folder) => `${root.id}:unreadable:${folder}`));
+    const before = this.state.issues.length;
+    this.state.issues = this.state.issues.filter(
+      (issue) =>
+        issue.rootId !== root.id ||
+        !issue.id.startsWith(`${root.id}:unreadable:`) ||
+        ids.has(issue.id),
+    );
+    let changed = this.state.issues.length !== before;
+    for (const folder of shown) {
+      const id = `${root.id}:unreadable:${folder}`;
+      if (this.state.issues.some((issue) => issue.id === id)) continue;
+      const more = folder === shown.at(-1) ? folders.length - shown.length : 0;
+      this.state.issues.push({
+        id,
+        rootId: root.id,
+        code: 'PERMISSION_DENIED',
+        relativePath: more ? `${folder} (and ${more} more folders)` : folder,
+        message: 'harbor0 does not have permission to read this folder.',
+        scope: 'item',
+        at: new Date().toISOString(),
+      });
+      changed = true;
+    }
+    if (changed) {
+      this.persistIssues();
+      this.emit();
+    }
+  }
   private issue(rootId: string, error: unknown, relativePath?: string, jobId?: string) {
     const root = this.journal.roots().find((item) => item.id === rootId);
     const failedPath = (error as NodeJS.ErrnoException)?.path;
@@ -1012,12 +1069,7 @@ export class SyncEngine {
       let cursor: string | undefined;
       do {
         const page = await this.api.list(parent, cursor);
-        const pendingPaths = new Set(
-          this.journal
-            .jobs()
-            .filter((job) => job.rootId === root.id)
-            .map((job) => job.relativePath),
-        );
+        const pendingPaths = this.journal.pendingPaths(root.id);
         for (const item of page.items) {
           if (this.stopped || this.state.paused) return;
           seen.add(item.id);
@@ -1257,13 +1309,13 @@ export class SyncEngine {
         this.currentRootId = root.id;
         // Keep a problem visible while its file or folder is still waiting to retry.
         const retrying = (this.rootRetry.get(root.id)?.at ?? 0) > Date.now();
-        const queued = new Set(this.journal.jobs().map((job) => job.id));
         this.state.issues = this.state.issues.filter(
           (issue) =>
             issue.rootId !== root.id ||
             stickyIssue(issue) ||
-            (issue.jobId ? queued.has(issue.jobId) : retrying),
+            (issue.jobId ? !!this.journal.job(issue.jobId) : retrying),
         );
+        this.unreadableIssues(root);
         if (root.needsReconcile && root.mode === 'sync' && !retrying) {
           try {
             await this.reconcile(root);
@@ -1766,7 +1818,7 @@ export class SyncEngine {
     const verifyBackupQuiet = async () => {
       if (root.mode !== 'backup' || job.payload.backupManual) return;
       const current = await lstat(absolute);
-      const queued = this.journal.jobs().find((entry) => entry.id === job.id);
+      const queued = this.journal.job(job.id);
       if (!backupReady(current.mtimeMs, queued?.payload.observedAt ?? job.payload.observedAt ?? 0))
         throw new Error('This file changed recently. Automatic backup will wait one hour.');
     };
@@ -2246,11 +2298,7 @@ export class SyncEngine {
         this.waiting.delete(item.id);
         if (item.cloudState === 'REQUESTED') {
           this.journal.enqueue(root.id, relative, 'upsert');
-          const relay = this.journal
-            .jobs()
-            .find(
-              (j) => j.rootId === root.id && j.relativePath === relative && j.kind === 'upsert',
-            )!;
+          const relay = this.journal.pendingJob(root.id, relative, 'upsert')!;
           if (relay.payload.relayVersion !== item.currentVersionId) {
             relay.payload.relayVersion = item.currentVersionId;
             this.journal.abandonUpload(relay.payload.upload?.uploadId);
