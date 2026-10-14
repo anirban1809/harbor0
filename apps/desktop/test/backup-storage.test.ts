@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm, utimes } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, writeFile, rm, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ApiClient, ApiError } from '@harbor/api-client';
@@ -176,5 +176,94 @@ it('records no run while none of the waiting files fit', async () => {
     requiredBytes: 100,
     availableBytes: 50,
     files: 1,
+  });
+});
+
+describe('small files in batches', () => {
+  const watch = (api: ApiClient) => {
+    const requests: string[] = [];
+    const request = api.request.bind(api);
+    const spy = vi.spyOn(api, 'request').mockImplementation(async (url, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${url.replace(/\/[0-9a-f-]{36}/g, '/:id')}`);
+      return request(url, init);
+    });
+    return { requests, request, spy };
+  };
+  const runFiles = async (api: ApiClient, backupId: string) => {
+    // The newest run; listing order isn't guaranteed for runs started together.
+    const { items: runs } = await api.request(`/v1/backups/${backupId}/runs`);
+    const run = [...runs].sort((a: { startedAt: string }, b: { startedAt: string }) =>
+      b.startedAt.localeCompare(a.startedAt),
+    )[0];
+    const { items } = await api.request(`/v1/backups/${backupId}/runs/${run.id}/files`);
+    return { run, items: items as { relativePath: string }[] };
+  };
+
+  it('saves many small files with two requests per batch', async () => {
+    const { directory, journal, engine, api, remote } = await backupFolder();
+    for (let index = 0; index < 30; index++) {
+      await mkdir(path.join(directory, `album-${index % 3}`), { recursive: true });
+      await writeFile(
+        path.join(directory, `album-${index % 3}`, `photo-${index}.jpg`),
+        `photo ${index}`,
+      );
+    }
+    const { requests } = watch(api);
+    await engine.backupNow('local');
+    await engine.tick();
+    const count = (pattern: RegExp) => requests.filter((r) => pattern.test(r)).length;
+    // 25 + 5 files, and one folder each for the three albums.
+    expect(count(/^POST .*\/uploads\/batch$/)).toBe(2);
+    expect(count(/^POST .*\/files\/batch$/)).toBe(2);
+    expect(count(/^POST .*\/runs\/:id\/uploads$/)).toBe(0);
+    expect(count(/^POST \/v1\/uploads\/:id\/(parts|complete)$/)).toBe(0);
+    expect(count(/^POST .*\/runs\/:id\/folders$/)).toBe(3);
+    const { run, items } = await runFiles(api, remote.id);
+    expect(run.state).toBe('COMPLETED');
+    expect(items).toHaveLength(30);
+    expect(journal.jobs()).toEqual([]);
+    expect(journal.file('local', 'album-1/photo-1.jpg')).toMatchObject({ type: 'FILE' });
+  });
+
+  it('backs up a file already in the cloud, and a large one, on their own', async () => {
+    const { directory, journal, engine, api, remote } = await backupFolder();
+    for (const name of ['a.txt', 'b.txt', 'c.txt'])
+      await writeFile(path.join(directory, name), name);
+    await writeFile(path.join(directory, 'large.bin'), Buffer.alloc(9 * 1024 * 1024, 1));
+    await engine.backupNow('local');
+    await engine.tick();
+    expect(journal.jobs()).toEqual([]);
+    // Saved again from a fresh copy of this computer: b.txt now exists in the cloud.
+    journal.resetRootFiles('local');
+    await writeFile(path.join(directory, 'b.txt'), 'b changed');
+    await writeFile(path.join(directory, 'd.txt'), 'd');
+    const { requests } = watch(api);
+    await engine.backupNow('local');
+    await engine.tick();
+    expect(journal.jobs().map((job) => [job.relativePath, job.error])).toEqual([]);
+    // The large file went alone, through the multipart path.
+    expect(requests.some((r) => /^POST \/v1\/uploads\/:id\/complete$/.test(r))).toBe(true);
+    const { items } = await runFiles(api, remote.id);
+    expect(items.map((item) => item.relativePath).sort()).toEqual(
+      expect.arrayContaining(['b.txt', 'd.txt']),
+    );
+  });
+
+  it('saves one file at a time when the server has no batch routes', async () => {
+    const { directory, journal, engine, api, remote } = await backupFolder();
+    for (let index = 0; index < 4; index++)
+      await writeFile(path.join(directory, `${index}.txt`), `${index}`);
+    const { requests, request, spy } = watch(api);
+    spy.mockImplementation(async (url, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${url}`);
+      if (/\/(uploads|files)\/batch$/.test(url))
+        throw new ApiError('NOT_FOUND', 'Endpoint not found.', 404);
+      return request(url, init);
+    });
+    await engine.backupNow('local');
+    await engine.tick();
+    expect(requests.filter((r) => r.endsWith('/uploads/batch'))).toHaveLength(1);
+    expect(journal.jobs()).toEqual([]);
+    expect((await runFiles(api, remote.id)).items).toHaveLength(4);
   });
 });

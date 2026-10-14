@@ -1,8 +1,14 @@
 import path from 'node:path';
 import os from 'node:os';
-import { FolderBackups, backupReady, type BackupConversion } from './backups';
+import {
+  FolderBackups,
+  backupReady,
+  modifiedAt,
+  type BackupConversion,
+  type BatchOutcome,
+} from './backups';
 import { SyncReceipts } from './sync-receipts';
-import { mkdir, lstat, rename, rm, access, readdir, stat } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
   stickyIssue,
@@ -27,7 +33,15 @@ import {
   legacySafeSegment,
   conflictName,
 } from './paths';
-import { uploadFile, downloadFile, hashFile, cancelUpload, type UploadState } from './transfers';
+import {
+  uploadFile,
+  downloadFile,
+  hashFile,
+  cancelUpload,
+  putPart,
+  transferKeys,
+  type UploadState,
+} from './transfers';
 // Watchers can miss events (sleep, a full event buffer, edits while the app was closed),
 // so every folder is also compared against the journal on this schedule.
 export const LOCAL_SCAN_INTERVAL = 5 * 60_000;
@@ -54,6 +68,8 @@ const BACKUP_YIELD_MS = 15_000;
 const SYNC_SLICE_MS = 15_000;
 // Jobs read from the queue at a time.
 const QUEUE_PAGE = 500;
+// Files of a backup batch sent to storage at once.
+const BATCH_PUT_CONCURRENCY = 8;
 // A path harbor0 never accepts (nested too deep) is retried this rarely.
 const REFUSED_PATH_RETRY_MS = 24 * 3600_000;
 // Unreadable subfolders listed as separate problems; the last one counts the rest.
@@ -174,6 +190,7 @@ export class SyncEngine {
       (root, work) => this.onShare(root, work),
       (rootId) => this.unreadable.get(rootId) ?? [],
     );
+    this.backups.batch = (root, jobs, runId) => this.backupBatch(root, jobs, runId);
     this.state.lastSync = journal.get<string>('lastSync') ?? null;
     // An ended session returns the app to sign-in by itself; never restore that as a sync problem.
     this.state.issues = (journal.get<SyncIssue[]>('syncIssues') ?? []).filter(
@@ -856,6 +873,245 @@ export class SyncEngine {
     const depth = (job: LocalJob) => job.relativePath.split('/').length;
     yield* folders.sort((a, b) => depth(b) - depth(a));
   }
+  /** A batched file's refusal: retried alone, sent again, or failed like a single upload. */
+  private batchFailure(error: {
+    code?: string;
+    message?: string;
+    details?: unknown;
+  }): BatchOutcome {
+    if (error?.code === 'BATCH_NOT_REACHED') return { notReached: true };
+    // Already in the cloud, or an upload of its own got further: the single-file path sorts it out.
+    if (
+      [
+        'NAME_CONFLICT',
+        'REVISION_CONFLICT',
+        'INVALID_UPLOAD_STATE',
+        'IDEMPOTENCY_KEY_REUSED',
+      ].includes(error?.code ?? '')
+    )
+      return { alone: true };
+    return {
+      error: new ApiError(
+        error?.code ?? 'UPLOAD_FAILED',
+        error?.message ?? 'The file could not be backed up.',
+        409,
+        undefined,
+        error?.details,
+      ),
+    };
+  }
+  /**
+   * See BackupBatch. Several small new files of a backup run: one request creates their uploads
+   * (each with one storage link), they go to storage side by side, and one request finishes them
+   * and records them in the run. A file's upload is kept with its job as soon as it exists, so
+   * one the batch doesn't finish resumes alone instead of starting over.
+   */
+  private async backupBatch(
+    root: Root,
+    jobs: LocalJob[],
+    runId: string,
+  ): Promise<Map<string, BatchOutcome> | null> {
+    const outcomes = new Map<string, BatchOutcome>();
+    const alone = (list: { job: LocalJob }[]) => {
+      for (const { job } of list) outcomes.set(job.id, { alone: true });
+      return outcomes;
+    };
+    // An encrypted account encrypts each file and its name on the way: one at a time.
+    if (transferKeys.upload()) return alone(jobs.map((job) => ({ job })));
+    const backup = { rootId: root.backupId!, runId };
+    const base = `/v1/backups/${backup.rootId}/runs/${runId}`;
+    const prepared: {
+      job: LocalJob;
+      absolute: string;
+      info: Stats;
+      hash: string;
+      parentId: string | null;
+      operationId: string;
+    }[] = [];
+    for (const job of jobs) {
+      const absolute = contained(root.localPath, job.relativePath);
+      try {
+        await safeParents(root.localPath, job.relativePath, false);
+        const parentId = await this.remoteParent(root, job.relativePath, backup);
+        const info = await lstat(absolute);
+        const hash = await hashFile(absolute);
+        const hashed = await lstat(absolute);
+        if (hashed.mtimeMs !== info.mtimeMs || hashed.size !== info.size) {
+          outcomes.set(job.id, { alone: true });
+          continue;
+        }
+        const operationId = (job.payload.upload?.operationId as string | undefined) ?? job.id;
+        prepared.push({ job, absolute, info, hash, parentId, operationId });
+      } catch (error) {
+        if (this.interrupts(error)) throw error;
+        outcomes.set(job.id, { error: error as Error });
+      }
+    }
+    if (!prepared.length) return outcomes;
+    this.state.active = {
+      rootId: root.id,
+      direction: 'upload',
+      relativePath: prepared[0].job.relativePath,
+      loaded: 0,
+      total: prepared.reduce((sum, file) => sum + file.info.size, 0),
+    };
+    this.state.message = `Uploading ${prepared.length} files`;
+    this.emit();
+    try {
+      return await this.sendBatch(root, base, prepared, outcomes);
+    } finally {
+      this.state.active = null;
+      this.emit();
+    }
+  }
+  /** The storage and finishing half of backupBatch, for files whose folders and hashes are ready. */
+  private async sendBatch(
+    root: Root,
+    base: string,
+    prepared: {
+      job: LocalJob;
+      absolute: string;
+      info: Stats;
+      hash: string;
+      parentId: string | null;
+      operationId: string;
+    }[],
+    outcomes: Map<string, BatchOutcome>,
+  ): Promise<Map<string, BatchOutcome> | null> {
+    const alone = (list: { job: LocalJob }[]) => {
+      for (const { job } of list) outcomes.set(job.id, { alone: true });
+      return outcomes;
+    };
+    let created: {
+      upload?: { id: string; partSizeBytes: number };
+      uploadUrl?: string;
+      error?: any;
+    }[];
+    try {
+      created = (
+        await this.api.request(`${base}/uploads/batch`, {
+          method: 'POST',
+          body: {
+            uploads: prepared.map((file) => ({
+              operationId: file.operationId,
+              parentId: file.parentId,
+              name: path.basename(file.absolute),
+              sizeBytes: file.info.size,
+              contentHash: file.hash,
+              mimeType: 'application/octet-stream',
+            })),
+          },
+        })
+      ).results;
+    } catch (error) {
+      // An older server has no batch routes.
+      if (error instanceof ApiError && error.code === 'NOT_FOUND') return null;
+      if (this.interrupts(error)) throw error;
+      return alone(prepared);
+    }
+    const uploads: ((typeof prepared)[number] & { uploadId: string; uploadUrl: string })[] = [];
+    prepared.forEach((file, n) => {
+      const result = created[n];
+      if (!result?.upload || !result.uploadUrl) {
+        outcomes.set(file.job.id, this.batchFailure(result?.error ?? {}));
+        return;
+      }
+      file.job.payload.upload = {
+        operationId: file.operationId,
+        uploadId: result.upload.id,
+        partSize: result.upload.partSizeBytes,
+        hash: file.hash,
+        size: file.info.size,
+        mtime: file.info.mtimeMs,
+      } satisfies UploadState;
+      this.journal.saveJob(file.job);
+      uploads.push({ ...file, uploadId: result.upload.id, uploadUrl: result.uploadUrl });
+    });
+    // To storage side by side; a file that changed meanwhile, or that storage refused, goes alone
+    // and resumes the upload it already has.
+    const etags: (string | undefined)[] = [];
+    let next = 0;
+    let interrupted: unknown;
+    let loaded = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(BATCH_PUT_CONCURRENCY, uploads.length) }, async () => {
+        while (next < uploads.length && !interrupted) {
+          const n = next++;
+          const file = uploads[n];
+          try {
+            const buffer = await readFile(file.absolute);
+            const etag = await putPart(
+              this.api,
+              file.job.payload.upload as UploadState,
+              1,
+              buffer,
+              file.uploadUrl,
+              buffer.length,
+            );
+            const after = await lstat(file.absolute);
+            if (
+              buffer.length !== file.info.size ||
+              after.mtimeMs !== file.info.mtimeMs ||
+              after.size !== file.info.size
+            )
+              outcomes.set(file.job.id, { alone: true });
+            else etags[n] = etag;
+            loaded += buffer.length;
+            if (this.state.active) this.state.active = { ...this.state.active, loaded };
+            this.emit(true);
+          } catch (error) {
+            if (this.interrupts(error)) interrupted ??= error;
+            else outcomes.set(file.job.id, { alone: true });
+          }
+        }
+      }),
+    );
+    if (interrupted) throw interrupted;
+    const sent = uploads.flatMap((file, n) => (etags[n] ? [{ ...file, etag: etags[n]! }] : []));
+    if (!sent.length) return outcomes;
+    let finished: { item?: DriveItem; entry?: any; error?: any }[];
+    try {
+      finished = (
+        await this.api.request(`${base}/files/batch`, {
+          method: 'POST',
+          body: {
+            files: sent.map((file) => ({
+              uploadId: file.uploadId,
+              etag: file.etag,
+              contentHash: file.hash,
+              relativePath: file.job.relativePath,
+              modifiedAt: modifiedAt(file.info),
+              savedAt: new Date().toISOString(),
+            })),
+          },
+        })
+      ).results;
+    } catch (error) {
+      if (this.interrupts(error)) throw error;
+      return alone(sent);
+    }
+    sent.forEach((file, n) => {
+      const result = finished[n];
+      if (!result?.item || !result.entry) {
+        outcomes.set(file.job.id, this.batchFailure(result?.error ?? {}));
+        return;
+      }
+      this.journal.putFile({
+        rootId: root.id,
+        relativePath: file.job.relativePath,
+        itemId: result.item.id,
+        revision: result.item.revision,
+        hash: file.hash,
+        type: 'FILE',
+        sizeBytes: file.info.size,
+        mtimeMs: file.info.mtimeMs,
+      });
+      this.receipts.queue(root, file.job.relativePath, result.item, file.hash);
+      this.activity(root, file.job.relativePath, 'upload', result.item);
+      outcomes.set(file.job.id, { entry: result.entry });
+    });
+    return outcomes;
+  }
   /** Files nested deeper than harbor0 stores, listed as one problem per folder. */
   private tooDeep(root: Root, job: LocalJob) {
     const jobs = this.deepJobs.get(root.id) ?? new Set<string>();
@@ -1370,8 +1626,13 @@ export class SyncEngine {
         if (!this.watchers.has(root.id)) await this.watch(root);
         // A folder being removed or restored has no settled local copy to compare.
         const interval = this.shares.has(root.id) ? NETWORK_SCAN_INTERVAL : LOCAL_SCAN_INTERVAL;
+        // A backup run under way already lists every file it will save, so the look through the
+        // folder waits until it ends rather than holding it up for minutes after every start;
+        // what changed meanwhile goes in the next run, as it would anyway.
+        const runResumes = root.mode === 'backup' && !!this.backups.run(root.id);
         if (
           (!root.archive || root.archive === 'pending') &&
+          !runResumes &&
           Date.now() - (this.scannedAt.get(root.id) ?? 0) >= interval
         ) {
           try {
@@ -2015,7 +2276,7 @@ export class SyncEngine {
         itemId: item.id,
         versionId: item.currentVersionId,
         sizeBytes: item.sizeBytes,
-        modifiedAt: new Date(state.mtime!).toISOString(),
+        modifiedAt: modifiedAt({ mtimeMs: state.mtime! }),
         savedAt: new Date().toISOString(),
       };
       this.journal.saveJob(job);

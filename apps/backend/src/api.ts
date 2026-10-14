@@ -310,7 +310,7 @@ export function createApp(
           const checks = await Promise.allSettled([
             service.ensureUser(identity),
             service.checkDevice(identity.id, identity.deviceId!),
-            rateLimit(`user:${identity.id}`, 600),
+            rateLimit(`user:${identity.id}`, c.RATE_LIMIT),
             rateLimit(`pat:${identity.deviceId}`, TOKEN_RATE_LIMIT),
           ]);
           for (const check of checks) if (check.status === 'rejected') throw check.reason;
@@ -357,7 +357,12 @@ export function createApp(
             // A retried deletion must get past its own tombstone to finish removing the sign-in.
             timed('profile', service.ensureUser(identity, d.path === deleteAccountPath)),
             !registering && timed('device', service.checkDevice(identity.id, identity.deviceId!)),
-            timed('rate', rateLimit(`user:${identity.id}`, 600)),
+            timed(
+              'rate',
+              c.bulkTransferPath(d.path)
+                ? rateLimit(`user-bulk:${identity.id}`, c.BULK_RATE_LIMIT)
+                : rateLimit(`user:${identity.id}`, c.RATE_LIMIT),
+            ),
           ]);
           for (const check of checks) if (check.status === 'rejected') throw check.reason;
           if (checks[1].status === 'fulfilled' && checks[1].value)
@@ -2012,6 +2017,110 @@ export function createApp(
         runId: p(ctx, 'runId'),
         deviceId: backupDevice(ctx),
       }),
+  );
+  // A batch stops starting files after this long, inside the API's 29 s limit; the files it did
+  // not reach come back as BATCH_NOT_REACHED and the device sends them again.
+  const BATCH_DEADLINE_MS = 18_000;
+  const batchError = (error: unknown) => {
+    if (!(error instanceof DomainError)) throw error;
+    return {
+      error: { code: error.code, message: error.message, details: error.details },
+    };
+  };
+  const notReached = {
+    error: { code: 'BATCH_NOT_REACHED', message: 'Not reached in this batch. Send it again.' },
+  };
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/uploads/batch',
+    'Append several small backup files at once: each gets an upload and one storage part URL',
+    z
+      .object({
+        uploads: z
+          .array(c.uploadInput.refine((u) => u.sizeBytes <= c.BATCH_UPLOAD_MAX_BYTES))
+          .min(1)
+          .max(c.BATCH_UPLOAD_FILES),
+      })
+      .strict(),
+    z.object({ results: z.array(anyObject) }),
+    async (ctx, i) => {
+      const write = { rootId: p(ctx, 'id'), runId: p(ctx, 'runId'), deviceId: backupDevice(ctx) };
+      const started = Date.now();
+      const results = [];
+      // One file at a time: each reserves storage on the account, which parallel requests would
+      // only contend for.
+      for (const input of i.uploads) {
+        if (Date.now() - started > BATCH_DEADLINE_MS) {
+          results.push(notReached);
+          continue;
+        }
+        try {
+          const { upload } = await service.createUpload(userId(ctx), input, write.deviceId, write);
+          const { parts } = await service.uploadParts(userId(ctx), upload.id, [1]);
+          results.push({ upload, uploadUrl: parts[0].uploadUrl });
+        } catch (error) {
+          results.push(batchError(error));
+        }
+      }
+      return { results };
+    },
+  );
+  add(
+    'post',
+    '/v1/backups/:id/runs/:runId/files/batch',
+    'Finish several small backup uploads and record them in the run at once',
+    z
+      .object({
+        files: z
+          .array(
+            z
+              .object({
+                uploadId: c.id,
+                etag: z.string().min(1).max(256),
+                contentHash: c.hash,
+                relativePath: z.string().min(1).max(4096),
+                modifiedAt: z.string(),
+                savedAt: z.string(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(c.BATCH_UPLOAD_FILES),
+      })
+      .strict(),
+    z.object({ results: z.array(anyObject) }),
+    async (ctx, i) => {
+      const [rootId, runId, deviceId] = [p(ctx, 'id'), p(ctx, 'runId'), backupDevice(ctx)];
+      const started = Date.now();
+      const results = [];
+      for (const file of i.files) {
+        if (Date.now() - started > BATCH_DEADLINE_MS) {
+          results.push(notReached);
+          continue;
+        }
+        try {
+          const { item } = await service.completeUpload(
+            userId(ctx),
+            file.uploadId,
+            [{ partNumber: 1, etag: file.etag }],
+            file.contentHash,
+          );
+          const entry = {
+            relativePath: file.relativePath,
+            itemId: item.id,
+            versionId: item.currentVersionId!,
+            sizeBytes: item.sizeBytes,
+            modifiedAt: file.modifiedAt,
+            savedAt: file.savedAt,
+          };
+          await backupWorkflows.entry(userId(ctx), rootId, deviceId, runId, entry);
+          results.push({ item, entry });
+        } catch (error) {
+          results.push(batchError(error));
+        }
+      }
+      return { results };
+    },
   );
   for (const [collection, schema, prefix] of [
     ['runs', backupRunSchema, 'RUN#'],

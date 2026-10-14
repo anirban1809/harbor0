@@ -315,7 +315,9 @@ const ENGINE_REQUESTS = [
   'POST /v1/backups/:id/runs',
   'POST /v1/backups/:id/runs/:runId/folders',
   'POST /v1/backups/:id/runs/:runId/uploads',
+  'POST /v1/backups/:id/runs/:runId/uploads/batch',
   'GET /v1/backups/:id/runs/:runId/files',
+  'POST /v1/backups/:id/runs/:runId/files/batch',
   'POST /v1/backups/:id/runs/:runId/files',
   'POST /v1/backups/:id/runs/:runId/complete',
   'POST /v1/backups/:id/checked',
@@ -473,6 +475,7 @@ export const adminActivitySchema = z.object({
  */
 export const USAGE_ACTIONS = {
   'POST /v1/uploads/:id/complete': 'UPLOADED',
+  'POST /v1/backups/:id/runs/:runId/files/batch': 'UPLOADED',
   'POST /v1/downloads': 'DOWNLOADED',
   'POST /v1/folder-downloads': 'FOLDER_ZIPPED',
   'POST /v1/drive/folders': 'FOLDER_CREATED',

@@ -323,7 +323,7 @@ async function upload(
   ).item;
 }
 /** PUTs one part to storage, signing a new link for each retry; returns its ETag. */
-async function putPart(
+export async function putPart(
   api: ApiClient,
   state: UploadState,
   n: number,

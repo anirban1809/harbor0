@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest';
+import { it, expect, vi } from 'vitest';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -238,6 +238,43 @@ it('counts the files found while a folder is first checked, then clears the coun
     let last = 0;
     await (engine as any).scanLocalPass(journal.roots()[0], (found: number) => (last = found));
     expect(last).toBe(60);
+  } finally {
+    await engine.stop();
+    await close();
+  }
+});
+
+it('resumes a backup run before looking through its folder again', async () => {
+  const { local, journal, close } = await fixture();
+  journal.root({
+    id: 'backup',
+    localPath: local,
+    remoteId: 'remote-backup',
+    backupId: 'b1',
+    mode: 'backup',
+    paused: false,
+    excluded: [],
+  });
+  journal.removeRoot('root');
+  // A run left from before the app restarted, with nothing left in it.
+  journal.set('backup-run:backup', { id: 'run', trigger: 'AUTOMATIC', total: 1, next: 1 });
+  journal.set('backup-run-jobs:backup', ['gone']);
+  const api = new ApiClient(async (endpoint) => {
+    if (endpoint.startsWith('/v1/sync/changes'))
+      return { changes: [], nextCursor: 1, hasMore: false };
+    if (endpoint === '/v1/backups/b1') return { root: { state: 'ACTIVE' } };
+    if (endpoint.endsWith('/pending-restores')) return { items: [] };
+    return {};
+  });
+  const engine = new SyncEngine(api, journal, 'device', () => {});
+  const scans = vi.spyOn(engine as any, 'scanLocal');
+  try {
+    await engine.tick();
+    expect(scans).not.toHaveBeenCalled();
+    expect(journal.get('backup-run:backup')).toBeNull();
+    // The run is done: the next pass looks through the folder.
+    await engine.tick();
+    expect(scans).toHaveBeenCalledTimes(1);
   } finally {
     await engine.stop();
     await close();

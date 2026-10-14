@@ -1,10 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
 import { lstat, mkdir, mkdtemp, readdir, rm, rmdir } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
-import { isEncryptedName, type DriveItem } from '@harbor/contracts';
+import {
+  BATCH_UPLOAD_FILES,
+  BATCH_UPLOAD_MAX_BYTES,
+  isEncryptedName,
+  type DriveItem,
+} from '@harbor/contracts';
 import {
   contained,
   internalPath,
@@ -16,6 +22,12 @@ import {
 import { cancelUpload, downloadFile, hashFile, uploadFile, type UploadState } from './transfers';
 import { fileSize } from '../../web/lib/file-metadata';
 export const BACKUP_QUIET_MS = 60 * 60 * 1000;
+/**
+ * A file's modification time as a backup entry records it. Built from mtimeMs the way every
+ * caller does: Stats.mtime rounds the fraction of a millisecond where new Date(mtimeMs)
+ * truncates it, so mixing the two made about half of all saved files look changed.
+ */
+export const modifiedAt = (info: { mtimeMs: number }) => new Date(info.mtimeMs).toISOString();
 export function backupReady(mtimeMs: number, observedAt = 0, now = Date.now()) {
   return now - Math.max(mtimeMs, observedAt) >= BACKUP_QUIET_MS;
 }
@@ -64,10 +76,28 @@ function refused(error: unknown) {
  * the server's own view of them (`raw`), whose names stay as stored.
  */
 export type BackupConversion = { form: () => 'encrypted' | 'plain' | null; raw: ApiClient };
+/** What happened to one file sent in a batch; see BackupBatch. */
+export type BatchOutcome =
+  | { entry: BackupEntry }
+  | { error: Error }
+  // Needs the single-file path: it already exists in the cloud, or changed while being sent.
+  | { alone: true }
+  // The server ran out of time before it; it is sent again.
+  | { notReached: true };
+/**
+ * Saves several small new files of a run at once (SyncEngine.backupBatch): two requests for the
+ * lot instead of several each. Null when the server has no batch routes.
+ */
+export type BackupBatch = (
+  root: Root,
+  jobs: LocalJob[],
+  runId: string,
+) => Promise<Map<string, BatchOutcome> | null>;
 export class FolderBackups {
   private nextRestoreCheck = new Map<string, number>();
   private runJobs = new Map<string, { id: string; jobs: string[] }>();
   conversion?: BackupConversion;
+  batch?: BackupBatch;
   constructor(
     private api: ApiClient,
     private journal: Journal,
@@ -344,9 +374,96 @@ export class FolderBackups {
       method: 'POST',
       body: { id: run.id, trigger: run.trigger },
     });
+    // A file just saved: changes made to it while it was sent must survive its queue entry.
+    const saved = async (job: LocalJob, entry: BackupEntry, before?: Stats) => {
+      this.journal.finish(job.id);
+      if (run.room !== undefined) run.room = Math.max(0, run.room - entry.sizeBytes);
+      const after = await lstat(contained(root.localPath, job.relativePath)).catch(() => null);
+      if (
+        after &&
+        (!before ||
+          after.mtimeMs !== before.mtimeMs ||
+          after.size !== before.size ||
+          modifiedAt(after) !== entry.modifiedAt)
+      ) {
+        this.journal.enqueue(root.id, job.relativePath, 'upsert');
+        const next = this.journal.pendingJob(root.id, job.relativePath, 'upsert');
+        if (next) {
+          next.payload.observedAt = Date.now();
+          this.journal.saveJob(next);
+        }
+      }
+    };
+    // A file that could not be saved this run: it waits to be retried, and the run says why.
+    const failed = async (job: LocalJob, error: unknown, before?: Stats) => {
+      // Retain upload state and the run for network retries, including acknowledgement loss.
+      // Timed-out requests (including the stall watchdog's abort) may have been applied.
+      if (
+        error instanceof TypeError ||
+        (error as Error).name === 'TimeoutError' ||
+        (error as { status?: number }).status! >= 500
+      )
+        throw error;
+      if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
+      // Too many requests: the pass pauses and this file is tried again, not failed.
+      if (error instanceof ApiError && error.status === 429) throw error;
+      if (job.payload.upload?.uploadId) await cancelUpload(this.api, job.payload.upload.uploadId);
+      // The retry belongs to a new run, a different request to the server, so it needs a new
+      // operation ID even when no upload was recorded: one may have been made unseen.
+      if (job.payload.upload) job.payload.upload = { operationId: crypto.randomUUID() };
+      job.attempts++;
+      // A path harbor0 never accepts waits a day; retrying each minute cannot help.
+      job.payload.retryAfter =
+        Date.now() +
+        (error instanceof ApiError && error.code === 'PATH_TOO_DEEP' ? 24 * 3600_000 : 60000);
+      job.error = (error as Error).message;
+      this.journal.saveJob(job);
+      if (error instanceof ApiError && error.code === 'STORAGE_QUOTA_EXCEEDED') {
+        // From here on only files that fit in what is left are tried.
+        const details = (error.details ?? {}) as { availableBytes?: number };
+        run.room = details.availableBytes ?? 0;
+        run.tooBig = (run.tooBig ?? 0) + 1;
+        const current = this.journal.roots().find((r) => r.id === root.id);
+        this.storageShort(root, {
+          requiredBytes: Math.max(current?.backupStorage?.requiredBytes ?? 0, before?.size ?? 0),
+          availableBytes: run.room,
+          files: Math.max(current?.backupStorage?.files ?? 0, run.tooBig),
+        });
+      } else run.error = `${job.relativePath}: ${job.error}`.slice(0, 2000);
+    };
     for (let index = run.next ?? 0; index < runJobs.length; index++) {
-      const id = runJobs[index];
       if (stopped()) return;
+      // Small new files go several at a time; the rest, one by one below.
+      const group = this.batch ? await this.batchGroup(root, run, runJobs, index) : [];
+      if (group.length > 1) {
+        const outcomes = await this.batch!(
+          root,
+          group.map(({ job }) => job),
+          run.id,
+        );
+        if (!outcomes) {
+          // An older server: save files one at a time from now on.
+          this.batch = undefined;
+          index--;
+          continue;
+        }
+        let resume = group.at(-1)!.at + 1;
+        for (const { job, before, at } of group) {
+          const outcome = outcomes.get(job.id) ?? { notReached: true as const };
+          if ('entry' in outcome) await saved(job, outcome.entry, before);
+          else if ('error' in outcome) await failed(job, outcome.error, before);
+          else if ('alone' in outcome) {
+            job.payload.alone = true;
+            this.journal.saveJob(job);
+            resume = Math.min(resume, at);
+          } else resume = Math.min(resume, at);
+        }
+        index = resume - 1;
+        run.next = resume;
+        this.journal.set(key, run);
+        continue;
+      }
+      const id = runJobs[index];
       const job = this.journal.job(id);
       if (job) {
         let before;
@@ -381,72 +498,16 @@ export class FolderBackups {
                 itemId: item.id,
                 versionId: item.currentVersionId,
                 sizeBytes: item.sizeBytes,
-                modifiedAt: before!.mtime.toISOString(),
+                modifiedAt: modifiedAt(before!),
                 savedAt: new Date().toISOString(),
               };
               job.payload.backupEntry = entry;
               this.journal.saveJob(job);
             }
             await this.api.request(`${url}/runs/${run.id}/files`, { method: 'POST', body: entry });
-            this.journal.finish(job.id);
-            if (run.room !== undefined) run.room = Math.max(0, run.room - entry.sizeBytes);
-            // Changes observed during a transfer must survive completion of its old queue entry.
-            const after = await lstat(contained(root.localPath, job.relativePath)).catch(
-              () => null,
-            );
-            if (
-              after &&
-              (!before ||
-                after.mtimeMs !== before.mtimeMs ||
-                after.size !== before.size ||
-                after.mtime.toISOString() !== entry.modifiedAt)
-            ) {
-              this.journal.enqueue(root.id, job.relativePath, 'upsert');
-              const next = this.journal.pendingJob(root.id, job.relativePath, 'upsert');
-              if (next) {
-                next.payload.observedAt = Date.now();
-                this.journal.saveJob(next);
-              }
-            }
+            await saved(job, entry, before);
           } catch (error) {
-            // Retain upload state and the run for network retries, including acknowledgement loss.
-            // Timed-out requests (including the stall watchdog's abort) may have been applied.
-            if (
-              error instanceof TypeError ||
-              (error as Error).name === 'TimeoutError' ||
-              (error as { status?: number }).status! >= 500
-            )
-              throw error;
-            if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
-            // Too many requests: the pass pauses and this file is tried again, not failed.
-            if (error instanceof ApiError && error.status === 429) throw error;
-            if (job.payload.upload?.uploadId)
-              await cancelUpload(this.api, job.payload.upload.uploadId);
-            // The retry belongs to a new run, a different request to the server, so it needs a new
-            // operation ID even when no upload was recorded: one may have been made unseen.
-            if (job.payload.upload) job.payload.upload = { operationId: crypto.randomUUID() };
-            job.attempts++;
-            // A path harbor0 never accepts waits a day; retrying each minute cannot help.
-            job.payload.retryAfter =
-              Date.now() +
-              (error instanceof ApiError && error.code === 'PATH_TOO_DEEP' ? 24 * 3600_000 : 60000);
-            job.error = (error as Error).message;
-            this.journal.saveJob(job);
-            if (error instanceof ApiError && error.code === 'STORAGE_QUOTA_EXCEEDED') {
-              // From here on only files that fit in what is left are tried.
-              const details = (error.details ?? {}) as { availableBytes?: number };
-              run.room = details.availableBytes ?? 0;
-              run.tooBig = (run.tooBig ?? 0) + 1;
-              const current = this.journal.roots().find((r) => r.id === root.id);
-              this.storageShort(root, {
-                requiredBytes: Math.max(
-                  current?.backupStorage?.requiredBytes ?? 0,
-                  before?.size ?? 0,
-                ),
-                availableBytes: run.room,
-                files: Math.max(current?.backupStorage?.files ?? 0, run.tooBig),
-              });
-            } else run.error = `${job.relativePath}: ${job.error}`.slice(0, 2000);
+            await failed(job, error, before);
           }
         }
       }
@@ -469,6 +530,41 @@ export class FolderBackups {
     const current = this.journal.roots().find((r) => r.id === root.id);
     if (current && current.lastBackupError !== error)
       this.journal.root({ ...current, lastBackupError: error });
+  }
+  /**
+   * The run's next files that can go in one batch: new (nothing saved for them yet, no upload of
+   * their own under way), small, settled, and fitting the storage left. Stops at the first that
+   * can't, which then goes alone.
+   */
+  private async batchGroup(root: Root, run: PendingRun, runJobs: string[], start: number) {
+    const group: { job: LocalJob; before: Stats; at: number }[] = [];
+    // The storage left once the files already in the group are saved.
+    let left = run.room;
+    for (let at = start; at < runJobs.length && group.length < BATCH_UPLOAD_FILES; at++) {
+      const job = this.journal.job(runJobs[at]);
+      if (!job) continue;
+      if (
+        job.kind !== 'upsert' ||
+        job.payload.backupEntry ||
+        job.payload.upload?.uploadId ||
+        job.payload.alone ||
+        this.journal.file(root.id, job.relativePath)
+      )
+        break;
+      const before = await lstat(contained(root.localPath, job.relativePath)).catch(() => null);
+      if (
+        !before?.isFile() ||
+        before.size > BATCH_UPLOAD_MAX_BYTES ||
+        (left !== undefined && before.size > left) ||
+        (run.trigger !== 'MANUAL' && !backupReady(before.mtimeMs, job.payload.observedAt ?? 0))
+      )
+        break;
+      job.payload.backupManual = run.trigger === 'MANUAL';
+      job.payload.backupRunId = run.id;
+      group.push({ job, before, at });
+      if (left !== undefined) left -= before.size;
+    }
+    return group;
   }
   /**
    * Brings a folder's backup in line with the account's encryption. Only this computer may change
