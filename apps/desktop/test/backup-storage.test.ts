@@ -322,6 +322,26 @@ describe('small files in batches', () => {
     );
   });
 
+  it('counts each file once when a finished batch is sent again', async () => {
+    const { directory, engine, api, remote } = await backupFolder();
+    for (let index = 0; index < 3; index++)
+      await writeFile(path.join(directory, `${index}.txt`), `${index}`);
+    const { request, spy } = watch(api);
+    let replayed: { results: { entry: { itemId: string } }[] } | undefined;
+    spy.mockImplementation(async (url, init) => {
+      const result = await request(url, init);
+      // As if the reply was lost: the device sends the same files again.
+      if (url.endsWith('/files/batch')) replayed = await request(url, init);
+      return result;
+    });
+    await engine.backupNow('local');
+    await engine.tick();
+    expect(replayed?.results.map((result) => result.entry.itemId)).toHaveLength(3);
+    const { run, items } = await runFiles(api, remote.id);
+    expect(items).toHaveLength(3);
+    expect(run.fileCount).toBe(3);
+  });
+
   it('saves one file at a time when the server has no batch routes', async () => {
     const { directory, journal, engine, api, remote } = await backupFolder();
     for (let index = 0; index < 4; index++)

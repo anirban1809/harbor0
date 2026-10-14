@@ -938,10 +938,24 @@ export class StorageService {
         deviceId?: string,
         backupWrite?: BackupWrite,
     ) {
-        const initial = await this.ownerStorage(userId, () =>
+        const { upload } = await this.reserveUpload(userId, input, deviceId, backupWrite);
+        return {
+            upload: this.publicUpload(await this.openUpload(userId, upload.id)),
+            storage: (await this.me(userId)).storage,
+        };
+    }
+    /** Records an upload and reserves its room on the owner's storage; openUpload starts it. */
+    reserveUpload(userId: string, input: UploadInput, deviceId?: string, backupWrite?: BackupWrite) {
+        return this.ownerStorage(userId, () =>
             this.createUploadRecord(userId, input, deviceId, backupWrite),
         );
-        const upload = await this.getUpload(userId, initial.upload.id);
+    }
+    /**
+     * Starts a reserved upload in storage. It writes only the upload's own record, so several
+     * may be opened at once.
+     */
+    async openUpload(userId: string, id: string) {
+        const upload = await this.getUpload(userId, id);
         if (upload.state === 'CREATED' && !upload.providerUploadId) {
             const providerId = await this.storage.create(upload.objectKey);
             let attached = false;
@@ -958,10 +972,17 @@ export class StorageService {
                 if (!attached) await this.storage.abort(upload.objectKey, providerId);
             }
         }
-        return {
-            upload: this.publicUpload(await this.getUpload(userId, upload.id)),
-            storage: (await this.me(userId)).storage,
-        };
+        return this.getUpload(userId, upload.id);
+    }
+    /** A storage URL for a just-opened upload's first part, without checking its access again. */
+    async firstPartUrl(u: Upload) {
+        this.checkUpload(u);
+        return this.storage.signPart(
+            u.objectKey,
+            u.providerUploadId!,
+            1,
+            Math.min(u.partSizeBytes, u.expectedSizeBytes),
+        );
     }
     private createUploadRecord(
         userId: string,
@@ -1160,8 +1181,21 @@ export class StorageService {
         parts: CompletedPart[],
         contentHash: string,
     ): Promise<{ item: DriveItem; }> {
+        const ready = await this.prepareFinish(userId, id, parts, contentHash);
+        return 'item' in ready ? ready : this.commitFinish(userId, id, contentHash, ready.object);
+    }
+    /**
+     * Finishes an upload in storage and checks what was stored. It writes only the upload's own
+     * record, so several may be prepared at once; commitFinish then adds the file.
+     */
+    async prepareFinish(
+        userId: string,
+        id: string,
+        parts: CompletedPart[],
+        contentHash: string,
+    ): Promise<{ item: DriveItem; } | { object: { size: number; etag: string; }; }> {
         const fingerprint = digest({ parts, contentHash });
-        let u = await transact(this.repo, async (tx) => {
+        const u = await transact(this.repo, async (tx) => {
             const u = await tx.get<Upload>(userPK(userId), `UPLOAD#${id}`);
             assert(u, 'UPLOAD_NOT_FOUND', 'Upload was not found.', 404);
             await this.authorizeUpload(tx, userId, u);
@@ -1210,8 +1244,17 @@ export class StorageService {
                 409,
             );
         }
+        return { object };
+    }
+    /** Adds a prepared upload's file to the drive and moves its room from reserved to used. */
+    async commitFinish(
+        userId: string,
+        id: string,
+        contentHash: string,
+        object: { size: number; etag: string; },
+    ): Promise<{ item: DriveItem; }> {
         return transact(this.repo, async (tx) => {
-            u = (await tx.get<Upload>(userPK(userId), `UPLOAD#${id}`))!;
+            const u = (await tx.get<Upload>(userPK(userId), `UPLOAD#${id}`))!;
             if (u.state === 'COMPLETED') return { item: u.result! };
             assert(
                 u.state === 'COMPLETING' && u.expiresAt > now(),

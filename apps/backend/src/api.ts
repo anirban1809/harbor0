@@ -2046,22 +2046,34 @@ export function createApp(
     async (ctx, i) => {
       const write = { rootId: p(ctx, 'id'), runId: p(ctx, 'runId'), deviceId: backupDevice(ctx) };
       const started = Date.now();
-      const results = [];
-      // One file at a time: each reserves storage on the account, which parallel requests would
-      // only contend for.
+      // Reserved one at a time: each takes room on the account, which parallel requests would
+      // only contend for. Starting them in storage touches nothing shared, so that runs at once.
+      const reserved = [];
       for (const input of i.uploads) {
         if (Date.now() - started > BATCH_DEADLINE_MS) {
-          results.push(notReached);
+          reserved.push(notReached);
           continue;
         }
         try {
-          const { upload } = await service.createUpload(userId(ctx), input, write.deviceId, write);
-          const { parts } = await service.uploadParts(userId(ctx), upload.id, [1]);
-          results.push({ upload, uploadUrl: parts[0].uploadUrl });
+          reserved.push(await service.reserveUpload(userId(ctx), input, write.deviceId, write));
         } catch (error) {
-          results.push(batchError(error));
+          reserved.push(batchError(error));
         }
       }
+      const results = await Promise.all(
+        reserved.map(async (result) => {
+          if (!('upload' in result)) return result;
+          try {
+            const upload = await service.openUpload(userId(ctx), result.upload.id);
+            return {
+              upload: service.publicUpload(upload),
+              uploadUrl: await service.firstPartUrl(upload),
+            };
+          } catch (error) {
+            return batchError(error);
+          }
+        }),
+      );
       return { results };
     },
   );
@@ -2092,19 +2104,42 @@ export function createApp(
     async (ctx, i) => {
       const [rootId, runId, deviceId] = [p(ctx, 'id'), p(ctx, 'runId'), backupDevice(ctx)];
       const started = Date.now();
+      // Finishing in storage touches only each upload's own record, so it runs at once; adding
+      // the files moves room on the account and counts them in the run, so that is one at a time.
+      const prepared = await Promise.all(
+        i.files.map((file: (typeof i.files)[number]) =>
+          service
+            .prepareFinish(
+              userId(ctx),
+              file.uploadId,
+              [{ partNumber: 1, etag: file.etag }],
+              file.contentHash,
+            )
+            .catch(batchError),
+        ),
+      );
       const results = [];
-      for (const file of i.files) {
+      for (const [index, file] of i.files.entries()) {
+        const ready = prepared[index];
+        if ('error' in ready) {
+          results.push(ready);
+          continue;
+        }
+        // Not reached: finished in storage, so sending it again only adds the file.
         if (Date.now() - started > BATCH_DEADLINE_MS) {
           results.push(notReached);
           continue;
         }
         try {
-          const { item } = await service.completeUpload(
-            userId(ctx),
-            file.uploadId,
-            [{ partNumber: 1, etag: file.etag }],
-            file.contentHash,
-          );
+          const { item } =
+            'item' in ready
+              ? ready
+              : await service.commitFinish(
+                  userId(ctx),
+                  file.uploadId,
+                  file.contentHash,
+                  ready.object,
+                );
           const entry = {
             relativePath: file.relativePath,
             itemId: item.id,
