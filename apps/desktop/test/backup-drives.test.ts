@@ -26,6 +26,7 @@ vi.mock('../src/volumes', async (original) => {
         ? null
         : path.join(drives.base, relative.split(path.sep)[0]);
     },
+    volumeConnected: mounted,
     volumeId: async (root: string) => ((await mounted(root)) ? drives.ids.get(root) : null) ?? null,
     findVolume: async (id: string) => {
       for (const [root, value] of drives.ids)
@@ -41,7 +42,7 @@ vi.mock('../src/local-watcher', async () => {
   };
 });
 
-it('maps paths to swappable drives on macOS and Windows', async () => {
+it('maps paths to swappable drives on macOS, Windows and Linux', async () => {
   const { volumeLabel, volumeRoot } =
     await vi.importActual<typeof import('../src/volumes')>('../src/volumes');
   expect(volumeRoot('/Volumes/Photos SSD/2024/Trip', 'darwin')).toBe('/Volumes/Photos SSD');
@@ -50,7 +51,15 @@ it('maps paths to swappable drives on macOS and Windows', async () => {
   expect(volumeRoot('c:\\Users\\me', 'win32')).toBeNull();
   expect(volumeRoot('\\\\nas\\share\\Photos', 'win32')).toBe('\\\\NAS\\SHARE\\');
   expect(volumeLabel('\\\\NAS\\SHARE\\')).toBe('\\\\NAS\\SHARE');
-  expect(volumeRoot('/media/usb/Photos', 'linux')).toBeNull();
+  const user = os.userInfo().username;
+  expect(volumeRoot(`/media/${user}/Photos SSD/2024`, 'linux')).toBe(`/media/${user}/Photos SSD`);
+  expect(volumeRoot(`/media/${user}`, 'linux')).toBeNull();
+  expect(volumeRoot('/run/media/sam/USB/Trip', 'linux')).toBe('/run/media/sam/USB');
+  expect(volumeRoot('/run/media/sam', 'linux')).toBeNull();
+  expect(volumeRoot('/media/usb/Photos', 'linux')).toBe('/media/usb');
+  expect(volumeRoot('/mnt/backup/Photos', 'linux')).toBe('/mnt/backup');
+  expect(volumeRoot('/home/me/Documents', 'linux')).toBeNull();
+  expect(volumeLabel('/run/media/sam/USB')).toBe('USB');
   expect(volumeLabel('E:\\')).toBe('E:');
   expect(volumeLabel('/Volumes/Photos SSD')).toBe('Photos SSD');
 });

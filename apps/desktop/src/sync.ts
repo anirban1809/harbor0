@@ -8,7 +8,7 @@ import {
   type BatchOutcome,
 } from './backups';
 import { SyncReceipts } from './sync-receipts';
-import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, access, readdir, readFile } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
   fullBelow,
@@ -23,7 +23,15 @@ import {
   type RestoreSummary,
 } from './sync-state';
 import { watchTree, type TreeWatcher } from './local-watcher';
-import { findVolume, isNetwork, volumeId, volumeLabel, volumeRoot, type Volume } from './volumes';
+import {
+  findVolume,
+  isNetwork,
+  volumeConnected,
+  volumeId,
+  volumeLabel,
+  volumeRoot,
+  type Volume,
+} from './volumes';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import { createHash } from 'node:crypto';
 import { FileCipher, b64url, encryptedSize } from '../../../packages/api-client/src/e2ee';
@@ -1527,7 +1535,7 @@ export class SyncEngine {
   private async checkVolume(root: Root) {
     const mount = volumeRoot(root.localPath);
     if (!mount) return root;
-    const connected = !!(await stat(mount).catch(() => null));
+    const connected = await volumeConnected(mount);
     // Null for a drive without one (a network share, some file systems): those are not checked.
     const id = connected ? await volumeId(mount) : null;
     const recorded = root.volume?.root === mount ? root.volume : undefined;

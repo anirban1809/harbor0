@@ -22,8 +22,47 @@ mac:
 win:
   target: [nsis]
 linux:
-  target: [AppImage, deb]
+  target: [AppImage, deb, rpm]
   category: Utility
+  # deb and rpm require a maintainer; package.json has no author to take it from.
+  maintainer: harbor0 <contact@harbor0.com>
+  vendor: harbor0
+  synopsis: Private storage, backup, sync, and sending
+  executableName: harbor0
+  # Names the window after harbor0.desktop, so docks group it with the launcher.
+  syncDesktopName: true
+# electron-builder's default package dependencies plus ALSA and GBM, which Electron also loads at
+# start; desktops have them, minimal installs don’t. Ubuntu 24.04 renamed libasound2 to libasound2t64,
+# which goes first: apt would otherwise take a libasound2 stub (liboss4-salsa-asound2) for it.
+deb:
+  depends:
+    [
+      libgtk-3-0,
+      libnotify4,
+      libnss3,
+      libxss1,
+      libxtst6,
+      xdg-utils,
+      libatspi2.0-0,
+      libuuid1,
+      libsecret-1-0,
+      libasound2t64 | libasound2,
+      libgbm1,
+    ]
+rpm:
+  depends:
+    [
+      gtk3,
+      libnotify,
+      nss,
+      libXScrnSaver,
+      (libXtst or libXtst6),
+      xdg-utils,
+      at-spi2-core,
+      (libuuid or libuuid1),
+      alsa-lib,
+      mesa-libgbm,
+    ]
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

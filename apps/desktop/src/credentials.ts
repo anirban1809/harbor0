@@ -11,10 +11,14 @@ export function keychainReady() {
     !(process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')
   );
 }
-const keychainMissing = () =>
-  new Error(
-    'Enable an OS keychain before signing in. harbor0 will not store unencrypted credentials.',
-  );
+/** Why harbor0 can't sign in on this computer, or undefined when it can. */
+export function keychainProblem() {
+  if (keychainReady()) return undefined;
+  return process.platform === 'linux'
+    ? 'harbor0 couldn’t reach a keyring to store your sign-in securely. Install and unlock GNOME Keyring, KWallet or another Secret Service keyring, then restart harbor0. harbor0 will not store unencrypted credentials.'
+    : 'Enable an OS keychain before signing in. harbor0 will not store unencrypted credentials.';
+}
+const keychainMissing = () => new Error(keychainProblem());
 
 /** Writes a value encrypted with the OS keychain, readable only by this user. */
 export async function writeSealed(file: string, value: unknown) {

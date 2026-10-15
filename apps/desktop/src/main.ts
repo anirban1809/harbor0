@@ -28,6 +28,7 @@ import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { DeviceKey } from './device-key';
 import { SyncEngine } from './sync';
+import { trayShown } from './tray-host';
 import { syncView } from './sync-view';
 import { FolderDiskUsageCache } from './folder-disk-usage';
 const folderDiskUsage = new FolderDiskUsageCache();
@@ -48,7 +49,13 @@ import { contained, safeSegment, safeParents } from './paths';
 import type { FileUpload } from '../../web/lib/upload-activity';
 import { prepareAppEnvironment } from './app-environment';
 import { DesktopSession, isSessionError, requestRenewal } from './session';
-import { readSavedSession, removeSealed, sessionFile, writeSealed } from './credentials';
+import {
+  keychainProblem,
+  readSavedSession,
+  removeSealed,
+  sessionFile,
+  writeSealed,
+} from './credentials';
 import { retrying } from './retry';
 import { cloudLocation, localDirectory } from './sync-mapping';
 import { IncomingMonitor, type IncomingContent } from './incoming';
@@ -555,6 +562,15 @@ if (process.platform === 'win32') {
       : '{AAA5958C-E20E-42C9-B684-193BD660A260}',
   );
 }
+// Chromium keeps secrets in KWallet on KDE and in the Secret Service (GNOME Keyring, KeePassXC…)
+// on desktops it recognises, but falls back to plain text on the rest (Sway, i3, Hyprland…) even
+// when a keyring is running there. Ask for the Secret Service there; --password-store still wins.
+if (
+  process.platform === 'linux' &&
+  !app.commandLine.hasSwitch('password-store') &&
+  !/KDE/i.test(process.env.XDG_CURRENT_DESKTOP ?? '')
+)
+  app.commandLine.appendSwitch('password-store', 'gnome-libsecret');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', (_event, _argv, _cwd, data) => {
@@ -763,11 +779,36 @@ app
       if (url !== pathToFileURL(rendererPath).href) event.preventDefault();
     });
     window.webContents.session.setPermissionRequestHandler((_, __, callback) => callback(false));
+    // Without a tray to reopen it from (stock GNOME), a hidden window would leave sync running out
+    // of reach, so closing it asks whether to keep syncing (minimized) or quit. Asked again on
+    // each close, since the AppIndicator extension can be turned on or off at any time.
+    let closePrompt = false;
     window.on('close', (event) => {
-      if (!quitting) {
-        event.preventDefault();
-        window.hide();
-      }
+      if (quitting) return;
+      event.preventDefault();
+      if (process.platform !== 'linux') return window.hide();
+      if (closePrompt) return;
+      closePrompt = true;
+      void (async () => {
+        try {
+          if (await trayShown()) return window.hide();
+          const { response } = await dialog.showMessageBox(window, {
+            type: 'question',
+            buttons: ['Keep syncing', 'Quit harbor0'],
+            defaultId: 0,
+            cancelId: 0,
+            message: 'Keep harbor0 syncing in the background?',
+            detail:
+              'Your desktop doesn’t show tray icons, so harbor0 stays in your window list while it syncs. Quitting stops sync and backups until you open harbor0 again.',
+          });
+          if (response === 1) {
+            quitting = true;
+            app.quit();
+          } else window.minimize();
+        } finally {
+          closePrompt = false;
+        }
+      })();
     });
     const appIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
     app.dock?.setIcon(appIcon);
@@ -822,6 +863,7 @@ app
       return {
         configured,
         configurationError,
+        keychainProblem: keychainProblem(),
         accountLinks: Boolean(webUrl),
         notificationError,
         development,
