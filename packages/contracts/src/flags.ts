@@ -44,6 +44,13 @@ export const featureFlags = {
     description:
       'Local WebDAV server in the desktop app: Settings → Local WebDAV server serves My Drive on the computer, opens it in Finder or File Explorer, and decrypts end-to-end encrypted accounts there. `harbor0 webdav` runs it from a terminal and may create an access token for that, even without the rclone flag. A server already running keeps running until the app restarts.',
   },
+  'public-links': {
+    description: 'Public links to files and folders, opened on harbor0content.online.',
+    usage: {
+      LINK_CREATED: 'Created a public link',
+      LINK_REVOKED: 'Revoked a public link',
+    },
+  },
   'pdf-preview': {
     description:
       'PDF preview on the web: opening a PDF shows its pages in the preview tray instead of “No preview available”. The desktop and mobile apps are unaffected.',
