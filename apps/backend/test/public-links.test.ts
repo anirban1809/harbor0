@@ -92,17 +92,12 @@ beforeEach(async () => {
 });
 
 describe('public links', () => {
-  it('need the flag and an account at least a week old', async () => {
+  it('need the flag, at any account age', async () => {
     const file = await upload('notes.txt');
     expect((await request('POST', '/v1/links', { driveItemId: file.id })).status).toBe(403);
     await flagOn();
-    const allowance = await (await request('GET', '/v1/links/allowance')).json();
-    expect(allowance.blockedReason).toMatch(/first 7 days/);
-    const refused = await request('POST', '/v1/links', { driveItemId: file.id });
-    expect(refused.status).toBe(403);
-    expect((await refused.json()).error.code).toBe('PUBLIC_LINK_NOT_ALLOWED');
-    await age(8);
     expect((await (await request('GET', '/v1/links/allowance')).json()).blockedReason).toBeNull();
+    expect((await request('POST', '/v1/links', { driveItemId: file.id })).status).toBe(200);
   });
 
   it('share a file: open, download, list and revoke', async () => {

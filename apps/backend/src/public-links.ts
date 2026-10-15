@@ -4,7 +4,6 @@ import {
   FREE_QUOTA,
   PUBLIC_LINK_EXECUTABLE_MIN_AGE_DAYS,
   PUBLIC_LINK_LIMIT,
-  PUBLIC_LINK_MIN_ACCOUNT_AGE_DAYS,
   isExecutableName,
   type DriveItem,
   type FileVersion,
@@ -118,15 +117,9 @@ export class PublicLinks {
     const account = await this.service.account(tx, userId);
     const active = (await this.records(tx, userId)).length;
     const limit = paid(account) ? PUBLIC_LINK_LIMIT.paid : PUBLIC_LINK_LIMIT.free;
-    let blockedReason: string | null = null;
-    if (encryptedAccount(account))
-      blockedReason = "Public links aren't available with end-to-end encryption yet.";
-    else if (ageDays(account) < PUBLIC_LINK_MIN_ACCOUNT_AGE_DAYS) {
-      const from = new Date(
-        Date.parse(account.createdAt) + PUBLIC_LINK_MIN_ACCOUNT_AGE_DAYS * DAY_MS,
-      );
-      blockedReason = `New accounts can make public links after their first ${PUBLIC_LINK_MIN_ACCOUNT_AGE_DAYS} days, from ${from.toLocaleDateString('en', { month: 'long', day: 'numeric' })}.`;
-    }
+    const blockedReason = encryptedAccount(account)
+      ? "Public links aren't available with end-to-end encryption yet."
+      : null;
     return { blockedReason, neverExpires: paid(account), active, limit };
   }
 

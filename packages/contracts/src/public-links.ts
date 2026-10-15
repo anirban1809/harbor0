@@ -6,8 +6,6 @@ import { z } from 'zod';
  * shared file gets that domain flagged, harbor0.com and the app are unaffected.
  */
 
-/** An account must be this old before it can make public links. */
-export const PUBLIC_LINK_MIN_ACCOUNT_AGE_DAYS = 7;
 /** Accounts younger than this can't link to executables and installers. */
 export const PUBLIC_LINK_EXECUTABLE_MIN_AGE_DAYS = 30;
 /** Links that still work, per account. */
