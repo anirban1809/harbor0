@@ -3,7 +3,7 @@ import { routePath } from 'hono/route';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import * as c from '@harbor/contracts';
 import { ArchiveWorkflows } from './archives';
 import { Backups } from './backups';
@@ -141,6 +141,11 @@ export function createApp(
   emailLinks?: EmailLinks,
   /** Where public link pages are served (harbor0content.online in production). */
   publicLinkOrigin = 'http://127.0.0.1:3400',
+  /**
+   * Sent by the link domain's CloudFront as X-Harbor-Edge. When set, public link routes refuse
+   * requests without it, so they can't be called straight at API Gateway around CloudFront.
+   */
+  publicEdgeSecret?: string,
 ) {
   // A scheduled invocation also resumes background work if an immediate wake-up fails.
   const wakeWorker = async () => {
@@ -1836,18 +1841,32 @@ export function createApp(
     },
   );
   /**
-   * The visitor's address. Behind the link domain's CloudFront it is CloudFront-Viewer-Address
-   * ("ip:port"); a request straight to API Gateway can forge it, which only spreads that
-   * caller's own requests over more limits; the per-link limit still holds.
+   * The visitor's address: CloudFront-Viewer-Address ("ip:port"), which the link domain's
+   * CloudFront sets. With the edge secret checked, no request reaches here without passing it.
    */
   const visitor = (ctx: Context<Env>) =>
     ctx.req.header('CloudFront-Viewer-Address')?.replace(/:\d+$/, '') ??
     ctx.req.header('X-Forwarded-For')?.split(',')[0]?.trim() ??
     'unknown';
-  /** A visitor's link token, after the per-link and per-visitor limits. */
+  const edgeSecret = publicEdgeSecret ? Buffer.from(publicEdgeSecret) : undefined;
+  const fromEdge = (ctx: Context<Env>) => {
+    if (!edgeSecret) return true;
+    const sent = Buffer.from(ctx.req.header('X-Harbor-Edge') ?? '');
+    return sent.length === edgeSecret.length && timingSafeEqual(sent, edgeSecret);
+  };
+  /**
+   * A visitor's link token. Requests that didn't come through CloudFront and codes that match no
+   * link are answered after at most one read; only real links count against the per-link and
+   * per-visitor limits, so a flood of made-up codes writes nothing.
+   */
   const publicLink = async (ctx: Context<Env>) => {
     const token = c.publicLinkToken.safeParse(ctx.req.param('token'));
-    assert(token.success, 'LINK_NOT_FOUND', "This link doesn't work.", 404);
+    assert(
+      token.success && fromEdge(ctx) && (await publicLinks.exists(token.data)),
+      'LINK_NOT_FOUND',
+      "This link doesn't work. It may have been turned off, or what it shared was removed.",
+      404,
+    );
     await Promise.all([
       rateLimit(`public-link:${linkHash(token.data)}`, c.PUBLIC_LINK_RATE.link),
       rateLimit(`public-visitor:${visitor(ctx)}`, c.PUBLIC_LINK_RATE.visitor),

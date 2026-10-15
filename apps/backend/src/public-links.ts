@@ -394,6 +394,15 @@ export class PublicLinks {
     };
   }
 
+  /**
+   * Whether a link with this token was made and hasn't been turned off: one read, no writes.
+   * Expired links count, so their page can say they expired.
+   */
+  async exists(token: string) {
+    const index = (await this.repo.get(indexKey(linkHash(token))))?.data as LinkIndex | undefined;
+    return !!index && !index.revokedAt && !index.disabledAt;
+  }
+
   /** The link, if it still works: not revoked, disabled or expired, its owner and item still there. */
   private async resolve(token: string): Promise<Resolved> {
     const hash = linkHash(token);

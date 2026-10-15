@@ -24,6 +24,12 @@ const apiHost = new CfnParameter(stack, 'ApiHostname', {
   description: 'Existing harbor0 API Gateway hostname, without a scheme',
   allowedPattern: '[a-z0-9]+\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com',
 }).valueAsString;
+// Sent to the API as X-Harbor-Edge; public link routes refuse requests without it.
+const edgeSecret = new CfnParameter(stack, 'EdgeSecret', {
+  type: 'String',
+  noEcho: true,
+  description: 'Value of the PublicLinkEdgeSecret secret in the storage stack',
+}).valueAsString;
 const bucket = new s3.Bucket(stack, 'ShareAssets', {
   blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
   objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
@@ -125,6 +131,7 @@ const distribution = new cloudfront.Distribution(stack, 'ShareDistribution', {
     '/api/v1/public/*': {
       origin: new origins.HttpOrigin(apiHost, {
         protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+        customHeaders: { 'X-Harbor-Edge': edgeSecret },
       }),
       viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
       allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,

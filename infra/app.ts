@@ -233,6 +233,13 @@ const emailLinkSecret = new secretsmanager.Secret(stack, 'EmailLinkSecret', {
   generateSecretString: { passwordLength: 64, excludePunctuation: true },
   removalPolicy,
 });
+// The link domain's CloudFront sends this as X-Harbor-Edge; public link routes refuse requests
+// without it, so they can only be reached through that distribution and its limits.
+const publicEdgeSecret = new secretsmanager.Secret(stack, 'PublicLinkEdgeSecret', {
+  description: 'Header value harbor0content.online sends to the public link API',
+  generateSecretString: { passwordLength: 48, excludePunctuation: true },
+  removalPolicy,
+});
 const environment = {
   TABLE_NAME: table.tableName,
   COGNITO_USER_POOL_ID: pool.userPoolId,
@@ -246,6 +253,7 @@ const environment = {
   MAIL_CONFIGURATION_SET: mail.configurationSetName,
   EMAIL_LINK_SECRET_ARN: emailLinkSecret.secretArn,
   CAMPAIGN_EMAIL_FROM: campaignEmailFrom,
+  PUBLIC_EDGE_SECRET_ARN: publicEdgeSecret.secretArn,
   NODE_ENV: 'production',
 };
 const logGroup = new logs.LogGroup(stack, 'ApiLogs', {
@@ -268,6 +276,18 @@ apiFunction.addToRolePolicy(
     resources: [pool.userPoolArn],
   }),
 );
+// Public link routes run on their own function with reserved capacity, so a flood of link
+// visits can't take the Lambda capacity the apps need, and is throttled on its own route below.
+const publicLinksFunction = new lambda.Function(stack, 'PublicLinksApi', {
+  runtime: lambda.Runtime.NODEJS_22_X,
+  handler: 'index.handler',
+  code: lambda.Code.fromAsset('dist/backend'),
+  memorySize: 512,
+  timeout: Duration.seconds(29),
+  reservedConcurrentExecutions: 20,
+  environment,
+  logGroup,
+});
 const jobsFunction = new lambda.Function(stack, 'Maintenance', {
   runtime: lambda.Runtime.NODEJS_22_X,
   handler: 'index.jobs',
@@ -278,8 +298,9 @@ const jobsFunction = new lambda.Function(stack, 'Maintenance', {
 });
 jobsFunction.grantInvoke(apiFunction);
 apiFunction.addEnvironment('MAINTENANCE_FUNCTION_NAME', jobsFunction.functionName);
-for (const fn of [apiFunction, jobsFunction]) {
+for (const fn of [apiFunction, jobsFunction, publicLinksFunction]) {
   table.grantReadWriteData(fn);
+  publicEdgeSecret.grantRead(fn);
   fn.addToRolePolicy(
     new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
@@ -536,8 +557,23 @@ api.addRoutes({
   methods: [apigw.HttpMethod.ANY],
   integration: new integrations.HttpLambdaIntegration('Integration', apiFunction),
 });
+// Anyone can call public link routes, so they get their own function and their own throttle:
+// flooding them refuses link visits but leaves the stage-wide allowance to the apps.
+const publicRoutes = api.addRoutes({
+  path: '/v1/public/{proxy+}',
+  methods: [apigw.HttpMethod.ANY],
+  integration: new integrations.HttpLambdaIntegration(
+    'PublicLinksIntegration',
+    publicLinksFunction,
+  ),
+});
 const stage = api.defaultStage!.node.defaultChild as apigw.CfnStage;
 stage.defaultRouteSettings = { throttlingBurstLimit: 200, throttlingRateLimit: 100 };
+stage.routeSettings = {
+  'ANY /v1/public/{proxy+}': { throttlingBurstLimit: 40, throttlingRateLimit: 20 },
+};
+for (const route of publicRoutes) stage.node.addDependency(route);
+new CfnOutput(stack, 'PublicLinkEdgeSecretArn', { value: publicEdgeSecret.secretArn });
 const dlq = new sqs.Queue(stack, 'MaintenanceFailures', {
   retentionPeriod: Duration.days(14),
   encryption: sqs.QueueEncryption.SQS_MANAGED,

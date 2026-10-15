@@ -53,6 +53,45 @@ if (!assetsOnly && process.env.SHARE_CERT_ARN) {
       `${harborEnv.shareDomain} certificate is ${status}; add its DNS validation record first.`,
     );
 }
+// The storage stack makes the secret; CI deploys it, so read its ARN from CloudFormation rather
+// than from local outputs that may predate it.
+async function edgeSecretValue() {
+  const arn = (
+    await run(
+      'aws',
+      [
+        'cloudformation',
+        'describe-stacks',
+        '--stack-name',
+        harborEnv.stacks.storage,
+        '--query',
+        "Stacks[0].Outputs[?OutputKey=='PublicLinkEdgeSecretArn'].OutputValue",
+        '--output',
+        'text',
+      ],
+      true,
+    )
+  ).trim();
+  if (!arn.startsWith('arn:'))
+    throw new Error('Deploy the storage stack first: it creates the public link edge secret.');
+  return (
+    await run(
+      'aws',
+      [
+        'secretsmanager',
+        'get-secret-value',
+        '--secret-id',
+        arn,
+        '--query',
+        'SecretString',
+        '--output',
+        'text',
+      ],
+      true,
+    )
+  ).trim();
+}
+const edgeSecret = assetsOnly ? '' : await edgeSecretValue();
 if (!assetsOnly)
   await run('npx', [
     'cdk',
@@ -66,6 +105,8 @@ if (!assetsOnly)
     outputsPath('share'),
     '--parameters',
     `ApiHostname=${apiHost}`,
+    '--parameters',
+    `EdgeSecret=${edgeSecret}`,
   ]);
 const site = await readOutputs('share');
 // Upload hashed assets before the HTML that references them.

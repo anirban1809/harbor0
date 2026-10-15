@@ -33,6 +33,8 @@ const configSchema = z.object({
   WEB_ORIGIN: z.url(),
   /** Where public link pages are served; links made in the app point there. */
   PUBLIC_LINK_ORIGIN: z.url().default('https://harbor0content.online'),
+  /** Secrets Manager secret (a plain string) the link domain's CloudFront sends as X-Harbor-Edge. */
+  PUBLIC_EDGE_SECRET_ARN: z.string().optional(),
   EMAIL_FROM: z.union([z.email(), z.literal('')]).default(''),
   /** SES configuration set that reports delivery events for every message. */
   MAIL_CONFIGURATION_SET: z.string().optional(),
@@ -47,9 +49,12 @@ let instance: ReturnType<typeof initialize> | undefined;
 async function initialize() {
   const c = configSchema.parse(process.env);
   const secrets = new SecretsManagerClient({});
-  const [secret, linkSecret] = await Promise.all([
+  const [secret, linkSecret, edgeSecret] = await Promise.all([
     secrets.send(new GetSecretValueCommand({ SecretId: c.R2_SECRET_ARN })),
     secrets.send(new GetSecretValueCommand({ SecretId: c.EMAIL_LINK_SECRET_ARN })),
+    c.PUBLIC_EDGE_SECRET_ARN
+      ? secrets.send(new GetSecretValueCommand({ SecretId: c.PUBLIC_EDGE_SECRET_ARN }))
+      : undefined,
   ]);
   const emailLinks = new EmailLinks(z.string().min(32).parse(linkSecret.SecretString), c.WEB_ORIGIN);
   const credentials = z
@@ -81,6 +86,7 @@ async function initialize() {
     new Beta(repo, BETA),
     emailLinks,
     c.PUBLIC_LINK_ORIGIN,
+    edgeSecret ? z.string().min(32).parse(edgeSecret.SecretString) : undefined,
   );
   app.all('/api/*', (ctx) =>
     proxyBrowserRequest(ctx.req.raw, {

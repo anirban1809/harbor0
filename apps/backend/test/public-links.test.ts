@@ -264,3 +264,45 @@ describe('public links', () => {
     expect((await visit('GET', '/v1/public/links/not-a-token')).status).toBe(404);
   });
 });
+
+describe('public link routes under load', () => {
+  it('answer made-up codes without counting them', async () => {
+    let counted = 0;
+    const repo = service.repo as MemoryRepository;
+    const increment = repo.increment.bind(repo);
+    repo.increment = async (...args) => {
+      counted++;
+      return increment(...args);
+    };
+    for (let i = 0; i < 5; i++)
+      expect((await visit('GET', `/v1/public/links/${'A'.repeat(21)}${i}`)).status).toBe(404);
+    expect(counted).toBe(0);
+  });
+
+  it('refuse requests that skip the link domain when it sends a secret', async () => {
+    await flagOn();
+    const file = await upload('notes.txt');
+    const { token } = await createLink({ driveItemId: file.id });
+    const secret = 'edge-secret-for-tests-0123456789abcdef';
+    app = createApp(
+      service,
+      new DevelopmentAuth(),
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      secret,
+    ).app;
+    expect((await visit('GET', `/v1/public/links/${token}`)).status).toBe(404);
+    const wrong = await visit('GET', `/v1/public/links/${token}`, undefined, {
+      'X-Harbor-Edge': 'not-the-secret',
+    });
+    expect(wrong.status).toBe(404);
+    const ok = await visit('GET', `/v1/public/links/${token}`, undefined, {
+      'X-Harbor-Edge': secret,
+    });
+    expect((await ok.json()).item.name).toBe('notes.txt');
+  });
+});
