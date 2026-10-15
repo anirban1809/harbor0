@@ -1,0 +1,379 @@
+/* Public link pages: one centred card under a slim header. */
+body {
+  background: var(--sidebar);
+  color: var(--on);
+}
+.share-frame {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+.share-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 24px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  text-decoration: none;
+}
+.brand-mark {
+  width: 24px;
+  height: 24px;
+  color: var(--primary);
+}
+a.btn {
+  text-decoration: none;
+}
+.share-main {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: clamp(16px, 6vh, 64px) 16px 32px;
+}
+
+/* Card */
+.share-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 440px;
+  padding: 32px 28px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  box-shadow:
+    0 1px 2px rgb(16 18 24 / 0.04),
+    0 12px 32px -16px rgb(16 18 24 / 0.12);
+  text-align: center;
+}
+.share-card h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.share-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+.share-card .alert {
+  width: 100%;
+  text-align: left;
+}
+.share-name {
+  overflow-wrap: anywhere;
+}
+.share-meta {
+  font-size: var(--text-sm);
+}
+.share-hint {
+  margin-top: -4px !important;
+  font-size: var(--text-sm);
+}
+.share-card > .btn[data-size='lg'] {
+  margin-top: 8px;
+}
+
+/* File and folder tiles, coloured by kind as in the app. */
+.file-entry-icon {
+  --kind: var(--text-2);
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--kind) 13%, transparent);
+  color: var(--kind);
+}
+.file-entry-icon[data-kind='folder'] {
+  --kind: var(--kind-folder);
+}
+.file-entry-icon[data-kind='image'] {
+  --kind: var(--kind-image);
+}
+.file-entry-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.share-tile[data-size='lg'] {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+.share-tile[data-size='lg'] svg {
+  width: 30px;
+  height: 30px;
+}
+.share-skeleton-tile {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+.share-skeleton-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+/* Who shared it */
+.share-by {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+.share-by-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.share-by-text strong {
+  font-weight: 600;
+}
+.share-by-text small {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.share-expiry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.share-expiry svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Messages and the password form */
+.share-message-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.share-message-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.share-cta {
+  margin-top: 8px;
+}
+.share-unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  text-align: left;
+}
+.share-field-error {
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+}
+
+/* Folders */
+.share-folder {
+  max-width: 760px;
+  align-items: stretch;
+  gap: 14px;
+  padding: 24px;
+  text-align: left;
+}
+.share-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.share-folder-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.share-folder .share-by {
+  margin-top: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.share-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--text-sm);
+}
+.share-crumb {
+  display: inline-flex;
+  align-items: center;
+}
+.share-crumb :is(button, span[aria-current]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+}
+.share-crumb button {
+  cursor: pointer;
+}
+.share-crumb button:hover {
+  background: var(--fill-2);
+  color: var(--text);
+}
+.share-crumb span[aria-current] {
+  color: var(--text);
+  font-weight: 500;
+}
+.share-crumb svg {
+  width: 14px;
+  height: 14px;
+}
+.share-crumb-sep {
+  color: var(--text-2);
+}
+.share-empty {
+  padding: 24px 0;
+  text-align: center;
+}
+.share-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0 -8px;
+  padding: 0;
+  list-style: none;
+}
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.share-row:hover {
+  background: var(--fill-1);
+}
+.share-row-folder {
+  cursor: pointer;
+}
+.share-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.share-row-text strong {
+  font-size: var(--text-base);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.share-row-text small {
+  color: var(--text-2);
+  font-size: var(--text-xs);
+}
+.share-row-warning {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  vertical-align: -2px;
+  color: var(--warning);
+}
+.share-row-end {
+  width: 16px;
+  height: 16px;
+  color: var(--text-2);
+}
+
+/* Footer */
+.share-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 24px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 16px 24px 24px;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.share-footer > span {
+  flex: 1;
+  min-width: 240px;
+}
+.share-report {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-2);
+}
+.share-report:hover {
+  color: var(--danger-text);
+}
+.share-report svg {
+  width: 13px;
+  height: 13px;
+}
+
+@media (max-width: 560px) {
+  .share-header {
+    padding: 12px 16px;
+  }
+  .share-card {
+    padding: 24px 20px 20px;
+  }
+  .share-folder {
+    padding: 20px 16px;
+  }
+  .share-download-label {
+    display: none;
+  }
+  .share-by {
+    flex-wrap: wrap;
+  }
+  .share-expiry {
+    flex-basis: 100%;
+    padding-left: 40px;
+  }
+}

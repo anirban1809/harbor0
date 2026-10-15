@@ -11,7 +11,9 @@ export default ts.config(
       'packages/api-client/src/generated.ts',
       'apps/web/next-env.d.ts',
       'apps/landing/next-env.d.ts',
+      'apps/share/next-env.d.ts',
       'apps/landing/out/**',
+      'apps/share/out/**',
       // Generated one-off session outputs, not project code.
       'outputs/**',
     ],

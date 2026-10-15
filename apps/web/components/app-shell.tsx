@@ -84,6 +84,7 @@ import {
 import { ContentSkeleton, WorkspaceSkeleton } from '../components/loading-states';
 import { ThemeToggle } from '../components/theme-toggle';
 import { SharedTabs, type SharedTab } from './shared-tabs';
+import { PublicLinksList } from './public-links-list';
 import { RecipientPicker, type RecipientKind } from './recipient-picker';
 import { TransferTable, type TransferView } from './transfer-table';
 import { BackupFolderPanel } from './backup-folder-panel';
@@ -260,7 +261,11 @@ function Workspace() {
   // Places list devices first; `device` picks one, `folder` opens one of its folders.
   const deviceParam = place ? searchParams.get('device') : null;
   const sharedTab: SharedTab =
-    pathname === '/sent' || searchParams.get('tab') === 'sent' ? 'Sent' : 'Received';
+    pathname === '/sent' || searchParams.get('tab') === 'sent'
+      ? 'Sent'
+      : searchParams.get('tab') === 'links'
+        ? 'Links'
+        : 'Received';
   const [transferPage, setTransferPage] = useState<{ tab: SharedTab; cursor?: string }>({
     tab: 'Received',
   });
@@ -343,6 +348,7 @@ function Workspace() {
   }, [user?.id]);
   const vault = useVault();
   const e2eeAllowed = me.data?.flags?.e2ee === true;
+  const publicLinksOn = me.data?.flags?.['public-links'] === true;
   const [protectionOffered, setProtectionOffered] = useState(false);
   // A browser that kept its key unlocks by itself; others ask for the passphrase.
   useEffect(() => {
@@ -443,7 +449,7 @@ function Workspace() {
   });
   const transfers = useQuery<{ items: TransferView[]; nextCursor: string | null }>({
     queryKey: ['transfers', sharedTab, transferCursor],
-    enabled: !!user && section === 'Shared',
+    enabled: !!user && section === 'Shared' && sharedTab !== 'Links',
     queryFn: () =>
       api.request(
         `/v1/transfers/${sharedTab.toLowerCase()}${transferCursor ? '?cursor=' + encodeURIComponent(transferCursor) : ''}`,
@@ -453,7 +459,7 @@ function Workspace() {
   });
   const shares = useQuery<{ items: any[] }>({
     queryKey: ['shares', sharedTab],
-    enabled: !!user && section === 'Shared',
+    enabled: !!user && section === 'Shared' && sharedTab !== 'Links',
     queryFn: () => api.request(`/v1/shares/${sharedTab.toLowerCase()}`),
   });
   const devicePage = section === 'Devices' || !!place;
@@ -1683,133 +1689,145 @@ function Workspace() {
           {section === 'Shared' && !searching && (
             <SharedTabs
               tab={sharedTab}
+              tabs={publicLinksOn ? ['Received', 'Sent', 'Links'] : ['Received', 'Sent']}
               onChange={(tab) => {
                 setTransferPage({ tab });
                 router.push(sharedHref(tab), { scroll: false });
               }}
             >
-              <div className="transfer-list">
-                {sharedTab === 'Received' && <SyncInvitations request={api.request} />}
-                {transfers.isPending ? (
-                  <ContentSkeleton label="Loading transfers" />
-                ) : transfers.isError && !transfers.data?.items.length ? (
-                  <LoadError onRetry={() => void transfers.refetch()} />
-                ) : !transfers.data?.items.length ? (
-                  <EmptyState
-                    icon={sharedTab === 'Received' ? <Inbox /> : <Send />}
-                    title={sharedTab === 'Received' ? 'No received files' : 'No sent files'}
-                    description={
-                      sharedTab === 'Received'
-                        ? `People can send files directly to @${user.username}.`
-                        : 'Choose a file in My Drive and select Send from its menu to share it directly with someone.'
-                    }
-                    actions={
-                      <Button variant="outline" onClick={() => navigate('My Drive')}>
-                        Browse My Drive
-                      </Button>
-                    }
-                  />
-                ) : (
-                  <TransferTable
-                    transfers={transfers.data.items}
-                    direction={sharedTab}
-                    busy={busy}
-                    onAction={transferAction}
-                    onDownload={(t, entry) => download({ transferId: t.id, entryId: entry.id })}
-                    loadEntries={(id, cursor) =>
-                      api.request(`/v1/transfers/${id}/items?cursor=${encodeURIComponent(cursor)}`)
-                    }
-                  />
-                )}
-                {(transferCursor || transfers.data?.nextCursor) && (
-                  <div className="file-pagination">
-                    {transferCursor && (
-                      <Button variant="outline" onClick={() => setTransferCursor(undefined)}>
-                        First page
-                      </Button>
+              {sharedTab === 'Links' ? (
+                <PublicLinksList request={api.request} onBrowse={() => navigate('My Drive')} />
+              ) : (
+                <>
+                  <div className="transfer-list">
+                    {sharedTab === 'Received' && <SyncInvitations request={api.request} />}
+                    {transfers.isPending ? (
+                      <ContentSkeleton label="Loading transfers" />
+                    ) : transfers.isError && !transfers.data?.items.length ? (
+                      <LoadError onRetry={() => void transfers.refetch()} />
+                    ) : !transfers.data?.items.length ? (
+                      <EmptyState
+                        icon={sharedTab === 'Received' ? <Inbox /> : <Send />}
+                        title={sharedTab === 'Received' ? 'No received files' : 'No sent files'}
+                        description={
+                          sharedTab === 'Received'
+                            ? `People can send files directly to @${user.username}.`
+                            : 'Choose a file in My Drive and select Send from its menu to share it directly with someone.'
+                        }
+                        actions={
+                          <Button variant="outline" onClick={() => navigate('My Drive')}>
+                            Browse My Drive
+                          </Button>
+                        }
+                      />
+                    ) : (
+                      <TransferTable
+                        transfers={transfers.data.items}
+                        direction={sharedTab}
+                        busy={busy}
+                        onAction={transferAction}
+                        onDownload={(t, entry) => download({ transferId: t.id, entryId: entry.id })}
+                        loadEntries={(id, cursor) =>
+                          api.request(
+                            `/v1/transfers/${id}/items?cursor=${encodeURIComponent(cursor)}`,
+                          )
+                        }
+                      />
                     )}
-                    {transfers.data?.nextCursor && (
-                      <Button
-                        variant="outline"
-                        onClick={() => setTransferCursor(transfers.data!.nextCursor!)}
-                      >
-                        Next page
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-              {(shares.isPending || shares.isError || !!shares.data?.items.length) && (
-                <Card title="Shared access">
-                  {shares.isPending ? (
-                    <ContentSkeleton label="Loading shared files" />
-                  ) : shares.isError && !shares.data?.items.length ? (
-                    <LoadError onRetry={() => void shares.refetch()} />
-                  ) : (
-                    shares.data?.items.map((s) => (
-                      <article className="list-row simple-row" key={s.id}>
-                        <FileGlyph item={s.item} />
-                        <button className="list-row-text" onClick={() => open(s.item)}>
-                          <strong>{s.item.name}</strong>
-                          <small>
-                            {s.ownerUserId === user.id
-                              ? `Shared with ${s.recipient ? `${s.recipient.displayName} (@${s.recipient.username})` : 'one person'}`
-                              : `Shared with you${s.owner ? ` by ${s.owner.displayName}` : ''}`}
-                            {(s.ownerUserId !== user.id || !s.recipient?.username) &&
-                              ` · ${s.permission === 'EDITOR' ? 'Can edit' : 'Can view'}`}
-                          </small>
-                        </button>
-                        {s.ownerUserId === user.id && s.recipient?.username && (
-                          <Select
-                            aria-label={`Access for ${s.recipient.displayName}`}
-                            value={s.permission}
-                            disabled={busy}
-                            onChange={(e) =>
-                              void act(
-                                () =>
-                                  api.request('/v1/shares', {
-                                    method: 'POST',
-                                    body: {
-                                      ...operation(),
-                                      driveItemId: s.driveItemId,
-                                      recipient: { type: 'USERNAME', value: s.recipient.username },
-                                      permission: e.target.value,
-                                    },
-                                  }),
-                                'Access updated.',
-                              )
-                            }
-                          >
-                            <option value="VIEWER">Can view</option>
-                            <option value="EDITOR">Can edit</option>
-                          </Select>
-                        )}
-                        {s.ownerUserId === user.id && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              setConfirmation({
-                                title: `Remove access to ${s.item.name}?`,
-                                description:
-                                  'The person you shared this with will no longer be able to open it.',
-                                label: 'Remove access',
-                                done: 'Access removed.',
-                                run: () =>
-                                  api.request(`/v1/shares/${s.id}`, {
-                                    method: 'DELETE',
-                                    body: operation(),
-                                  }),
-                              })
-                            }
-                          >
-                            Remove access
+                    {(transferCursor || transfers.data?.nextCursor) && (
+                      <div className="file-pagination">
+                        {transferCursor && (
+                          <Button variant="outline" onClick={() => setTransferCursor(undefined)}>
+                            First page
                           </Button>
                         )}
-                      </article>
-                    ))
+                        {transfers.data?.nextCursor && (
+                          <Button
+                            variant="outline"
+                            onClick={() => setTransferCursor(transfers.data!.nextCursor!)}
+                          >
+                            Next page
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {(shares.isPending || shares.isError || !!shares.data?.items.length) && (
+                    <Card title="Shared access">
+                      {shares.isPending ? (
+                        <ContentSkeleton label="Loading shared files" />
+                      ) : shares.isError && !shares.data?.items.length ? (
+                        <LoadError onRetry={() => void shares.refetch()} />
+                      ) : (
+                        shares.data?.items.map((s) => (
+                          <article className="list-row simple-row" key={s.id}>
+                            <FileGlyph item={s.item} />
+                            <button className="list-row-text" onClick={() => open(s.item)}>
+                              <strong>{s.item.name}</strong>
+                              <small>
+                                {s.ownerUserId === user.id
+                                  ? `Shared with ${s.recipient ? `${s.recipient.displayName} (@${s.recipient.username})` : 'one person'}`
+                                  : `Shared with you${s.owner ? ` by ${s.owner.displayName}` : ''}`}
+                                {(s.ownerUserId !== user.id || !s.recipient?.username) &&
+                                  ` · ${s.permission === 'EDITOR' ? 'Can edit' : 'Can view'}`}
+                              </small>
+                            </button>
+                            {s.ownerUserId === user.id && s.recipient?.username && (
+                              <Select
+                                aria-label={`Access for ${s.recipient.displayName}`}
+                                value={s.permission}
+                                disabled={busy}
+                                onChange={(e) =>
+                                  void act(
+                                    () =>
+                                      api.request('/v1/shares', {
+                                        method: 'POST',
+                                        body: {
+                                          ...operation(),
+                                          driveItemId: s.driveItemId,
+                                          recipient: {
+                                            type: 'USERNAME',
+                                            value: s.recipient.username,
+                                          },
+                                          permission: e.target.value,
+                                        },
+                                      }),
+                                    'Access updated.',
+                                  )
+                                }
+                              >
+                                <option value="VIEWER">Can view</option>
+                                <option value="EDITOR">Can edit</option>
+                              </Select>
+                            )}
+                            {s.ownerUserId === user.id && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  setConfirmation({
+                                    title: `Remove access to ${s.item.name}?`,
+                                    description:
+                                      'The person you shared this with will no longer be able to open it.',
+                                    label: 'Remove access',
+                                    done: 'Access removed.',
+                                    run: () =>
+                                      api.request(`/v1/shares/${s.id}`, {
+                                        method: 'DELETE',
+                                        body: operation(),
+                                      }),
+                                  })
+                                }
+                              >
+                                Remove access
+                              </Button>
+                            )}
+                          </article>
+                        ))
+                      )}
+                    </Card>
                   )}
-                </Card>
+                </>
               )}
             </SharedTabs>
           )}

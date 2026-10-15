@@ -65,6 +65,8 @@ import {
 import { Segmented } from './ui/segmented';
 import { Select } from './ui/select';
 import { useSessionEnd } from '../lib/session-guard';
+import { useFeatureFlag } from '../lib/feature-flags';
+import { PublicLinkDialog } from './public-link-dialog';
 
 type Item = DriveItem & {
   location?: DriveLocation;
@@ -261,6 +263,21 @@ export function DriveWorkspace({
   const modalReturnFocus = useRef<HTMLElement | null>(null);
   const collection = useRef<HTMLDivElement>(null);
   const [modal, setModal] = useState<{ mode: string; items: Item[] } | null>(null);
+  const [linking, setLinking] = useState<Item | null>(null);
+  const publicLinks = useFeatureFlag('public-links');
+  // Items with a public link that works, marked in the list so owners see what's public.
+  const [linkedIds, setLinkedIds] = useState<ReadonlySet<string>>(new Set());
+  const [linksRevision, setLinksRevision] = useState(0);
+  useEffect(() => {
+    if (!publicLinks) return;
+    const controller = new AbortController();
+    request('/v1/links', { signal: controller.signal })
+      .then(({ items }: { items: { driveItemId: string }[] }) =>
+        setLinkedIds(new Set(items.map((link) => link.driveItemId))),
+      )
+      .catch(() => {}); // Only the marks are missing; the files still work.
+    return () => controller.abort();
+  }, [request, publicLinks, linksRevision]);
   const [versions, setVersions] = useState<any[] | null>(null);
   const [metadataError, setMetadataError] = useState('');
   const [detailLocation, setDetailLocation] = useState('Loading…');
@@ -1133,6 +1150,11 @@ export function DriveWorkspace({
             )}
           </>
         )}
+        {publicLinks && !item.access && !item.localOnly && (
+          <MenuItem onClick={() => setLinking(item)}>
+            {linkedIds.has(item.id) ? 'Manage public link' : 'Get public link'}
+          </MenuItem>
+        )}
         {mutable(item) && access(item).edit && item.type === 'FILE' && onUploadVersion && (
           <MenuItem onClick={() => onUploadVersion(item)}>Upload new version</MenuItem>
         )}
@@ -1193,7 +1215,13 @@ export function DriveWorkspace({
         <FileCollection
           label={label}
           compact
-          items={entries}
+          items={
+            linkedIds.size
+              ? entries.map((entry) =>
+                  linkedIds.has(entry.id) ? { ...entry, publicLink: true } : entry,
+                )
+              : entries
+          }
           pinned={pinnedHere}
           folderSizes={showFolderUsage ? folderSizes : undefined}
           grid={grid}
@@ -2109,6 +2137,14 @@ export function DriveWorkspace({
             </Button>
           </DialogActions>
         </Dialog>
+        {linking && (
+          <PublicLinkDialog
+            request={request}
+            item={linking}
+            onClose={() => setLinking(null)}
+            onChanged={() => setLinksRevision((n) => n + 1)}
+          />
+        )}
       </div>
     </section>
   );

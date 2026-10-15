@@ -31,6 +31,8 @@ const configSchema = z.object({
   R2_ENDPOINT: z.url(),
   R2_SECRET_ARN: z.string().min(1),
   WEB_ORIGIN: z.url(),
+  /** Where public link pages are served; links made in the app point there. */
+  PUBLIC_LINK_ORIGIN: z.url().default('https://harbor0content.online'),
   EMAIL_FROM: z.union([z.email(), z.literal('')]).default(''),
   /** SES configuration set that reports delivery events for every message. */
   MAIL_CONFIGURATION_SET: z.string().optional(),
@@ -78,6 +80,7 @@ async function initialize() {
     process.env.REALTIME_URL ? new Realtime(repo, process.env.REALTIME_URL) : undefined,
     new Beta(repo, BETA),
     emailLinks,
+    c.PUBLIC_LINK_ORIGIN,
   );
   app.all('/api/*', (ctx) =>
     proxyBrowserRequest(ctx.req.raw, {

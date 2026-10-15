@@ -117,6 +117,7 @@ const { app } = createApp(
   // Local sign-up is open unless HARBOR_INVITE_ONLY=true, so tests can create accounts freely.
   new Beta(repo, process.env.HARBOR_INVITE_ONLY === 'true'),
   emailLinks,
+  process.env.PUBLIC_LINK_ORIGIN ?? 'http://127.0.0.1:3400',
 );
 serve({ fetch: app.fetch, hostname: '127.0.0.1', port: Number(process.env.PORT ?? 8787) }, () =>
   console.log('harbor0 API listening at http://127.0.0.1:8787'),

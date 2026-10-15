@@ -44,6 +44,7 @@ import {
 } from './email-preferences';
 import { usageDetails } from './usage-events';
 import { E2ee, assertNotEncrypted, encryptedAccount, encryptingClient } from './e2ee';
+import { PublicLinks, linkHash } from './public-links';
 type Env = {
   Variables: {
     identity: c.Identity;
@@ -138,6 +139,8 @@ export function createApp(
   beta = new Beta(service.repo, false),
   /** Signs and checks unsubscribe links; without it every link is refused. */
   emailLinks?: EmailLinks,
+  /** Where public link pages are served (harbor0content.online in production). */
+  publicLinkOrigin = 'http://127.0.0.1:3400',
 ) {
   // A scheduled invocation also resumes background work if an immediate wake-up fails.
   const wakeWorker = async () => {
@@ -1761,6 +1764,165 @@ export function createApp(
       });
       return { revoked: true };
     },
+  );
+  // Public links: the owner's routes, then the routes anyone with a link calls, which the
+  // link pages on their own domain reach through that domain's /api/v1/public/* path.
+  const publicLinks = new PublicLinks(service, publicLinkOrigin);
+  add(
+    'get',
+    '/v1/links/allowance',
+    'Whether this account can make public links now, and how many it has',
+    undefined,
+    c.publicLinkAllowanceSchema,
+    flagged(flags, 'public-links', async (ctx) => publicLinks.allowance(userId(ctx))),
+  );
+  add(
+    'get',
+    '/v1/links',
+    'List public links that still work, optionally only one item\'s',
+    undefined,
+    z.object({ items: z.array(c.publicLinkSchema) }),
+    // Not flagged: links made before the flag was taken off can still be found and turned off.
+    async (ctx) => ({
+      items: await publicLinks.list(
+        userId(ctx),
+        c.id.optional().parse(ctx.req.query('driveItemId') || undefined),
+      ),
+    }),
+  );
+  add(
+    'post',
+    '/v1/links',
+    'Make a public link to a file or folder that anyone with it can open',
+    c.publicLinkInput,
+    z.object({ link: c.publicLinkSchema }),
+    flagged(flags, 'public-links', async (ctx, i) => {
+      const created = await publicLinks.create(userId(ctx), i);
+      await recordFlagUsage(service.repo, 'public-links', 'LINK_CREATED', {
+        userId: userId(ctx),
+        email: ctx.get('identity').email,
+        details: {
+          itemType: created.link.itemType,
+          expiresInDays: i.expiresInDays,
+          password: !!i.password,
+        },
+      });
+      return created;
+    }),
+  );
+  add(
+    'patch',
+    '/v1/links/:id',
+    'Change when a public link ends, or its password',
+    c.publicLinkUpdate,
+    z.object({ link: c.publicLinkSchema }),
+    flagged(flags, 'public-links', async (ctx, i) =>
+      publicLinks.update(userId(ctx), p(ctx, 'id'), i),
+    ),
+  );
+  add(
+    'delete',
+    '/v1/links/:id',
+    'Turn off a public link',
+    undefined,
+    z.object({ revoked: z.boolean() }),
+    async (ctx) => {
+      await publicLinks.revoke(userId(ctx), p(ctx, 'id'));
+      await recordFlagUsage(service.repo, 'public-links', 'LINK_REVOKED', {
+        userId: userId(ctx),
+        email: ctx.get('identity').email,
+      });
+      return { revoked: true };
+    },
+  );
+  /**
+   * The visitor's address. Behind the link domain's CloudFront it is CloudFront-Viewer-Address
+   * ("ip:port"); a request straight to API Gateway can forge it, which only spreads that
+   * caller's own requests over more limits; the per-link limit still holds.
+   */
+  const visitor = (ctx: Context<Env>) =>
+    ctx.req.header('CloudFront-Viewer-Address')?.replace(/:\d+$/, '') ??
+    ctx.req.header('X-Forwarded-For')?.split(',')[0]?.trim() ??
+    'unknown';
+  /** A visitor's link token, after the per-link and per-visitor limits. */
+  const publicLink = async (ctx: Context<Env>) => {
+    const token = c.publicLinkToken.safeParse(ctx.req.param('token'));
+    assert(token.success, 'LINK_NOT_FOUND', "This link doesn't work.", 404);
+    await Promise.all([
+      rateLimit(`public-link:${linkHash(token.data)}`, c.PUBLIC_LINK_RATE.link),
+      rateLimit(`public-visitor:${visitor(ctx)}`, c.PUBLIC_LINK_RATE.visitor),
+    ]);
+    return { token: token.data, pass: ctx.req.header(c.PUBLIC_LINK_PASS_HEADER) || undefined };
+  };
+  add(
+    'get',
+    '/v1/public/links/:token',
+    'Open a public link: who shared it and what, unless it needs a password first',
+    undefined,
+    c.publicLinkViewSchema,
+    async (ctx) => {
+      const { token, pass } = await publicLink(ctx);
+      return publicLinks.open(token, pass);
+    },
+    true,
+  );
+  add(
+    'post',
+    '/v1/public/links/:token/unlock',
+    "Check a public link's password; send the pass it returns in X-Harbor-Link-Pass",
+    z.object({ password: z.string().min(1).max(128) }).strict(),
+    z.object({ pass: z.string() }),
+    async (ctx, i) => {
+      const { token } = await publicLink(ctx);
+      const hour = Math.floor(Date.now() / 3600_000);
+      const key = createHash('sha256')
+        .update(`public-link-password:${linkHash(token)}:${visitor(ctx)}`)
+        .digest('hex');
+      assert(
+        await service.repo.increment(
+          { pk: 'RATE', sk: `${key}#h${hour}` },
+          c.PUBLIC_LINK_PASSWORD_ATTEMPTS,
+          (hour + 2) * 3600,
+        ),
+        'RATE_LIMITED',
+        'Too many tries. Wait an hour and try again.',
+        429,
+      );
+      return publicLinks.unlock(token, i.password);
+    },
+    true,
+  );
+  add(
+    'get',
+    '/v1/public/links/:token/items',
+    "List a folder in a public folder link: the linked folder unless folderId says which",
+    undefined,
+    c.publicFolderPageSchema,
+    async (ctx) => {
+      const { token, pass } = await publicLink(ctx);
+      const q = z
+        .object({ folderId: c.id.optional(), cursor: z.string().max(4096).optional() })
+        .parse(ctx.req.query());
+      return publicLinks.folder(token, pass, q.folderId, q.cursor);
+    },
+    true,
+  );
+  add(
+    'post',
+    '/v1/public/links/:token/download',
+    'A short-lived download address for the linked file, or a file in the linked folder',
+    z.object({ itemId: c.id.optional() }).strict(),
+    z.object({
+      downloadUrl: z.string(),
+      expiresAt: z.string(),
+      name: z.string(),
+      sizeBytes: z.number(),
+    }),
+    async (ctx, i) => {
+      const { token, pass } = await publicLink(ctx);
+      return publicLinks.download(token, pass, i.itemId);
+    },
+    true,
   );
   const syncSharing = new SyncSharing(service);
   add(

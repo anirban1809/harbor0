@@ -7,7 +7,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from 'react';
-import { File, FileImage, FileText, Folder, Star, Trash2 } from 'lucide-react';
+import { File, FileImage, FileText, Folder, Link2, Star, Trash2 } from 'lucide-react';
 import { fileDate, fileKind, fileSize, fileSummary, type FileEntry } from '../lib/file-metadata';
 import { LoadMoreFiles } from './load-more-files';
 import { Skeleton } from './ui/skeleton';
@@ -106,6 +106,9 @@ function FileIdentity({
           </span>
         </span>
       </button>
+      {item.publicLink && (
+        <Link2 className="file-public-link" size={14} aria-label="Shared with a public link" />
+      )}
       {item.favorite && <Star className="file-favorite" size={14} aria-label="Favorite" />}
       {item.deletedAt && <Trash2 size={14} className="muted" aria-label="In trash" />}
     </>

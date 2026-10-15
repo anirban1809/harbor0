@@ -188,7 +188,8 @@ function App() {
   );
   const [section, setSection] = useState('My Drive');
   const [addingSync, setAddingSync] = useState(false);
-  const [sharedTab, setSharedTab] = useState<SharedTab>('Received');
+  // The desktop app has no Links tab; public links are managed on the web.
+  const [sharedTab, setSharedTab] = useState<Exclude<SharedTab, 'Links'>>('Received');
   const [incoming, setIncoming] = useState<IncomingContent | null>(null);
   const [invitationRevision, setInvitationRevision] = useState(0);
   useEffect(
@@ -1626,6 +1627,7 @@ function App() {
             <SharedTabs
               tab={sharedTab}
               onChange={(tab) => {
+                if (tab === 'Links') return;
                 setSharedTab(tab);
                 setCursor(undefined);
                 setError('');

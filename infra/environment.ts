@@ -15,6 +15,7 @@ export const harborEnv = {
   stacks: {
     storage: `HarborStorage${suffix}`,
     web: `HarborWeb${suffix}`,
+    share: `HarborShare${suffix}`,
   },
   /** Git-ignored settings and credentials for this environment. */
   envFile: production ? '.env.cloud' : '.env.staging',
@@ -23,6 +24,10 @@ export const harborEnv = {
   r2SecretName: production ? 'harbor-storage/r2' : 'harbor-storage-staging/r2',
   apnsSecretName: production ? 'harbor0-apns' : 'harbor0-staging-apns',
   appDomain: process.env.WEB_DOMAIN || (production ? 'app.harbor0.com' : 'staging.harbor0.com'),
+  /** Public link pages, on a domain of their own so a shared file can't get harbor0.com flagged. */
+  shareDomain:
+    process.env.SHARE_DOMAIN ||
+    (production ? 'harbor0content.online' : 'staging.harbor0content.online'),
   /** The branch this environment is built from: production deploys automatically from main. */
   branch: production ? 'main' : 'staging',
 };
@@ -30,6 +35,7 @@ export const harborEnv = {
 const outputFiles = {
   storage: 'outputs.json',
   web: 'web-outputs.json',
+  share: 'share-outputs.json',
 };
 export const outputsPath = (kind: keyof typeof outputFiles) =>
   `${harborEnv.cloudDir}/${outputFiles[kind]}`;

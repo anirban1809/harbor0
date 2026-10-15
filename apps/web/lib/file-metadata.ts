@@ -12,7 +12,10 @@ export type FileEntry = Pick<DriveItem, 'id' | 'name' | 'type' | 'sizeBytes'> &
       | 'revision'
       | 'currentVersionId'
     >
-  >;
+  > & {
+    /** Shared with a public link that works now. */
+    publicLink?: boolean;
+  };
 export function fileSize(size: number | undefined): string {
   if (size === undefined || !Number.isFinite(size) || size < 0) return '—';
   if (size < 1000) return `${size} B`;

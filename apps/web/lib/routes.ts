@@ -55,8 +55,8 @@ export function placeHref(
   return `/drive?${params}`;
 }
 
-export function sharedHref(tab: 'Received' | 'Sent' = 'Received'): string {
-  return tab === 'Sent' ? '/shared?tab=sent' : '/shared';
+export function sharedHref(tab: 'Received' | 'Sent' | 'Links' = 'Received'): string {
+  return tab === 'Sent' ? '/shared?tab=sent' : tab === 'Links' ? '/shared?tab=links' : '/shared';
 }
 
 // Only known workspace pages can be used as a post-login destination.
@@ -76,7 +76,10 @@ export function loginDestination(path: string | null): string {
     return placeHref('backups', device && device !== 'all' ? device : null);
   }
   if (route === '/sync') return syncHref(params.get('device'), params.get('folder'));
-  if (route === '/shared') return sharedHref(params.get('tab') === 'sent' ? 'Sent' : 'Received');
+  if (route === '/shared') {
+    const tab = params.get('tab');
+    return sharedHref(tab === 'sent' ? 'Sent' : tab === 'links' ? 'Links' : 'Received');
+  }
   // A form that asks people to sign in sends them back to it.
   const form = params.get('id');
   if (pathname === '/form' && form && /^[\w-]{1,128}$/.test(form))

@@ -450,6 +450,7 @@ export * from './flags';
 export * from './client-events';
 export * from './e2ee';
 export * from './rate-limits';
+export * from './public-links';
 /** What a personal access token may do: everything in My Drive, or only list and download. */
 export const accessTokenScope = z.enum(['FULL', 'READ']);
 export type AccessTokenScope = z.infer<typeof accessTokenScope>;

@@ -241,6 +241,7 @@ const environment = {
   R2_ENDPOINT: r2Endpoint,
   R2_SECRET_ARN: r2SecretArn,
   WEB_ORIGIN: webOrigin,
+  PUBLIC_LINK_ORIGIN: `https://${harborEnv.shareDomain}`,
   EMAIL_FROM: emailFrom,
   MAIL_CONFIGURATION_SET: mail.configurationSetName,
   EMAIL_LINK_SECRET_ARN: emailLinkSecret.secretArn,

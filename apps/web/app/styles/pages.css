@@ -742,6 +742,279 @@
   overflow-wrap: anywhere;
   user-select: all;
 }
+/* Public link dialog -------------------------------------------------------- */
+.public-link-dialog {
+  width: min(500px, calc(100vw - 32px));
+}
+.plink {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.plink-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-lg);
+  background: var(--fill-1);
+}
+.plink-item .file-entry-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+}
+.plink-item .file-entry-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.plink-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.plink-item-text strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.plink-item-text small,
+.plink-setting-text small,
+.plink-others-text small {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.plink-loading {
+  display: grid;
+  gap: 10px;
+}
+.plink-created {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--success-text);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.plink-created svg {
+  width: 15px;
+  height: 15px;
+}
+.plink-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 5px 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.plink-url:focus-within {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 20%, transparent);
+}
+.plink-url-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--text-2);
+}
+.plink-url input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+}
+.plink-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: -4px;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.plink-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.plink-status-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.plink-status-lock svg {
+  width: 13px;
+  height: 13px;
+}
+.plink-settings {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.plink-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.plink-setting + .plink-setting {
+  border-top: 1px solid var(--line);
+}
+.plink-setting-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+.plink-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.plink-setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.plink-setting-text strong {
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+.plink-setting .select {
+  flex-shrink: 0;
+  width: 160px;
+}
+.plink-setting-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+.plink-password {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.plink-password .password-input {
+  flex: 1;
+}
+.plink-notice {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: var(--fill-1);
+}
+.plink-notice svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--text-2);
+}
+.plink-notice strong {
+  font-weight: 600;
+}
+.plink-notice p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.plink-others summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.plink-others ul {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.plink-others li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.plink-others-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.plink-others-text code {
+  overflow: hidden;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plink-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+.plink-footer-start {
+  flex: 1;
+  min-width: 0;
+}
+.plink-fineprint {
+  flex: 1;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+.btn.plink-revoke {
+  color: var(--danger-text);
+  margin-left: -8px;
+}
+.plink-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+}
+.plink-create {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (max-width: 520px) {
+  .plink-setting:not(.plink-setting-stack) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .plink-setting .select {
+    width: 100%;
+  }
+  .plink-footer {
+    flex-wrap: wrap;
+  }
+  .plink-fineprint {
+    flex-basis: 100%;
+  }
+}
+/* A link icon beside the names of items shared with a public link. */
+.file-public-link {
+  flex-shrink: 0;
+  color: var(--accent-text);
+}
 .totp-setup {
   display: flex;
   flex-wrap: wrap;
@@ -1552,4 +1825,27 @@
   display: block;
   width: 100%;
   height: 100%;
+}
+/* Shared → Links */
+.public-links {
+  display: flex;
+  flex-direction: column;
+}
+.public-link-row-state {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+@media (max-width: 720px) {
+  .public-link-row {
+    flex-wrap: wrap;
+  }
+  .public-link-row .list-row-text {
+    flex-basis: calc(100% - 40px);
+  }
+  .public-link-row-state {
+    justify-content: flex-start;
+    margin-left: 40px;
+  }
 }

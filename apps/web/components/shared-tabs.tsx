@@ -1,15 +1,17 @@
 import type { ReactNode } from 'react';
 import { Tab, TabList, TabPanel, Tabs } from './ui/tabs';
 
-export type SharedTab = 'Received' | 'Sent';
-const tabs: SharedTab[] = ['Received', 'Sent'];
+export type SharedTab = 'Received' | 'Sent' | 'Links';
 
 export function SharedTabs({
   tab,
+  tabs = ['Received', 'Sent'],
   onChange,
   children,
 }: {
   tab: SharedTab;
+  /** Links is shown only to accounts with public links. */
+  tabs?: SharedTab[];
   onChange: (tab: SharedTab) => void;
   children: ReactNode;
 }) {
