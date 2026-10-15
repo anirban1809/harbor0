@@ -65,14 +65,17 @@ const staticCache = new cloudfront.CachePolicy(stack, 'ShareCache', {
   headerBehavior: cloudfront.CacheHeaderBehavior.none(),
   queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
 });
-// Next's static export writes /s as s.html. Resolve clean URLs at the edge.
+// Next's static export writes /s as s.html. Resolve clean URLs at the edge, and send any other
+// page path to the 404 page here: a distribution-wide error response would also replace the API's
+// own JSON errors (a wrong password, an expired link) with that page.
 const pageRoutes = new cloudfront.Function(stack, 'SharePageRoutes', {
   code: cloudfront.FunctionCode.fromInline(`function handler(event) {
     var request = event.request;
-    var uri = request.uri;
+    var uri = request.uri.replace(/\\/$/, '') || '/';
     if (uri === '/') request.uri = '/index.html';
+    else if (uri === '/s') request.uri = '/s.html';
     else if (uri.indexOf('/_next/') !== 0 && uri.split('/').pop().indexOf('.') === -1) {
-      request.uri = uri.replace(/\\/$/, '') + '.html';
+      request.uri = '/404.html';
     }
     return request;
   }`),
@@ -107,12 +110,6 @@ const distribution = new cloudfront.Distribution(stack, 'ShareDistribution', {
       }
     : {}),
   defaultRootObject: 'index.html',
-  errorResponses: [403, 404].map((httpStatus) => ({
-    httpStatus,
-    responseHttpStatus: 404,
-    responsePagePath: '/404.html',
-    ttl: Duration.seconds(0),
-  })),
   defaultBehavior: {
     origin: origins.S3BucketOrigin.withOriginAccessControl(bucket),
     viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
