@@ -22,20 +22,48 @@ export type PlainReader = {
   read: (begin: number, end: number) => Promise<Uint8Array>;
 };
 
-/** Byte ranges of a download link, signing a new link when the old one expires. */
+/**
+ * How long a download link is used before a new one is signed. Links last 5 minutes (the API's
+ * storage presign); age is timed on this clock, so a skewed system clock can't expire them early.
+ */
+export const LINK_REUSE_MS = 4 * 60_000;
+
+/** Byte ranges of a download link, signing a new link before the old one expires. */
 export function rangeFetcher(first: string, renew: () => Promise<string>) {
   let url = first;
+  let signedAt = Date.now();
+  // Parallel reads that find the link old share one renewal.
+  let renewing: Promise<void> | null = null;
+  const refresh = () =>
+    (renewing ??= renew()
+      .then((next) => {
+        url = next;
+        signedAt = Date.now();
+      })
+      .finally(() => {
+        renewing = null;
+      }));
   return async (begin: number, end: number, signal?: AbortSignal) => {
     if (end <= begin) return new Uint8Array();
     for (let attempt = 0; ; attempt++) {
-      const response = await fetch(url, {
-        headers: { Range: `bytes=${begin}-${end - 1}` },
-        signal,
-        credentials: 'omit',
-        referrerPolicy: 'no-referrer',
-      });
+      if (Date.now() - signedAt >= LINK_REUSE_MS) await refresh();
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          headers: { Range: `bytes=${begin}-${end - 1}` },
+          signal,
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+        });
+      } catch (e) {
+        // Storage refuses an expired link without CORS headers, so the browser reports it as a
+        // network error rather than a 403: sign a new link and try once more.
+        if (signal?.aborted || attempt > 0) throw e;
+        await refresh();
+        continue;
+      }
       if ((response.status === 403 || response.status === 400) && attempt === 0) {
-        url = await renew();
+        await refresh();
         continue;
       }
       if (!response.ok) throw new Error(`The download failed (${response.status}). Try again.`);
