@@ -122,6 +122,14 @@ table.addGlobalSecondaryIndex({
   sortKey: { name: 'gsk', type: dynamodb.AttributeType.STRING },
   projectionType: dynamodb.ProjectionType.ALL,
 });
+// The console's account listings: profiles, device sessions, sync and backup folders (`rowKind`).
+// Keys only, so updates that leave a row's kind alone (every upload touches its PROFILE) cost
+// the index nothing.
+table.addGlobalSecondaryIndex({
+  indexName: 'kinds',
+  partitionKey: { name: 'kind', type: dynamodb.AttributeType.STRING },
+  projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+});
 const pool = new cognito.UserPool(stack, 'Users', {
   selfSignUpEnabled: true,
   signInAliases: { email: true },
@@ -466,7 +474,7 @@ const staffClient = new cognito.CfnUserPoolClient(stack, 'StaffClient', {
   idTokenValidity: 15,
   refreshTokenValidity: 12,
   tokenValidityUnits: { accessToken: 'minutes', idToken: 'minutes', refreshToken: 'hours' },
-  refreshTokenRotation: { feature: 'ENABLED', retryGracePeriodSeconds: 10 },
+  refreshTokenRotation: { feature: 'ENABLED', retryGracePeriodSeconds: 60 },
   readAttributes: ['email', 'email_verified'],
   writeAttributes: [],
   supportedIdentityProviders: ['COGNITO'],

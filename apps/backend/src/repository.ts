@@ -1,6 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
+  BatchGetCommand,
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
@@ -16,6 +17,8 @@ export type Row = {
   expiresAt?: number;
   gpk?: string;
   gsk?: string;
+  /** Set on write from the sort key; see `rowKind`. */
+  kind?: string;
 };
 export type Key = { pk: string; sk: string };
 export type Write = { key: Key; expected: number | null; row?: Row };
@@ -35,13 +38,13 @@ export interface Repository {
   /** Atomically counts one more use of `key` unless it already has `max`; false when full. */
   increment(key: Key, max: number, expiresAt: number): Promise<boolean>;
   due(now: string, cursor?: string): Promise<Page>;
-  /** Every account PROFILE's storage fields; a full-table read, so callers cache the result. */
+  /** Every account PROFILE's storage fields: one read per account, so callers cache the result. */
   scanProfiles(): Promise<ProfileStorage[]>;
-  /** Every device session's account, platform and name; a full-table read like scanProfiles. */
+  /** Every device session's account, platform and name; read like scanProfiles. */
   scanDevices(): Promise<DeviceSighting[]>;
   /**
-   * Every device session plus every sync folder list and backup folder, in one full-table
-   * read: what the console's user filters need to tell who syncs or backs up from where.
+   * Every device session plus every sync folder list and backup folder: what the console's
+   * user filters need to tell who syncs or backs up from where.
    */
   scanSetups(): Promise<{ devices: DeviceSighting[]; setups: SetupSighting[] }>;
 }
@@ -153,6 +156,21 @@ function decode(cursor: string): Key {
     throw new DomainError('VALIDATION_ERROR', 'Invalid pagination cursor.');
   }
 }
+/**
+ * The `kinds` index files the rows the console lists across every account (profiles, device
+ * sessions, sync folder lists, backup folders) so it can read them without scanning the table.
+ * Only these rows carry a kind, so the index stays small.
+ */
+export function rowKind(sk: string) {
+  if (sk === 'PROFILE') return 'PROFILE';
+  return /^(DEVICE|SYNCFOLDERS|BACKUP)#/.exec(sk)?.[1];
+}
+/** Written by scripts/backfill-row-kinds.ts once every older row carries its kind. */
+export const KINDS_INDEXED = { pk: 'ADMIN_STATS', sk: 'KINDS_INDEXED' };
+const withKind = (row: Row): Row => {
+  const kind = rowKind(row.sk);
+  return kind ? { ...row, kind } : row;
+};
 export class DynamoRepository implements Repository {
   private db: DynamoDBDocumentClient;
   constructor(
@@ -237,7 +255,7 @@ export class DynamoRepository implements Repository {
           TransactItems: [
             ...writes.map((w) =>
               w.row
-                ? { Put: { TableName: this.table, Item: w.row, ...condition(w) } }
+                ? { Put: { TableName: this.table, Item: withKind(w.row), ...condition(w) } }
                 : { Delete: { TableName: this.table, Key: w.key, ...condition(w) } },
             ),
             ...checks.map((w) => ({
@@ -282,24 +300,88 @@ export class DynamoRepository implements Repository {
     }
   }
   async scanProfiles() {
+    if (await this.kindsIndexed())
+      return this.kindData<ProfileStorage>(['PROFILE'], PROFILE_FIELDS);
     return this.scanData<ProfileStorage>('sk = :sk', { ':sk': 'PROFILE' }, PROFILE_FIELDS);
   }
   async scanDevices() {
-    return this.scanData<DeviceSighting>('begins_with(sk, :sk)', { ':sk': 'DEVICE#' }, [
-      'userId',
-      'platform',
-      'name',
-      'lastSeenAt',
-    ]);
+    const fields = ['userId', 'platform', 'name', 'lastSeenAt'];
+    if (await this.kindsIndexed()) return this.kindData<DeviceSighting>(['DEVICE'], fields);
+    return this.scanData<DeviceSighting>('begins_with(sk, :sk)', { ':sk': 'DEVICE#' }, fields);
   }
   async scanSetups() {
-    const rows = await this.scanData<SetupRow>(
-      'begins_with(sk, :d) or begins_with(sk, :s) or begins_with(sk, :b)',
-      { ':d': 'DEVICE#', ':s': 'SYNCFOLDERS#', ':b': 'BACKUP#' },
-      SETUP_FIELDS,
-      true,
-    );
+    const rows = (await this.kindsIndexed())
+      ? await this.kindData<SetupRow>(['DEVICE', 'SYNCFOLDERS', 'BACKUP'], SETUP_FIELDS, true)
+      : await this.scanData<SetupRow>(
+          'begins_with(sk, :d) or begins_with(sk, :s) or begins_with(sk, :b)',
+          { ':d': 'DEVICE#', ':s': 'SYNCFOLDERS#', ':b': 'BACKUP#' },
+          SETUP_FIELDS,
+          true,
+        );
     return splitSetups(rows);
+  }
+  private indexed = false;
+  /** Whether the `kinds` index holds every row yet; until the backfill says so, scan. */
+  private async kindsIndexed() {
+    if (!this.indexed) this.indexed = !!(await this.get(KINDS_INDEXED));
+    return this.indexed;
+  }
+  /**
+   * The chosen `data` fields of every row of these kinds, with the row's keys if `keys`: the
+   * keys from the `kinds` index, then the rows themselves a hundred at a time.
+   */
+  private async kindData<T>(kinds: string[], fields: readonly string[], keys = false) {
+    const found = await Promise.all(
+      kinds.map(async (kind) => {
+        const out: Key[] = [];
+        let start: Record<string, unknown> | undefined;
+        do {
+          const page = await this.db.send(
+            new QueryCommand({
+              TableName: this.table,
+              IndexName: 'kinds',
+              KeyConditionExpression: '#k = :k',
+              ExpressionAttributeNames: { '#k': 'kind' },
+              ExpressionAttributeValues: { ':k': kind },
+              ExclusiveStartKey: start,
+            }),
+          );
+          for (const item of page.Items ?? []) out.push({ pk: item.pk, sk: item.sk });
+          start = page.LastEvaluatedKey;
+        } while (start);
+        return out;
+      }),
+    );
+    const all = found.flat();
+    const out: T[] = [];
+    const read = {
+      ProjectionExpression: ['pk', 'sk', ...fields.map((_, i) => `#d.#f${i}`)].join(', '),
+      ExpressionAttributeNames: {
+        '#d': 'data',
+        ...Object.fromEntries(fields.map((f, i) => [`#f${i}`, f])),
+      },
+    };
+    const batches = Array.from({ length: Math.ceil(all.length / 100) }, (_, i) =>
+      all.slice(i * 100, i * 100 + 100),
+    );
+    await Promise.all(
+      batches.map(async (batch) => {
+        let wanted: Key[] = batch;
+        for (let attempt = 0; wanted.length; attempt++) {
+          if (attempt === 8) throw new Error('DynamoDB kept back part of a batch read.');
+          if (attempt) await new Promise((r) => setTimeout(r, Math.min(1000, 50 * 2 ** attempt)));
+          const result = await this.db.send(
+            new BatchGetCommand({ RequestItems: { [this.table]: { Keys: wanted, ...read } } }),
+          );
+          for (const item of result.Responses?.[this.table] ?? [])
+            out.push(
+              (keys ? { pk: item.pk, sk: item.sk, data: item.data ?? {} } : (item.data ?? {})) as T,
+            );
+          wanted = (result.UnprocessedKeys?.[this.table]?.Keys ?? []) as Key[];
+        }
+      }),
+    );
+    return out;
   }
   /** The chosen `data` fields of every row the filter keeps, with the row's keys if `keys`. */
   private async scanData<T>(
@@ -440,12 +522,27 @@ export class MemoryRepository implements Repository {
 export class Transaction {
   private reads = new Map<string, Row | undefined>();
   private writes = new Map<string, Write>();
+  private pending = new Map<string, Promise<void>>();
   constructor(public repo: Repository) {}
   async get<T>(pk: string, sk: string): Promise<T | undefined> {
     const key = pk + '|' + sk;
     if (this.writes.has(key))
       return structuredClone(this.writes.get(key)?.row?.data) as T | undefined;
-    if (!this.reads.has(key)) this.reads.set(key, await this.repo.get({ pk, sk }));
+    if (!this.reads.has(key)) {
+      // Concurrent gets of one row (a listing's children walking the same parents) share
+      // a single database read instead of each paying for its own.
+      let read = this.pending.get(key);
+      if (!read) {
+        read = this.repo
+          .get({ pk, sk })
+          .then((row) => {
+            if (!this.reads.has(key)) this.reads.set(key, row);
+          })
+          .finally(() => this.pending.delete(key));
+        this.pending.set(key, read);
+      }
+      await read;
+    }
     return structuredClone(this.reads.get(key)?.data) as T | undefined;
   }
   async put(

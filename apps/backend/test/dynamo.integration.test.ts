@@ -1,7 +1,7 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { DynamoDBClient, CreateTableCommand, DeleteTableCommand } from '@aws-sdk/client-dynamodb';
 import { createHash, randomUUID } from 'node:crypto';
-import { DynamoRepository, transact } from '../src/repository';
+import { DynamoRepository, KINDS_INDEXED, transact } from '../src/repository';
 import { ArchiveWorkflows } from '../src/archives';
 import { ZipReader, Uint8ArrayReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import { R2Storage } from '../src/storage';
@@ -25,6 +25,7 @@ describe.skipIf(!enabled)('real DynamoDB and S3-compatible protocol', () => {
           { AttributeName: 'sk', AttributeType: 'S' },
           { AttributeName: 'gpk', AttributeType: 'S' },
           { AttributeName: 'gsk', AttributeType: 'S' },
+          { AttributeName: 'kind', AttributeType: 'S' },
         ],
         KeySchema: [
           { AttributeName: 'pk', KeyType: 'HASH' },
@@ -38,6 +39,11 @@ describe.skipIf(!enabled)('real DynamoDB and S3-compatible protocol', () => {
               { AttributeName: 'gsk', KeyType: 'RANGE' },
             ],
             Projection: { ProjectionType: 'ALL' },
+          },
+          {
+            IndexName: 'kinds',
+            KeySchema: [{ AttributeName: 'kind', KeyType: 'HASH' }],
+            Projection: { ProjectionType: 'KEYS_ONLY' },
           },
         ],
       }),
@@ -194,5 +200,24 @@ describe.skipIf(!enabled)('real DynamoDB and S3-compatible protocol', () => {
     expect(usage.availableBytes).toBe(3);
     for (const r of results)
       if (r.status === 'fulfilled') await service.abortUpload('alice', r.value.upload.id);
+  });
+  it('lists profiles and device sessions through the kinds index once it is marked complete', async () => {
+    const scanned = await repo.scanProfiles();
+    await transact(repo, async (tx) => {
+      await tx.put(userPK('alice'), 'DEVICE#d1', {
+        userId: 'alice',
+        platform: 'MACOS',
+        name: 'Mac',
+      });
+    });
+    await transact(repo, async (tx) => tx.put(KINDS_INDEXED.pk, KINDS_INDEXED.sk, {}));
+    const indexed = new DynamoRepository(table, endpoint);
+    const profiles = await indexed.scanProfiles();
+    expect(profiles.map((p) => p.id).sort()).toEqual(scanned.map((p) => p.id).sort());
+    expect(profiles.map((p) => p.id).sort()).toEqual(['alice', 'bob']);
+    const devices = await indexed.scanDevices();
+    expect(devices).toHaveLength((await repo.scanDevices()).length);
+    expect(devices).toContainEqual({ userId: 'alice', platform: 'MACOS', name: 'Mac' });
+    expect((await indexed.scanSetups()).devices).toHaveLength(devices.length);
   });
 });
