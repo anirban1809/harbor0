@@ -548,6 +548,8 @@ export const usageDetailsSchema = z.object({
   backup: z.boolean().nullable(),
   /** What a download fetched: FILE, VERSION, TRANSFER or ZIP. */
   source: z.string().nullable(),
+  /** A download's file as a short one-way hash: equal keys are the same file (since 16 Oct 2026). */
+  fileKey: z.string().nullable(),
   files: z.number().nullable(),
   /** Sync folders this device started or stopped syncing. */
   added: z.number().nullable(),
@@ -574,6 +576,11 @@ export const adminUsageSchema = z.object({
   totals: z.array(z.object({ action: z.string(), ...usageCount })),
   /** Each hour with any usage (UTC hour start), by action. */
   hours: z.array(z.object({ at: z.string(), action: z.string(), ...usageCount })),
+  /**
+   * Downloads counting each file once: how many different files and their size. `untracked` is
+   * downloads logged before files were keyed, which can't be told apart.
+   */
+  distinctDownloads: z.object({ files: z.number(), bytes: z.number(), untracked: z.number() }),
   devices: z.array(
     z.object({
       deviceId: z.string().nullable(),

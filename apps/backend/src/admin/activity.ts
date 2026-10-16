@@ -297,10 +297,13 @@ export async function userUsage(
   const rows = await source(
     `${usageFilter(userId)}` +
       ' | stats count(*) as n, sum(usage.sizeBytes) as b, max(@timestamp) as lastAt' +
-      ' by bin(1h), method, route, deviceId, platform',
+      ' by bin(1h), method, route, deviceId, platform, usage.fileKey',
     start,
     end,
   );
+  // Each downloaded file once, at the largest size it was logged with.
+  const files = new Map<string, number>();
+  let untracked = 0;
   const totals = new Map<string, { action: string; count: number; bytes: number }>();
   const hours = new Map<string, { at: string; action: string; count: number; bytes: number }>();
   const devices = new Map<string, AdminUsage['devices'][number]>();
@@ -341,6 +344,11 @@ export async function userUsage(
       bucket.count += count;
       bucket.bytes += size;
     } else device.other += count;
+    if (key === DOWNLOADED_KEY) {
+      const fileKey = r['usage.fileKey'];
+      if (fileKey) files.set(fileKey, Math.max(files.get(fileKey) ?? 0, size / (count || 1)));
+      else untracked += count;
+    }
     const lastAt = iso(r.lastAt);
     if (lastAt > device.lastAt) device.lastAt = lastAt;
   }
@@ -349,6 +357,11 @@ export async function userUsage(
     since: new Date(start * 1000).toISOString(),
     totals: [...totals.values()].sort((a, b) => b.count - a.count),
     hours: [...hours.values()].sort((a, b) => a.at.localeCompare(b.at)),
+    distinctDownloads: {
+      files: files.size,
+      bytes: [...files.values()].reduce((sum, bytes) => sum + bytes, 0),
+      untracked,
+    },
     devices: [...devices.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt)),
     backups,
   };
@@ -396,6 +409,7 @@ export async function usageLog(
           itemType: text('itemType'),
           backup: flag('backup'),
           source: text('source'),
+          fileKey: text('fileKey'),
           files: num(r['usage.files']),
           added: num(r['usage.added']),
           removed: num(r['usage.removed']),

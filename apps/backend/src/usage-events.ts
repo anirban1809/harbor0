@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { usageAction, type UsageDetails } from '../../../packages/contracts/src/admin';
 
 type Fields = Partial<UsageDetails>;
@@ -5,11 +6,25 @@ type Item = { type?: string; sizeBytes?: number; mimeType?: string | null; backu
 const record = (value: unknown) =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 const count = (value: unknown) => (Array.isArray(value) ? value.length : undefined);
+/**
+ * Which file a download fetched, as a short one-way hash of its ids, so repeats of the same file
+ * can be told apart from different files without the log naming an item.
+ */
+const downloadKey = (i: Record<string, unknown>) => {
+  const target = i.folderDownloadId
+    ? `zip:${i.folderDownloadId}`
+    : i.transferId
+      ? `transfer:${i.transferId}:${i.entryId ?? ''}`
+      : i.driveItemId
+        ? `item:${i.driveItemId}:${i.versionId ?? ''}`
+        : null;
+  return target ? createHash('sha256').update(target).digest('hex').slice(0, 16) : undefined;
+};
 
 /**
  * The sizes and counts a successful usage request adds to its request line, so the console can
  * show what an account uploaded, downloaded and set up. Only numbers and kinds: never names,
- * paths or item ids. Undefined when the request is not usage, or (for a sync folder list that
+ * paths or item ids (a download's fileKey is a one-way hash). Undefined when the request is not usage, or (for a sync folder list that
  * didn't change) nothing happened.
  */
 export function usageDetails(
@@ -46,6 +61,7 @@ export function usageDetails(
     case 'DOWNLOADED':
       fields = {
         sizeBytes: r.sizeBytes as number,
+        fileKey: downloadKey(i),
         source: i.folderDownloadId
           ? 'ZIP'
           : i.transferId

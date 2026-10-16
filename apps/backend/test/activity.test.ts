@@ -420,8 +420,16 @@ describe('usage on request lines', () => {
     ).toEqual({ sizeBytes: 5, mimeType: 'image/png', backup: true });
     expect(usageDetails('POST', '/v1/downloads', { transferId: 't1' }, { sizeBytes: 9 })).toEqual({
       sizeBytes: 9,
+      fileKey: expect.stringMatching(/^[0-9a-f]{16}$/),
       source: 'TRANSFER',
     });
+    // The same file gets the same key, a different file or version a different one.
+    const key = (input: object) =>
+      usageDetails('POST', '/v1/downloads', input, { sizeBytes: 1 })?.fileKey;
+    expect(key({ driveItemId: 'f1' })).toBe(key({ driveItemId: 'f1' }));
+    expect(key({ driveItemId: 'f1' })).not.toBe(key({ driveItemId: 'f2' }));
+    expect(key({ driveItemId: 'f1' })).not.toBe(key({ driveItemId: 'f1', versionId: 'v1' }));
+    expect(key({ driveItemId: 'f1' })).not.toContain('f1');
     expect(
       usageDetails(
         'POST',
@@ -478,8 +486,31 @@ describe('account usage', () => {
         other: 1,
       }),
     );
+    expect(usage.distinctDownloads).toEqual({ files: 0, bytes: 0, untracked: 2 });
     expect(queries[0]).toContain('filter userId = "user-1"');
     expect(queries[0]).toContain('ispresent(usage.added)');
+  });
+
+  it('counts each downloaded file once', async () => {
+    const row = (hour: string, deviceId: string, fileKey: string, n: number, size: number) => ({
+      'bin(1h)': `2026-10-11 0${hour}:00:00.000`,
+      method: 'POST',
+      route: '/v1/downloads',
+      deviceId,
+      platform: 'WEB',
+      'usage.fileKey': fileKey,
+      n: String(n),
+      b: String(n * size),
+      lastAt: `2026-10-11 0${hour}:30:00.000`,
+    });
+    const run: ActivitySource = async () => [
+      row('3', 'd1', 'aaaa', 3, 800),
+      row('4', 'd2', 'aaaa', 2, 800),
+      row('4', 'd2', 'bbbb', 1, 200),
+    ];
+    const usage = await userUsage(run, 'user-1', '24h', [], now);
+    expect(usage.totals).toEqual([{ action: 'DOWNLOADED', count: 6, bytes: 4200 }]);
+    expect(usage.distinctDownloads).toEqual({ files: 2, bytes: 1000, untracked: 0 });
   });
 
   it('lists usage newest first with its details, filtered by group', async () => {
