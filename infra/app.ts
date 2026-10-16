@@ -570,7 +570,8 @@ const publicRoutes = api.addRoutes({
 const stage = api.defaultStage!.node.defaultChild as apigw.CfnStage;
 stage.defaultRouteSettings = { throttlingBurstLimit: 200, throttlingRateLimit: 100 };
 stage.routeSettings = {
-  'ANY /v1/public/{proxy+}': { throttlingBurstLimit: 40, throttlingRateLimit: 20 },
+  // Untyped in CDK, so CloudFormation's own capitalised names.
+  'ANY /v1/public/{proxy+}': { ThrottlingBurstLimit: 40, ThrottlingRateLimit: 20 },
 };
 for (const route of publicRoutes) stage.node.addDependency(route);
 new CfnOutput(stack, 'PublicLinkEdgeSecretArn', { value: publicEdgeSecret.secretArn });
