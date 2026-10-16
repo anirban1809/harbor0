@@ -166,6 +166,8 @@ export const adminUserFiltersSchema = z.object({
    * are on (not paused, archived or removed).
    */
   desktop: z.enum(['sync', 'backup', 'either', 'neither']).optional(),
+  /** Whether end-to-end encryption is on for the account (`on`, including while turning off) or not. */
+  e2ee: z.enum(['on', 'off']).optional(),
   /**
    * Usage (uploads, downloads, file changes, sync and backups) within N hours (`Nh`) or days
    * (`Nd`), none for more than N days (`inactive-Nd`), or none at all (`none`). Read from the

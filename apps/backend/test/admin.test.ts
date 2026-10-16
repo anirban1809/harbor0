@@ -8,7 +8,7 @@ import { MemoryStorage } from '../src/storage';
 import { createAdminApp } from '../src/admin/api';
 import { DevelopmentDirectory } from '../src/admin/directory';
 import { DevelopmentStaffAuth } from '../src/admin/staff-auth';
-import { desktopSetups } from '../src/user-filters';
+import { desktopSetups, indexAccounts, matchUsers } from '../src/user-filters';
 
 const ORIGIN = 'http://console.test';
 let userAuth: DevelopmentAuth;
@@ -511,6 +511,21 @@ describe('management console API', () => {
       allocatedBytes: 0,
       orphans: { accounts: 1, usedBytes: 0, allocatedBytes: 1_000_000_000_000 },
     });
+  });
+});
+
+describe('end-to-end encryption filter', () => {
+  it('matches accounts with encryption on, including while it is turning off', () => {
+    const users = indexAccounts(
+      [
+        { id: 'a', email: 'a@example.test', e2ee: { enabledAt: '2026-10-01T00:00:00Z' } },
+        { id: 'b', email: 'b@example.test' },
+        { id: 'c', email: 'c@example.test', e2ee: { enabledAt: '2026-10-02T00:00:00Z' } },
+      ],
+      [],
+    );
+    expect(matchUsers(users, '', { e2ee: 'on' }).map((u) => u.id)).toEqual(['a', 'c']);
+    expect(matchUsers(users, '', { e2ee: 'off' }).map((u) => u.id)).toEqual(['b']);
   });
 });
 

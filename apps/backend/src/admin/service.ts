@@ -328,7 +328,7 @@ export class AdminService {
         return {
             items: matches
                 .slice(start, end)
-                .map(({ hasProfile: _h, raisedQuota: _r, desktopSync: _s, desktopBackup: _b, ...u }) => u),
+                .map(({ hasProfile: _h, raisedQuota: _r, desktopSync: _s, desktopBackup: _b, e2ee: _e, ...u }) => u),
             nextCursor: end < matches.length ? String(end) : null,
             summary,
         };

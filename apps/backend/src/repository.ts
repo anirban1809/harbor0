@@ -123,6 +123,7 @@ export type ProfileStorage = {
   suspendedAt?: string;
   freeQuotaBytes?: number;
   emailVerified?: boolean;
+  e2ee?: { enabledAt?: string };
 };
 const PROFILE_FIELDS = [
   'id',
@@ -140,6 +141,7 @@ const PROFILE_FIELDS = [
   'suspendedAt',
   'freeQuotaBytes',
   'emailVerified',
+  'e2ee',
 ] as const;
 const encode = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
 /** A cursor that resumes a query just after this row. */

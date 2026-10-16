@@ -24,6 +24,8 @@ export type IndexedUser = AdminUserListItem & {
   desktopSync: boolean;
   /** A signed-in desktop app backs up at least one folder. */
   desktopBackup: boolean;
+  /** End-to-end encryption is on (or still being turned off). */
+  e2ee: boolean;
 };
 
 /**
@@ -99,6 +101,7 @@ export function matchesFilters(user: IndexedUser, filters: AdminUserFilters, now
   if (filters.desktop === 'backup' && !desktopBackup) return false;
   if (filters.desktop === 'either' && !desktopSync && !desktopBackup) return false;
   if (filters.desktop === 'neither' && (desktopSync || desktopBackup)) return false;
+  if (filters.e2ee && user.e2ee !== (filters.e2ee === 'on')) return false;
   return true;
 }
 
@@ -196,6 +199,7 @@ export function indexAccounts(
       raisedQuota: !!p?.freeQuotaBytes && (p.storageQuotaBytes ?? 0) > p.freeQuotaBytes,
       desktopSync: !!desktop.get(user.id)?.sync,
       desktopBackup: !!desktop.get(user.id)?.backup,
+      e2ee: !!p?.e2ee?.enabledAt,
     };
   };
   const fromProfile = (p: ProfileStorage): DirectoryUser => ({
