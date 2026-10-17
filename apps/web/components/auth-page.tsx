@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Check, HardDrive, Laptop, Loader2, Send, ShieldCheck } from 'lucide-react';
+import { Check, HardDrive, Laptop, Loader2, Lock, Send, ShieldCheck } from 'lucide-react';
 import { ApiError, type ApiClient } from '@harbor/api-client';
 import type {
   AccessRequestResult,
@@ -62,7 +62,8 @@ const passwordRules = [
 ];
 
 const features = [
-  { icon: HardDrive, text: '50 GB of free storage for beta members' },
+  { icon: HardDrive, text: '10 GB of free storage, for good' },
+  { icon: Lock, text: 'Optional end-to-end encryption: only you can read your files' },
   { icon: Laptop, text: 'Sync folders across desktop and mobile' },
   { icon: Send, text: 'Send files to anyone by @username' },
 ];
