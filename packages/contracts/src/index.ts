@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { ENCRYPTED_NAME_MAX, isEncryptedName } from './e2ee';
 /** Storage on the free plan for accounts created after the beta. */
-export const FREE_QUOTA = 25_000_000_000;
+export const FREE_QUOTA = 10_000_000_000;
 /** Storage for accounts created during the beta; they keep it after launch. */
 export const BETA_QUOTA = 50_000_000_000;
 /** Whether new accounts join the beta. Set to false at launch. */
