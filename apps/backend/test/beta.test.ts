@@ -45,6 +45,17 @@ describe('beta sign-up', () => {
     expect((await beta.summary()).used).toBe(1);
   });
 
+  it('puts every new request on the waitlist while paused, but honours links already sent', async () => {
+    expect(await beta.request('ann@example.test')).toEqual({ status: 'INVITED' });
+    const code = await codeFor('ann@example.test');
+    beta = new Beta(service.repo, true, true);
+    expect(await beta.status()).toEqual({ inviteRequired: true, open: false });
+    expect(await beta.request('bob@example.test')).toEqual({ status: 'WAITLISTED' });
+    expect((await deliver()).map((e) => e.template)).toEqual(['BETA_WAITLIST']);
+    await beta.claim('ann@example.test', code);
+    expect(await beta.summary()).toMatchObject({ used: 1, invited: 0, waitlisted: 1 });
+  });
+
   it('resends the same link at most once a minute', async () => {
     await beta.request('ann@example.test');
     const code = await codeFor('ann@example.test');

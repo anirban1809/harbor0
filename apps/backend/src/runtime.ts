@@ -13,7 +13,7 @@ import { R2Storage } from './storage';
 import { StorageService } from './domain';
 import { createApp } from './api';
 import { Beta } from './beta';
-import { BETA } from '@harbor/contracts';
+import { BETA, BETA_SIGNUPS_PAUSED } from '@harbor/contracts';
 import { Realtime, type RealtimeGateway } from './realtime';
 import { LazyApnsSender, PushDelivery, PushRegistrations } from './push';
 import { proxyBrowserRequest } from '@harbor/api-client';
@@ -85,7 +85,7 @@ async function initialize() {
         );
     },
     process.env.REALTIME_URL ? new Realtime(repo, process.env.REALTIME_URL) : undefined,
-    new Beta(repo, BETA),
+    new Beta(repo, BETA, BETA_SIGNUPS_PAUSED),
     emailLinks,
     c.PUBLIC_LINK_ORIGIN,
     edgeSecret ? z.string().min(32).parse(edgeSecret.SecretString) : undefined,

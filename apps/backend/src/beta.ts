@@ -72,6 +72,8 @@ export class Beta {
     private repo: Repository,
     /** False once the beta ends, and in tests and local development unless asked for. */
     readonly inviteRequired: boolean,
+    /** Every new request joins the waitlist; links already sent still work. */
+    readonly paused = false,
   ) {}
   private async seats(tx: Transaction): Promise<Seats> {
     return (await tx.get<Seats>('BETA', SEATS)) ?? { used: 0, cap: BETA_FIRST_WAVE };
@@ -85,7 +87,7 @@ export class Beta {
       transact(this.repo, (tx) => this.seats(tx)),
       this.waitlistEmpty(),
     ]);
-    return { inviteRequired: true, open: seats.used < seats.cap && empty };
+    return { inviteRequired: true, open: !this.paused && seats.used < seats.cap && empty };
   }
   /** Emails a sign-up link, or adds the email to the waitlist when the wave is full. */
   async request(rawEmail: string): Promise<AccessRequestResult> {
@@ -107,7 +109,7 @@ export class Beta {
       }
       const fresh: Entry = { email, state: 'WAITLISTED', requestedAt: now() };
       const seats = await this.seats(tx);
-      if (!this.inviteRequired || (seats.used < seats.cap && empty)) {
+      if (!this.inviteRequired || (!this.paused && seats.used < seats.cap && empty)) {
         await this.invite(tx, fresh);
         return { status: 'INVITED' };
       }

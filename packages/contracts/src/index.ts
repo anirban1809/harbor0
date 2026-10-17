@@ -10,6 +10,8 @@ export const BETA = true;
 export const SIGNUP_QUOTA = BETA ? BETA_QUOTA : FREE_QUOTA;
 /** Sign-ups the beta takes before staff open the next wave from the management console. */
 export const BETA_FIRST_WAVE = 50;
+/** While true, new beta requests join the waitlist instead of getting a link, until launch. */
+export const BETA_SIGNUPS_PAUSED = true;
 export const PART_SIZE = 64 * 1024 * 1024;
 export const id = z
   .string()
