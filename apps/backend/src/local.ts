@@ -109,7 +109,13 @@ const emailLinks = new EmailLinks(
 const { app } = createApp(
   service,
   auth,
-  ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  // The website's dev server too, for its custom-plan form.
+  [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3100',
+    'http://127.0.0.1:3100',
+  ],
   async () => {
     void service.runJobs().catch(() => console.error('Local archive worker failed'));
   },

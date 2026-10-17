@@ -31,6 +31,8 @@ const configSchema = z.object({
   R2_ENDPOINT: z.url(),
   R2_SECRET_ARN: z.string().min(1),
   WEB_ORIGIN: z.url(),
+  /** The public website; its custom-plan form posts to the API from there. */
+  SITE_ORIGIN: z.url().default('https://harbor0.com'),
   /** Where public link pages are served; links made in the app point there. */
   PUBLIC_LINK_ORIGIN: z.url().default('https://harbor0content.online'),
   /** Secrets Manager secret (a plain string) the link domain's CloudFront sends as X-Harbor-Edge. */
@@ -72,7 +74,7 @@ async function initialize() {
   const { app } = createApp(
     service,
     auth,
-    [c.WEB_ORIGIN],
+    [c.WEB_ORIGIN, c.SITE_ORIGIN],
     async () => {
       if (process.env.MAINTENANCE_FUNCTION_NAME)
         await new LambdaClient({}).send(
