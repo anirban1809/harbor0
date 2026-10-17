@@ -79,7 +79,7 @@ const requestCopy = {
   },
   full: {
     title: 'Join the waitlist',
-    lead: 'This beta wave is full. Leave your email and we’ll send you a sign-up link when the next wave opens.',
+    lead: 'The harbor0 beta program is now closed. Leave your email and we’ll send you a sign-up link when harbor0 opens to everyone on 31 October.',
     submit: 'Join the waitlist',
   },
 };
@@ -372,7 +372,9 @@ export function AuthPage({
           },
           WAITLISTED: {
             title: 'You’re on the waitlist',
-            lead: <>We’ll email a sign-up link to {to} when the next beta wave opens.</>,
+            lead: (
+              <>We’ll email a sign-up link to {to} when harbor0 opens to everyone on 31 October.</>
+            ),
           },
           REGISTERED: {
             title: 'You already have an account',

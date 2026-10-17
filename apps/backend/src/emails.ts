@@ -330,9 +330,9 @@ function accountMessage(email: Email, webOrigin: string): Message {
         case 'BETA_WAITLIST':
             return {
                 subject: 'You’re on the harbor0 waitlist',
-                preheader: 'We’ll email your sign-up link when the next beta wave opens.',
+                preheader: 'We’ll email your sign-up link when harbor0 opens on 31 October.',
                 heading: 'You’re on the waitlist',
-                intro: `This wave of the harbor0 beta is full. We’ll email ${escape(email.to)} a sign-up link when the next wave opens. Places go in the order people asked.`,
+                intro: `The harbor0 beta program is now closed. We’ll email ${escape(email.to)} a sign-up link when harbor0 opens to everyone on 31 October.`,
                 footnote:
                     'There’s nothing else to do for now. If you didn’t ask to join, ignore this email.',
             };
