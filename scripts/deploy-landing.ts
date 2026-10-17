@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
+import { readOutputs } from '../infra/environment';
 // "Sign up"/"Sign in" must point at the hosted web app, never the localhost
 // value in apps/landing/.env.local (an already-set env var wins over .env files).
 const webUrl = process.env.WEB_ORIGIN;
@@ -20,10 +21,20 @@ async function run(command: string, args: string[], capture = false, env = proce
     );
   });
 }
-await run('npm', ['run', 'build:landing'], false, { ...process.env, NEXT_PUBLIC_APP_URL: webUrl });
+// The pricing page's custom-plan form posts straight to the API. It stays a plain email link
+// unless .env.cloud names a production form, and plan buttons stay off unless it turns them on.
+const { ApiUrl } = await readOutputs('storage');
+await run('npm', ['run', 'build:landing'], false, {
+  ...process.env,
+  NEXT_PUBLIC_APP_URL: webUrl,
+  NEXT_PUBLIC_API_URL: ApiUrl,
+  NEXT_PUBLIC_CUSTOM_PLAN_FORM: process.env.NEXT_PUBLIC_CUSTOM_PLAN_FORM ?? '',
+  NEXT_PUBLIC_CHECKOUT: process.env.NEXT_PUBLIC_CHECKOUT ?? 'false',
+});
 await access('apps/landing/out/index.html');
 const html = await readFile('apps/landing/out/index.html', 'utf8');
-if (html.includes('localhost')) throw new Error('Landing export still links to localhost.');
+if (/localhost|127\.0\.0\.1/.test(html))
+  throw new Error('Landing export still links to localhost.');
 const assetsOnly = process.argv.includes('--assets-only');
 if (!assetsOnly && process.env.LANDING_CERT_ARN) {
   const status = (
