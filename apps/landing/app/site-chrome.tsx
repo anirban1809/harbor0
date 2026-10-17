@@ -41,7 +41,7 @@ export function SiteNav() {
             Sign in
           </a>
           <a href={signupUrl} className="btn" data-variant="primary" data-size="md">
-            Sign up
+            Join the waitlist
           </a>
         </div>
       </div>
