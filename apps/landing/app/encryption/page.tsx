@@ -320,7 +320,7 @@ export default function EncryptionPage() {
       </section>
 
       <section className="wrap section learn-cta">
-        <h2>50 GB free for beta members. Encrypted if you want it.</h2>
+        <h2>10 GB free from 31 October. Encrypted if you want it.</h2>
         <SignupButton />
       </section>
 

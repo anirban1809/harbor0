@@ -2,9 +2,9 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { SignupRef } from './signup-ref';
 
-const title = 'harbor0 — 50 GB of free storage for beta members.';
+const title = 'harbor0 — private and encrypted cloud storage, launching 31 October';
 const description =
-  'A private cloud drive with optional end-to-end encryption, desktop sync, versioned backups, a local WebDAV drive and person-to-person sharing. 50 GB free for beta members, kept after launch; no payment during the beta, and more storage on request.';
+  'A private cloud drive with optional end-to-end encryption, desktop sync, versioned backups, a local WebDAV drive and person-to-person sharing. Launching 31 October 2026: 10 GB free for everyone, plans from 200 GB to 5 TB, with the waitlist open until then.';
 export const metadata: Metadata = {
   title,
   description,

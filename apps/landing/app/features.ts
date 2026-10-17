@@ -85,7 +85,7 @@ export const features: Feature[] = [
     facts: [
       [
         'Storage',
-        '50 GB free during the beta. Every version, backups and the trash count towards it.',
+        '10 GB free. Every version, backups and the trash count towards it.',
       ],
       ['Previews', 'Text up to 1 MB, images, audio and video. Other formats download instead.'],
       [

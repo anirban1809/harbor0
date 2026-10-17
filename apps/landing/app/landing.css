@@ -309,95 +309,6 @@ html {
   display: block;
 }
 
-/* Storage check ------------------------------------------------------------ */
-.fit {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(24px, 5vw, 72px);
-  align-items: center;
-}
-.fit label {
-  display: block;
-  margin: 20px 0 12px;
-  font-size: var(--text-lg);
-  color: var(--text-2);
-}
-.fit-input {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-.fit-input input {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  accent-color: var(--primary);
-  cursor: pointer;
-}
-.fit-input output {
-  min-width: 4.2ch;
-  font-size: clamp(28px, 3.6vw, 44px);
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
-}
-.fit-equal {
-  margin-top: 12px;
-  font-size: var(--text-sm);
-  color: var(--text-3);
-}
-.fit-result {
-  padding: clamp(20px, 3vw, 32px);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-xl);
-  background: var(--card);
-}
-.fit-bar {
-  display: flex;
-  gap: 2px;
-  height: 14px;
-  border-radius: 4px;
-  background: var(--fill-2);
-  overflow: hidden;
-}
-.fit-bar i {
-  background: var(--primary);
-  transition: width 120ms ease;
-}
-.fit-bar i + i {
-  background: var(--warning);
-}
-.fit-scale {
-  position: relative;
-  height: 28px;
-  margin-top: 6px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
-}
-.fit-scale span + span {
-  position: absolute;
-  top: 0;
-  padding-right: 6px;
-  border-right: 1px solid var(--text-3);
-  transform: translateX(-100%);
-  white-space: nowrap;
-  transition: left 120ms ease;
-}
-.fit-result p {
-  min-height: 3em;
-  margin-bottom: 20px;
-  font-size: var(--text-lg);
-  line-height: 1.5;
-  color: var(--text-2);
-}
-.fit-result strong {
-  color: var(--text);
-}
-
 /* Feature list ------------------------------------------------------------- */
 .details {
   display: grid;
@@ -740,7 +651,6 @@ html {
   .learn-split,
   .get,
   .others,
-  .fit,
   .details,
   .beta-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -891,4 +801,393 @@ html {
 }
 .lede a:hover {
   text-decoration-color: currentColor;
+}
+
+/* Pricing -------------------------------------------------------------------- */
+.soon {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 14px 18px;
+  border: 1px solid color-mix(in oklab, var(--primary) 35%, var(--line));
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--primary) 8%, var(--card));
+  font-size: var(--text-base);
+  line-height: 1.45;
+}
+.soon svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--primary);
+}
+.soon strong {
+  font-weight: 600;
+}
+.billing {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+}
+.billing button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.billing button[aria-checked='true'] {
+  background: var(--fill-2);
+  color: var(--text);
+}
+.billing small {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--success);
+}
+.plans {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+.plan {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 20px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+.plan[data-popular] {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.plan-tag {
+  position: absolute;
+  top: -11px;
+  left: 20px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--primary-foreground);
+}
+.plan h3 {
+  font-size: clamp(28px, 2.6vw, 36px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.plan-note {
+  min-height: 2.8em;
+  margin-top: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.plan-price {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 20px;
+}
+.plan-price strong {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.plan-price span,
+.plan-bill {
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.plan-bill {
+  margin-top: 4px;
+}
+.plan-beta {
+  flex: 1;
+  margin: 8px 0 20px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--success);
+}
+.plan[data-free] .plan-bill {
+  flex: 1;
+  margin-bottom: 20px;
+}
+/* The free tier leads the row, tinted so it reads as the default choice. */
+.plan[data-free] {
+  border-color: var(--success);
+  box-shadow: inset 0 0 0 1px var(--success);
+  background: color-mix(in oklab, var(--success) 9%, var(--card));
+}
+.plan[data-free] .plan-tag {
+  background: var(--success);
+  color: var(--card);
+}
+.plan[data-free] .plan-price strong {
+  color: var(--success);
+}
+.plan .btn {
+  width: 100%;
+}
+.plan-soon {
+  pointer-events: none;
+  color: var(--text-3);
+}
+.included {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.included li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+.included svg {
+  color: var(--success);
+}
+@media (max-width: 1080px) {
+  .plans {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .plans > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 860px) {
+  .plans {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-note {
+    min-height: 0;
+  }
+}
+
+/* Beta offer: big figure beside its terms, like the home page's beta block. */
+.offer .beta-price {
+  font-size: clamp(96px, 17vw, 240px);
+  white-space: nowrap;
+  color: var(--success);
+}
+.offer .beta-price small {
+  display: block;
+  margin-top: 0.12em;
+  font-size: clamp(20px, 2.4vw, 32px);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-2);
+}
+.offer-terms {
+  margin-top: 8px;
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.soon a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.learn-hero .lede em {
+  color: var(--success);
+}
+
+/* Launch block on the home page: the date leads, the changes follow. */
+.launch .beta-price {
+  font-size: clamp(88px, 13vw, 200px);
+  white-space: nowrap;
+}
+.launch .beta-price small {
+  display: block;
+  margin-top: 0.15em;
+  font-size: clamp(20px, 2.4vw, 32px);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-2);
+}
+.launch-list {
+  margin: 24px 0 32px;
+  border-top: 1px solid var(--line);
+}
+.launch-list > div {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.launch-list dt {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.launch-list dd {
+  margin-top: 2px;
+  color: var(--text-2);
+}
+
+/* Launch announcement above the hero headline. */
+.launch-pill {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px 18px 10px 14px;
+  border: 1px solid color-mix(in oklab, var(--primary) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+  font-size: var(--text-lg);
+  line-height: 1.2;
+  transition: border-color var(--ease);
+}
+.launch-pill:hover {
+  border-color: var(--primary);
+}
+.launch-pill .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 4px var(--success-soft);
+  animation: launch-pulse 2s ease-in-out infinite;
+}
+.launch-pill strong {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.launch-pill span:not(.dot) {
+  color: var(--primary);
+  font-weight: 500;
+}
+.launch-pill svg {
+  margin-left: -6px;
+  color: var(--primary);
+  transition: transform var(--ease);
+}
+.launch-pill:hover svg {
+  transform: translateX(3px);
+}
+@keyframes launch-pulse {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in oklab, var(--success) 8%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-pill .dot {
+    animation: none;
+  }
+}
+@media (max-width: 860px) {
+  .launch-pill {
+    font-size: var(--text-base);
+  }
+  .launch-pill span:not(.dot) {
+    display: none;
+  }
+}
+
+/* The free allowance leads the hero line. */
+.hero .lede strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Custom requirements, under the plan cards. */
+.custom-plan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-top: 12px;
+  padding: 20px 24px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+.custom-plan h3 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.custom-plan p {
+  max-width: 62ch;
+  margin-top: 4px;
+  color: var(--text-2);
+}
+
+.custom-dialog {
+  width: min(520px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+}
+.custom-dialog::backdrop {
+  background: color-mix(in oklab, black 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+.custom-dialog-body {
+  padding: 20px 24px 24px;
+}
+.custom-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.custom-dialog h2 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.custom-dialog form {
+  display: grid;
+  gap: 16px;
+}
+.custom-dialog label {
+  display: grid;
+  gap: 6px;
+  font-weight: 500;
+}
+.custom-dialog label small {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.custom-dialog textarea.input {
+  height: auto;
+  padding-block: 10px;
+  resize: vertical;
+}
+.custom-note {
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.custom-note + .btn {
+  margin-top: 20px;
+}
+.custom-note a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.custom-error {
+  color: var(--danger-text);
 }

@@ -117,7 +117,7 @@ export default async function FeaturePage({ params }: Props) {
       </section>
 
       <section className="wrap section learn-cta">
-        <h2>50 GB free for beta members. Nothing to pay during the beta.</h2>
+        <h2>10 GB free from 31 October. Join the waitlist today.</h2>
         <SignupButton />
       </section>
 

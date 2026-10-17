@@ -1,13 +1,32 @@
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowRight, ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
-import { FitCheck } from './fit-check';
+import { betaDiscount, offerEnds } from './pricing/offer';
 import { ProductStage } from './product-stage';
-import { loginUrl, SignupButton, signupUrl, SiteFoot, SiteNav } from './site-chrome';
+import { loginUrl, SignupButton, SiteFoot, SiteNav } from './site-chrome';
 
 const facts = [
-  { value: '50 GB', label: 'Free for beta members, kept after launch' },
-  { value: '$0', label: 'No payment until the beta ends' },
-  { value: 'More', label: 'Storage on request' },
+  { value: '31 Oct', label: 'Launch day — paid plans open' },
+  { value: '10 GB', label: 'Free for every account, for good' },
+  { value: `${betaDiscount}% off`, label: 'First year for beta members, until 15 November' },
+];
+
+const launch: [string, string][] = [
+  [
+    'Paid plans open',
+    '200 GB, 500 GB, 2 TB and 5 TB, from $2.49 a month. Annual billing gets two months free.',
+  ],
+  [
+    'Free stays free',
+    'Accounts created from launch day get 10 GB free, with every feature, encryption included.',
+  ],
+  [
+    'Waitlist until launch',
+    'New sign-ups join the waitlist until 31 October. We’ll email you when your account is ready.',
+  ],
+  [
+    `${betaDiscount}% off for beta members`,
+    `Every beta member gets ${betaDiscount}% off the first year of any annual plan started by ${offerEnds}. Codes go out by email on launch day.`,
+  ],
 ];
 
 const details: [string, string, string?][] = [
@@ -31,11 +50,21 @@ const details: [string, string, string?][] = [
 
 const questions = [
   [
-    'Do I keep the 50 GB after the beta?',
-    'Yes. Every account created during the beta gets 50 GB, and it stays free after the beta ends.',
+    'When does harbor0 launch?',
+    'Saturday 31 October 2026. Paid plans open that day, and new accounts get 10 GB free.',
   ],
-  ['Do I need to pay or add a card?', 'No. There is nothing to pay until the beta program ends.'],
-  ['What if I need more?', 'Ask. More storage is available on request.'],
+  [
+    'Can I sign up now?',
+    'Join the waitlist. New accounts open on 31 October, and we’ll email you when yours is ready.',
+  ],
+  [
+    'Do I need to pay or add a card?',
+    'No. The free storage stays free. You only pay if you choose a plan for more space.',
+  ],
+  [
+    'What if I need more?',
+    'Choose a plan. From 31 October there are plans of 200 GB, 500 GB, 2 TB and 5 TB.',
+  ],
   [
     'Who can see my files?',
     'Only you, unless you share them — and sharing is with signed-in people, not public links.',
@@ -60,10 +89,12 @@ export default function LandingPage() {
       <SiteNav />
 
       <section className="hero wrap" id="top">
-        <p className="label">
+        <a href="#beta" className="launch-pill">
           <span className="dot" />
-          Beta — no payment required
-        </p>
+          <strong>Launching Saturday 31 October</strong>
+          <span>See what’s changing</span>
+          <ArrowRight size={16} />
+        </a>
         <h1>
           A safe harbor
           <br />
@@ -71,8 +102,9 @@ export default function LandingPage() {
         </h1>
         <div className="hero-foot">
           <p className="lede">
-            50 GB of private storage, <Link href="/encryption">end-to-end encrypted</Link> if you
-            want it — <em>free for beta members.</em>
+            <strong>10 GB</strong> of private storage,{' '}
+            <Link href="/encryption">end-to-end encrypted</Link> if you want it —{' '}
+            <em>free, for good.</em>
           </p>
           <div className="hero-cta">
             <SignupButton />
@@ -96,13 +128,8 @@ export default function LandingPage() {
         <ProductStage />
       </section>
 
-      <section className="wrap section" id="fit">
-        <p className="label">02 — Storage</p>
-        <FitCheck signupUrl={signupUrl} />
-      </section>
-
       <section className="wrap section">
-        <p className="label">03 — Also on board</p>
+        <p className="label">02 — Also on board</p>
         <dl className="details">
           {details.map(([name, text, href], index) => (
             <div key={name}>
@@ -114,26 +141,34 @@ export default function LandingPage() {
         </dl>
       </section>
 
-      <section className="wrap section beta" id="beta">
-        <p className="label">04 — Beta</p>
+      <section className="wrap section beta launch" id="beta">
+        <p className="label">03 — Launch</p>
         <div className="beta-grid">
-          <p className="beta-price">$0</p>
+          <p className="beta-price">
+            31 Oct<small>Saturday — launch day</small>
+          </p>
           <div>
-            <h2>Nothing to pay until the beta program ends.</h2>
-            <ul>
-              <li>
-                <strong>50 GB free</strong> — beta members keep it after launch
-              </li>
-              <li>No payment required while the beta runs</li>
-              <li>More storage available on request</li>
-            </ul>
-            <SignupButton />
+            <h2>harbor0 leaves beta on 31 October.</h2>
+            <dl className="launch-list">
+              {launch.map(([name, text]) => (
+                <div key={name}>
+                  <dt>{name}</dt>
+                  <dd>{text}</dd>
+                </div>
+              ))}
+            </dl>
+            <div className="hero-cta">
+              <SignupButton />
+              <Link href="/pricing" className="text-link">
+                See pricing <ArrowRight size={16} />
+              </Link>
+            </div>
           </div>
         </div>
       </section>
 
       <section className="wrap section" id="faq">
-        <p className="label">05 — Questions</p>
+        <p className="label">04 — Questions</p>
         <div className="faq">
           {questions.map(([question, answer]) => (
             <details key={question}>

@@ -15,7 +15,7 @@ export const loginUrl = `${appUrl}/login`;
 export function SignupButton() {
   return (
     <a href={signupUrl} className="btn signup" data-variant="primary" data-size="lg">
-      Join the beta
+      Join the waitlist
       <ArrowRight />
     </a>
   );
@@ -31,8 +31,8 @@ export function SiteNav() {
         <nav aria-label="Sections">
           <Link href="/#product">Product</Link>
           <Link href="/apps">Apps</Link>
-          <Link href="/#fit">Storage</Link>
-          <Link href="/#beta">Beta</Link>
+          <Link href="/pricing">Pricing</Link>
+          <Link href="/#beta">Launch</Link>
           <Link href="/#faq">FAQ</Link>
         </nav>
         <div className="nav-actions">
@@ -55,14 +55,15 @@ export function SiteFoot() {
       <span className="brand">
         <BrandLogo />
       </span>
-      <span>50 GB free during the beta. Files are private unless you share them.</span>
+      <span>10 GB free from 31 October. Files are private unless you share them.</span>
       <span className="foot-links">
+        <Link href="/pricing">Pricing</Link>
         <Link href="/encryption">Encryption</Link>
         <Link href="/webdav">WebDAV</Link>
         <Link href="/terms">Terms</Link>
         <Link href="/privacy">Privacy</Link>
         <a href={signupUrl} className="text-link">
-          Join the beta <ArrowUpRight size={16} />
+          Join the waitlist <ArrowUpRight size={16} />
         </a>
       </span>
     </footer>

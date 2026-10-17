@@ -11,6 +11,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     '',
     ...features.map(({ id }) => `/${id}`),
     '/apps',
+    '/pricing',
     '/encryption',
     '/webdav',
     '/privacy',
