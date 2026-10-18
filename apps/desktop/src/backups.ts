@@ -127,6 +127,11 @@ export class FolderBackups {
     private unreadable: (rootId: string) => string[] = () => [],
   ) {}
   /** Files saved and files in the backup run under way, if one is. */
+  /** The run under way, as started: its id, files and their size. */
+  openRun(rootId: string) {
+    const run = this.journal.get<PendingRun | null>(`backup-run:${rootId}`);
+    return run ? { id: run.id, total: run.total, bytes: run.bytes } : null;
+  }
   run(rootId: string) {
     const run = this.journal.get<PendingRun | null>(`backup-run:${rootId}`);
     if (!run) return null;

@@ -71,7 +71,10 @@ describe('selective sync management', () => {
         : {};
     });
     await engineFor(api, journal).tick();
-    expect(calls.every((endpoint) => endpoint.startsWith('/v1/sync/'))).toBe(true);
+    // Besides reporting what the engine is doing, which names no files.
+    expect(
+      calls.every((endpoint) => endpoint.startsWith('/v1/sync/') || endpoint === '/v1/activity'),
+    ).toBe(true);
   });
   it('ignores content outside an explicitly mapped cloud subtree', async () => {
     const { journal, directory } = await setup();
@@ -296,4 +299,50 @@ it('keeps excluded local files when a remote deletion arrives', async () => {
   } as DriveItem);
   expect(await readFile(path.join(directory, relative), 'utf8')).toBe('keep this copy');
   expect(journal.file(root.id, relative)?.itemId).toBe('keep');
+});
+
+describe('activity reports', () => {
+  it('reports pausing and resuming everything for the engine and each folder', async () => {
+    const { directory, journal } = await setup();
+    await mkdir(path.join(directory, 'docs'));
+    await mkdir(path.join(directory, 'photos'));
+    journal.root({
+      id: 'docs',
+      localPath: path.join(directory, 'docs'),
+      remoteId: 'cloud-docs',
+      mode: 'sync',
+      paused: false,
+      excluded: [],
+    });
+    journal.root({
+      id: 'photos',
+      localPath: path.join(directory, 'photos'),
+      remoteId: 'cloud-photos',
+      mode: 'backup',
+      backupId: 'backup-photos',
+      paused: true,
+      excluded: [],
+    });
+    const sent: { scope: string; folderId?: string; action: string; reason?: string }[] = [];
+    const api = new ApiClient(async (endpoint, init) => {
+      if (endpoint === '/v1/activity') sent.push(...(init?.body as { events: typeof sent }).events);
+      return endpoint.includes('/changes') ? feed : {};
+    });
+    const engine = engineFor(api, journal);
+    engine.pause(true);
+    engine.pause(false);
+    await engine.stop();
+    await (engine as unknown as { reporter: { flush(): Promise<void> } }).reporter.flush();
+    const line = (e: (typeof sent)[number]) =>
+      [e.scope, e.folderId, e.action, e.reason].filter(Boolean).join(' ');
+    expect(sent.map(line)).toEqual([
+      'ENGINE PAUSED USER',
+      'SYNC cloud-docs PAUSED ALL',
+      'BACKUP backup-photos PAUSED ALL',
+      'ENGINE RESUMED',
+      'SYNC cloud-docs RESUMED',
+      // Paused by the person on its own, it stays paused when everything resumes.
+      'BACKUP backup-photos PAUSED USER',
+    ]);
+  });
 });

@@ -23,6 +23,7 @@ import { formView, submitForm } from './forms';
 import { SyncRelay } from './sync-relay';
 import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
+import { DeviceActivity } from './device-activity';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
 import { transact, transientDynamoError } from './repository';
@@ -1326,6 +1327,33 @@ export function createApp(
   );
   add(
     'post',
+    '/v1/activity',
+    'Report what the sync and backup engine is doing: paused, resumed, started, finished',
+    c.activityBody,
+    z.object({ accepted: z.number(), changed: z.number() }),
+    async (ctx, i: z.infer<typeof c.activityBody>) => {
+      const identity = ctx.get('identity');
+      assert(identity.deviceId, 'FORBIDDEN', 'Only an app can report its activity.', 403);
+      const device = ctx.get('device');
+      // Each event is one log line under the account, like a request; the console's timeline
+      // reads them. Only a change of status is stored.
+      for (const event of i.events)
+        console.log(
+          JSON.stringify({
+            event: 'activity',
+            requestId: ctx.get('requestId'),
+            userId: identity.id,
+            deviceId: identity.deviceId,
+            ...(device ? { platform: device.platform, appVersion: device.appVersion } : {}),
+            ...event,
+          }),
+        );
+      const { changed } = await deviceActivity.record(identity.id, identity.deviceId, i.events);
+      return { accepted: i.events.length, changed };
+    },
+  );
+  add(
+    'post',
     '/v1/client-events',
     'Report problems the app saw outside the API',
     c.clientEventsBody,
@@ -2297,6 +2325,7 @@ export function createApp(
     },
   );
   const backupWorkflows = new Backups(service);
+  const deviceActivity = new DeviceActivity(service);
   const backupDevice = (ctx: Context<Env>) => {
     const id = ctx.get('identity').deviceId;
     assert(id, 'FORBIDDEN', 'Use the desktop app for this action.', 403);

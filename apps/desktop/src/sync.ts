@@ -8,6 +8,7 @@ import {
   type BatchOutcome,
 } from './backups';
 import { SyncReceipts } from './sync-receipts';
+import { ActivityReporter, type ActivitySubject } from './activity';
 import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
@@ -125,6 +126,7 @@ async function localStat(file: string) {
 export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
+  private reporter: ActivityReporter;
   private watchers = new Map<string, TreeWatcher>();
   // When each folder whose drive is away may next look for that drive at another mount point.
   private nextVolumeSearch = new Map<string, number>();
@@ -220,6 +222,8 @@ export class SyncEngine {
       }
     });
     this.receipts = new SyncReceipts(api, journal);
+    // Not bound to a pass: a report must not end with a pass the watchdog cut short.
+    this.reporter = new ActivityReporter(api, journal);
     this.backups = new FolderBackups(
       this.api,
       journal,
@@ -282,6 +286,7 @@ export class SyncEngine {
   }
   async stop() {
     this.stopped = true;
+    this.reporter.stop();
     this.confirmationController.abort();
     await this.confirmationWork;
     this.pendingWake = false;
@@ -610,7 +615,9 @@ export class SyncEngine {
     this.lastProgressEmit = now;
     this.state.queued = this.journal.jobCount();
     this.state.waiting = [...this.waiting.values()];
-    this.state.progress = this.progress();
+    // Counted once for both the progress and the activity report.
+    const queued = this.journal.jobCounts();
+    this.state.progress = this.progress(queued);
     this.state.backupRuns = Object.fromEntries(
       this.journal
         .roots()
@@ -620,16 +627,70 @@ export class SyncEngine {
           return run?.total ? [[root.id, run]] : [];
         }),
     );
+    if (!progressOnly) this.reporter.observe(this.activitySubjects(queued));
     this.changed({ ...this.state });
+  }
+  /**
+   * What the engine and each folder is doing, for the server (see ActivityReporter): paused by
+   * the person or by the app, unable to run, moving files, or idle.
+   */
+  private activitySubjects(queued: Map<string, number>): ActivitySubject[] {
+    const held = this.hold?.();
+    const subjects: ActivitySubject[] = [
+      this.state.paused
+        ? { scope: 'ENGINE', status: 'PAUSED', reason: 'USER' }
+        : held
+          ? { scope: 'ENGINE', status: 'BLOCKED', reason: 'LOCKED' }
+          : storageFullNow(this.state)
+            ? { scope: 'ENGINE', status: 'BLOCKED', reason: 'STORAGE_FULL' }
+            : { scope: 'ENGINE', status: 'ACTIVE' },
+    ];
+    for (const root of this.journal.roots()) {
+      const folderId = root.mode === 'backup' ? root.backupId : (root.remoteId ?? undefined);
+      if (!folderId || root.archive) continue;
+      const scope = root.mode === 'backup' ? 'BACKUP' : 'SYNC';
+      if (this.state.paused || root.paused) {
+        const byApp = this.state.issues.some((i) => i.id === `${root.id}:mapping`);
+        subjects.push({
+          scope,
+          folderId,
+          status: 'PAUSED',
+          reason: this.state.paused ? 'ALL' : byApp ? 'APP' : 'USER',
+        });
+      } else if (root.mode === 'backup') {
+        const run = this.backups.openRun(root.id);
+        subjects.push(
+          run
+            ? {
+                scope,
+                folderId,
+                status: 'ACTIVE',
+                runId: run.id,
+                ...(run.total !== undefined ? { files: run.total } : {}),
+                ...(run.bytes !== undefined ? { bytes: run.bytes } : {}),
+              }
+            : { scope, folderId, status: 'IDLE' },
+        );
+      } else {
+        const waiting = queued.get(root.id) ?? 0;
+        const busy = waiting > 0 || this.state.active?.rootId === root.id;
+        const failed = this.state.issues.filter((i) => i.rootId === root.id && i.jobId).length;
+        subjects.push(
+          busy
+            ? { scope, folderId, status: 'ACTIVE', files: waiting }
+            : { scope, folderId, status: 'IDLE', failed },
+        );
+      }
+    }
+    return subjects;
   }
   /**
    * Sync: files finished since the folder was last idle against those still queued, plus a
    * download in flight. Backup: files saved in the current run against the run's size. The file
    * being transferred counts by its bytes. Stays below 100 until the work is done.
    */
-  private progress() {
+  private progress(queued: Map<string, number>) {
     const progress: Record<string, number> = {};
-    const queued = this.journal.jobCounts();
     const active = this.state.active;
     for (const root of this.journal.roots()) {
       const fraction =
@@ -655,6 +716,8 @@ export class SyncEngine {
   }
   private finished(rootId: string) {
     this.syncDone.set(rootId, (this.syncDone.get(rootId) ?? 0) + 1);
+    const remoteId = this.journal.roots().find((r) => r.id === rootId)?.remoteId;
+    if (remoteId) this.reporter.fileMoved(remoteId);
   }
   validateRoot(root: Root) {
     if (root.mode === 'sync' && !root.remoteId)
@@ -2249,6 +2312,7 @@ export class SyncEngine {
       const queued = this.journal.jobCounts();
       for (const id of this.syncDone.keys()) if (!queued.get(id)) this.syncDone.delete(id);
       this.emit();
+      void this.reporter.flush();
     }
   }
   private async child(parentId: string | null, name: string) {

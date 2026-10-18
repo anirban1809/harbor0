@@ -4,6 +4,7 @@ import {
   type AdminBackupRun,
   type AdminBackups,
 } from '../../../../packages/contracts/src/admin';
+import type { ActivityState } from '../../../../packages/contracts/src/activity';
 import type { BackupRoot, BackupRun } from '../../../../packages/contracts/src/backups';
 import { backupPartition } from '../backups';
 import { userPK, type Account } from '../domain';
@@ -56,7 +57,10 @@ const adminRun = (run: BackupRun): AdminBackupRun => ({
 
 /** Every backup folder of the account with its newest runs, for the console's backups page. */
 export async function backupRuns(repo: Repository, userId: string): Promise<AdminBackups> {
-  const roots = await list<BackupRoot>(repo, userPK(userId), 'BACKUP#');
+  const [roots, states] = await Promise.all([
+    list<BackupRoot>(repo, userPK(userId), 'BACKUP#'),
+    list<ActivityState>(repo, userPK(userId), 'ACTIVITY#'),
+  ]);
   const account = (await repo.get({ pk: userPK(userId), sk: 'PROFILE' }))?.data as
     Account | undefined;
   const storage = account
@@ -76,6 +80,7 @@ export async function backupRuns(repo: Repository, userId: string): Promise<Admi
         updatedAt: root.updatedAt,
         runs: runs.slice(0, ADMIN_BACKUP_RUNS).map(adminRun),
         runCount: runs.length,
+        ...reported(root, states),
       };
     }),
   );
@@ -90,7 +95,19 @@ export async function backupRuns(repo: Repository, userId: string): Promise<Admi
   };
 }
 
-async function list<T>(repo: Repository, pk: string, prefix: string, max = Infinity) {
+/** What the backup's computer last reported about the folder and about its engine. */
+export function reported(root: BackupRoot, states: ActivityState[]) {
+  const status = states.find((s) => s.scope === 'BACKUP' && s.folderId === root.id) ?? null;
+  const device = (s: ActivityState) =>
+    status
+      ? s.deviceKey === status.deviceKey
+      : s.deviceId === root.deviceId ||
+        (!!root.devicePublicId && s.deviceKey === `installation:${root.devicePublicId}`);
+  const engine = states.find((s) => s.scope === 'ENGINE' && device(s)) ?? null;
+  return { status, engine };
+}
+
+export async function list<T>(repo: Repository, pk: string, prefix: string, max = Infinity) {
   const out: T[] = [];
   let cursor: string | undefined;
   do {

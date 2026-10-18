@@ -11,6 +11,9 @@ import {
     adminUsageQuery,
     adminUsageSchema,
     adminBackupsSchema,
+    adminSyncSchema,
+    adminDeviceActivityQuery,
+    adminDeviceActivitySchema,
     adminActivitySchema,
     adminRequestLogQuery,
     adminRequestLogSchema,
@@ -50,6 +53,7 @@ import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
 import { backupRuns } from './backup-runs';
+import { deviceActivityLog, syncActivity } from './sync-activity';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
 import { AdminForms } from './forms';
@@ -405,6 +409,14 @@ export function createAdminApp(
     v1.get('/users/:id/backups', guard('read'), async (ctx) =>
         ctx.json(adminBackupsSchema.parse(await backupRuns(service.repo, userId(ctx)))),
     );
+    v1.get('/users/:id/sync', guard('read'), async (ctx) =>
+        ctx.json(adminSyncSchema.parse(await syncActivity(service, userId(ctx)))),
+    );
+    v1.get('/users/:id/device-activity', guard('read'), async (ctx) => {
+        const query = adminDeviceActivityQuery.parse(ctx.req.query());
+        const log = await deviceActivityLog(activitySource(), userId(ctx), query);
+        return ctx.json(adminDeviceActivitySchema.parse(log));
+    });
     v1.get('/users/:id/usage/events', guard('read'), async (ctx) => {
         const { range, group, cursor } = adminUsageEventsQuery.parse(ctx.req.query());
         const page = await usageLog(activitySource(), userId(ctx), { range, group, cursor });

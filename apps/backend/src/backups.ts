@@ -125,6 +125,13 @@ export class Backups {
       const existing = await tx.get<BackupRun>(pk, `RUN#${input.id}`);
       if (existing) return { run: existing };
       this.active(root);
+      // Running again: the device has resumed, even if it couldn't say so yet.
+      if (root.state === 'PAUSED')
+        await tx.put(userPK(userId), `BACKUP#${root.id}`, {
+          ...root,
+          state: 'ACTIVE',
+          updatedAt: new Date().toISOString(),
+        });
       const run: BackupRun = {
         ...input,
         rootId,

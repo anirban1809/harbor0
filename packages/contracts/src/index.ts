@@ -450,6 +450,7 @@ export const folderDownloadSchema = z.object({
 export type FolderDownload = z.infer<typeof folderDownloadSchema>;
 export * from './flags';
 export * from './client-events';
+export * from './activity';
 export * from './e2ee';
 export * from './rate-limits';
 export * from './public-links';

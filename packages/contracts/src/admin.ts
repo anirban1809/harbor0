@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { deviceSchema, platform, storageSchema, trackingId } from './index';
 import { flagReason, flagRuleSchema } from './flags';
+import {
+  activityActions,
+  activityReasons,
+  activityScopes,
+  activityStateSchema,
+  activityStatuses,
+} from './activity';
 
 /**
  * The management console's API. Staff sign in to their own Cognito pool, never the
@@ -303,6 +310,7 @@ export const BACKGROUND_REQUESTS = [
   'POST /v1/sync/checkpoints',
   'POST /v1/sync/items/:id/acknowledge',
   'POST /v1/client-events',
+  'POST /v1/activity',
   'PUT /v1/devices/current/push',
 ] as const;
 /** What the mobile apps' on-device sync and backup send by themselves. */
@@ -647,9 +655,64 @@ export const adminBackupsSchema = z.object({
       runs: z.array(adminBackupRunSchema),
       /** Runs the folder has had in all. */
       runCount: z.number(),
+      /** What its computer last reported about the folder, and about its whole engine. */
+      status: activityStateSchema.nullable(),
+      engine: activityStateSchema.nullable(),
     }),
   ),
 });
+/** Each device's synced folders with what it last reported about them. */
+export const adminSyncSchema = z.object({
+  checkedAt: z.string(),
+  devices: z.array(
+    z.object({
+      deviceKey: z.string(),
+      deviceName: z.string().nullable(),
+      platform: z.string().nullable(),
+      signedIn: z.boolean(),
+      engine: activityStateSchema.nullable(),
+      folders: z.array(
+        z.object({
+          folderId: z.string(),
+          /** The synced folder's own name; null when it is encrypted or can't be read. */
+          name: z.string().nullable(),
+          encrypted: z.boolean(),
+          /** Someone else's folder shared with the account. */
+          shared: z.boolean(),
+          status: activityStateSchema.nullable(),
+        }),
+      ),
+    }),
+  ),
+});
+export const adminDeviceActivityQuery = z.object({
+  range: z.enum(['1h', '24h', '7d', '30d']).default('7d'),
+  scope: z.enum(['ALL', ...activityScopes]).default('ALL'),
+});
+/** What the account's apps reported doing, newest first, from the request log. */
+export const adminDeviceActivitySchema = z.object({
+  events: z.array(
+    z.object({
+      at: z.string(),
+      deviceId: z.string().nullable(),
+      platform: z.string().nullable(),
+      appVersion: z.string().nullable(),
+      scope: z.enum(activityScopes),
+      folderId: z.string().nullable(),
+      action: z.enum(activityActions),
+      status: z.enum(activityStatuses),
+      reason: z.enum(activityReasons).nullable(),
+      files: z.number().nullable(),
+      bytes: z.number().nullable(),
+      failed: z.number().nullable(),
+    }),
+  ),
+  /** True when the list stopped at its limit and older events exist. */
+  more: z.boolean(),
+});
+export const ADMIN_ACTIVITY_LIMIT = 200;
+export type AdminSync = z.infer<typeof adminSyncSchema>;
+export type AdminDeviceActivity = z.infer<typeof adminDeviceActivitySchema>;
 export const ADMIN_BACKUP_RUNS = 10;
 export type AdminBackupRun = z.infer<typeof adminBackupRunSchema>;
 export type AdminBackups = z.infer<typeof adminBackupsSchema>;
