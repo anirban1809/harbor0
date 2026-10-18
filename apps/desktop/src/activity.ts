@@ -151,6 +151,11 @@ export class ActivityReporter {
     return this.sending;
   }
 
+  /** The engine started again (after a settings change, say): report and send as before. */
+  start() {
+    this.stopped = false;
+  }
+
   stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);

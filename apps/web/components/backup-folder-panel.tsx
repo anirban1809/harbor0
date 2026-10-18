@@ -372,7 +372,8 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                 detail:
                   'Saving a final backup. The copy on this computer is removed once every file is saved.',
               }
-            : local?.paused || root.state === 'PAUSED'
+            : // This computer's own folder: what it says now, not the server's last report of it.
+              (local ? local.paused : root.state === 'PAUSED')
               ? {
                   tone: 'paused',
                   label: 'Paused',

@@ -123,10 +123,13 @@ async function localStat(file: string) {
     return {};
   }
 }
+/** How often a pass that only reports progress also checks for activity to report. */
+const ACTIVITY_CHECK_MS = 2_000;
 export class SyncEngine {
   private receipts: SyncReceipts;
   private backups: FolderBackups;
   private reporter: ActivityReporter;
+  private lastActivityCheck = 0;
   private watchers = new Map<string, TreeWatcher>();
   // When each folder whose drive is away may next look for that drive at another mount point.
   private nextVolumeSearch = new Map<string, number>();
@@ -243,6 +246,7 @@ export class SyncEngine {
   }
   async start() {
     this.stopped = false;
+    this.reporter.start();
     this.confirmationController = new AbortController();
     this.nextConfirmationAt = 0;
     this.remoteDelay = REMOTE_POLL_MIN;
@@ -627,7 +631,11 @@ export class SyncEngine {
           return run?.total ? [[root.id, run]] : [];
         }),
     );
-    if (!progressOnly) this.reporter.observe(this.activitySubjects(queued));
+    // A backup run can take hours in one pass, emitting only progress: look again every so often.
+    if (!progressOnly || now - this.lastActivityCheck >= ACTIVITY_CHECK_MS) {
+      this.lastActivityCheck = now;
+      this.reporter.observe(this.activitySubjects(queued));
+    }
     this.changed({ ...this.state });
   }
   /**

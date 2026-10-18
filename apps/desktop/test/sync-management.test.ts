@@ -331,6 +331,8 @@ describe('activity reports', () => {
     const engine = engineFor(api, journal);
     engine.pause(true);
     engine.pause(false);
+    // Resuming one folder restarts the engine to apply it; reporting carries on after.
+    await engine.updateRoot({ ...journal.roots().find((r) => r.id === 'photos')!, paused: false });
     await (engine as unknown as { reporter: { flush(): Promise<void> } }).reporter.flush();
     const line = (e: (typeof sent)[number]) =>
       [e.scope, e.folderId, e.action, e.reason].filter(Boolean).join(' ');
@@ -342,6 +344,7 @@ describe('activity reports', () => {
       'SYNC cloud-docs RESUMED',
       // Paused by the person on its own, it stays paused when everything resumes.
       'BACKUP backup-photos PAUSED USER',
+      'BACKUP backup-photos RESUMED',
     ]);
   });
 });
