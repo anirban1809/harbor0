@@ -63482,6 +63482,9 @@
                           "plannedSizeBytes": {
                             "type": "number"
                           },
+                          "lastSavedAt": {
+                            "type": "string"
+                          },
                           "error": {
                             "type": "string"
                           }
@@ -63956,6 +63959,9 @@
                         },
                         "plannedSizeBytes": {
                           "type": "number"
+                        },
+                        "lastSavedAt": {
+                          "type": "string"
                         },
                         "error": {
                           "type": "string"
@@ -66980,6 +66986,9 @@
                         },
                         "plannedSizeBytes": {
                           "type": "number"
+                        },
+                        "lastSavedAt": {
+                          "type": "string"
                         },
                         "error": {
                           "type": "string"

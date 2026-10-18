@@ -9,7 +9,9 @@ import { BACKUP_STALE_MS, StorageService, userPK, watchedBackup, type Job } from
 import { Transaction, transact } from './repository';
 import { assert } from './errors';
 import { encryptedAccount } from './e2ee';
-const partition = (userId: string, rootId: string) => `${userPK(userId)}#BACKUP#${rootId}`;
+export const backupPartition = (userId: string, rootId: string) =>
+  `${userPK(userId)}#BACKUP#${rootId}`;
+const partition = backupPartition;
 // When the folder's last backup run finished, kept for its stale-backup reminder.
 type LastRun = { completedAt: string };
 // A device saying nothing changed re-arms the reminder at most this often.
@@ -201,6 +203,7 @@ export class Backups {
         ...run,
         fileCount: run.fileCount + 1,
         sizeBytes: run.sizeBytes + version.sizeBytes,
+        lastSavedAt: new Date().toISOString(),
       });
       return { saved: true };
     });

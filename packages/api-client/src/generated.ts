@@ -27967,6 +27967,7 @@ export interface operations {
                             sizeBytes: number;
                             plannedFileCount?: number;
                             plannedSizeBytes?: number;
+                            lastSavedAt?: string;
                             error?: string;
                         }[];
                         nextCursor: string | null;
@@ -28161,6 +28162,7 @@ export interface operations {
                             sizeBytes: number;
                             plannedFileCount?: number;
                             plannedSizeBytes?: number;
+                            lastSavedAt?: string;
                             error?: string;
                         };
                     };
@@ -29438,6 +29440,7 @@ export interface operations {
                             sizeBytes: number;
                             plannedFileCount?: number;
                             plannedSizeBytes?: number;
+                            lastSavedAt?: string;
                             error?: string;
                         };
                     };

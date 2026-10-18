@@ -615,6 +615,44 @@ export const adminUsageEventsSchema = z.object({
   events: z.array(adminUsageEventSchema),
   nextCursor: z.string().nullable(),
 });
+/** One run of a backup folder as staff see it; the error text has its file and folder names removed. */
+export const adminBackupRunSchema = z.object({
+  id: z.string(),
+  trigger: z.enum(['AUTOMATIC', 'MANUAL']),
+  state: z.enum(['RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED']),
+  startedAt: z.string(),
+  completedAt: z.string().nullable(),
+  fileCount: z.number(),
+  sizeBytes: z.number(),
+  /** What the device found to back up when the run started; null from app versions before 0.1.11. */
+  plannedFileCount: z.number().nullable(),
+  plannedSizeBytes: z.number().nullable(),
+  /** When the run last recorded a file; null before the server kept it. */
+  lastSavedAt: z.string().nullable(),
+  error: z.string().nullable(),
+});
+/** An account's backup folders with their latest runs, newest folder first. */
+export const adminBackupsSchema = z.object({
+  checkedAt: z.string(),
+  storage: z.object({ quotaBytes: z.number(), usedBytes: z.number(), availableBytes: z.number() }),
+  backups: z.array(
+    z.object({
+      id: z.string(),
+      folderName: z.string(),
+      deviceName: z.string().nullable(),
+      state: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      /** Newest first, at most ADMIN_BACKUP_RUNS. */
+      runs: z.array(adminBackupRunSchema),
+      /** Runs the folder has had in all. */
+      runCount: z.number(),
+    }),
+  ),
+});
+export const ADMIN_BACKUP_RUNS = 10;
+export type AdminBackupRun = z.infer<typeof adminBackupRunSchema>;
+export type AdminBackups = z.infer<typeof adminBackupsSchema>;
 export type AdminUsage = z.infer<typeof adminUsageSchema>;
 export type AdminUsageEvent = z.infer<typeof adminUsageEventSchema>;
 export type AdminUsageEvents = z.infer<typeof adminUsageEventsSchema>;

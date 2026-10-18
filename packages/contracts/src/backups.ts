@@ -26,6 +26,8 @@ export const backupRunSchema = z.object({
   // started by older app versions have none.
   plannedFileCount: z.number().optional(),
   plannedSizeBytes: z.number().optional(),
+  // When the run last recorded a file, to tell a running backup from a stalled one.
+  lastSavedAt: z.string().optional(),
   error: z.string().optional(),
 });
 export const backupEntrySchema = z.object({

@@ -10,6 +10,7 @@ import {
     adminUsageEventsSchema,
     adminUsageQuery,
     adminUsageSchema,
+    adminBackupsSchema,
     adminActivitySchema,
     adminRequestLogQuery,
     adminRequestLogSchema,
@@ -48,6 +49,7 @@ import { DomainError, assert } from '../errors';
 import type { StorageService } from '../domain';
 import type { UserDirectory } from './directory';
 import { AdminService } from './service';
+import { backupRuns } from './backup-runs';
 import { AdminFlags } from './flags';
 import { AdminCampaigns } from './campaigns';
 import { AdminForms } from './forms';
@@ -400,6 +402,9 @@ export function createAdminApp(
         const usage = await userUsage(source, userId(ctx), range, await admin.backups(userId(ctx)));
         return ctx.json(adminUsageSchema.parse(usage));
     });
+    v1.get('/users/:id/backups', guard('read'), async (ctx) =>
+        ctx.json(adminBackupsSchema.parse(await backupRuns(service.repo, userId(ctx)))),
+    );
     v1.get('/users/:id/usage/events', guard('read'), async (ctx) => {
         const { range, group, cursor } = adminUsageEventsQuery.parse(ctx.req.query());
         const page = await usageLog(activitySource(), userId(ctx), { range, group, cursor });
