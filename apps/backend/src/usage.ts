@@ -4,12 +4,23 @@ import { DomainError } from './errors';
 import { Transaction, transact, type Repository } from './repository';
 
 export type FolderUsage = { itemId: string; bytes: number; files: number; complete: boolean };
-type Cached = Omit<FolderUsage, 'itemId'> & { sequence: number; computedAt: number };
+type Cached = Omit<FolderUsage, 'itemId'> & {
+  sequence: number;
+  computedAt: number;
+  /** When a request began counting again; others keep the old answer meanwhile. */
+  countingAt?: number;
+};
 
 /** Items one request may visit; larger trees report a lower bound (`complete: false`). */
 export const USAGE_ITEM_BUDGET = 10_000;
-/** A result stays good while the account is unchanged, and for this long after it changes. */
-export const USAGE_CACHE_MS = 60_000;
+/**
+ * A result stays good while the account is unchanged, and for this long after it changes. A
+ * count reads two rows per file, so recounting a large folder every minute while a backup is
+ * adding to it is what overloads the account's partition.
+ */
+export const USAGE_CACHE_MS = 5 * 60_000;
+/** How long one request's recount holds off others, which return the previous count instead. */
+export const USAGE_COUNTING_MS = 60_000;
 
 const row = async <T>(repo: Repository, pk: string, sk: string) =>
   (await repo.get({ pk, sk }))?.data as T | undefined;
@@ -53,6 +64,20 @@ export class UsageService {
       (cached.sequence === sequence || Date.now() - cached.computedAt < USAGE_CACHE_MS)
     )
       return { bytes: cached.bytes, files: cached.files, complete: cached.complete };
+    // Another request is counting this folder right now: the previous count will do. The mark
+    // is claimed in a transaction, so of several requests arriving together only one counts.
+    if (cached && !fresh) {
+      const counting = await transact(repo, async (tx) => {
+        const current = await tx.get<Cached>(userPK(owner), key);
+        if (!current) return false;
+        if (current.countingAt && Date.now() - current.countingAt < USAGE_COUNTING_MS) return true;
+        await tx.put(userPK(owner), key, { ...current, countingAt: Date.now() } satisfies Cached, {
+          expiresAt: Math.floor(Date.now() / 1000) + 7 * 86400,
+        });
+        return false;
+      }).catch(() => false); // Without the mark, others may count too; nothing worse.
+      if (counting) return { bytes: cached.bytes, files: cached.files, complete: cached.complete };
+    }
     const total = { bytes: 0, files: 0, complete: true };
     if (item.type === 'FILE') await this.file(owner, item.id, total);
     else await this.folder(owner, item.id, total, budget);

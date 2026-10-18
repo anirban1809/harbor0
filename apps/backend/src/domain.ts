@@ -1205,7 +1205,8 @@ export class StorageService {
         return { parts };
     }
     async uploadStatus(userId: string, id: string) {
-        const u = await this.getUpload(userId, id);
+        let u = await this.getUpload(userId, id);
+        if (u.state === 'COMPLETING') u = await this.settleCompleting(userId, u);
         return {
             upload: this.publicUpload(u),
             parts:
@@ -1213,6 +1214,28 @@ export class StorageService {
                     ? await this.storage.parts(u.objectKey, u.providerUploadId)
                     : (u.completionParts ?? []),
         };
+    }
+    /**
+     * An upload left finishing when its request failed (a batch cut short, say): its parts are
+     * already recorded, so finish it here. A client resuming it may not know its parts, and the
+     * storage upload may be closed already, so it could neither send parts nor complete it.
+     * Whatever stops this leaves the upload as it was.
+     */
+    private async settleCompleting(userId: string, u: Upload): Promise<Upload> {
+        if (!u.completionParts?.length || !u.contentHash || u.expiresAt <= now()) return u;
+        try {
+            const object = await this.storage.head(u.objectKey);
+            // Stored already: adding the file is one transaction, safe beside any other attempt.
+            if (object && object.size === u.expectedSizeBytes)
+                await this.commitFinish(userId, u.id, u.contentHash, object);
+            // Not stored yet: complete it in storage only once the request doing so must have
+            // ended (API Gateway allows 29 s), so the two never complete it together.
+            else if (Date.now() - Date.parse(u.updatedAt) >= 60_000)
+                await this.finishUpload(userId, u.id, u.completionParts, u.contentHash);
+        } catch (error) {
+            if (!(error instanceof DomainError)) throw error;
+        }
+        return this.getUpload(userId, u.id);
     }
     async completeUpload(userId: string, id: string, parts: CompletedPart[], contentHash: string) {
         const { item } = await this.finishUpload(userId, id, parts, contentHash);

@@ -26,4 +26,9 @@ export function assert(
 ): asserts condition {
   if (!condition) throw new DomainError(code, message, status, details);
 }
-export class RetryTransaction extends Error {}
+export class RetryTransaction extends Error {
+  /** `transient`: the database's own refusal, when it was busy rather than the rows changed. */
+  constructor(public transient?: unknown) {
+    super();
+  }
+}

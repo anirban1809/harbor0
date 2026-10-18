@@ -1,10 +1,10 @@
 import { beforeEach, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DriveItem } from '@harbor/contracts';
-import { StorageService } from '../src/domain';
-import { MemoryRepository } from '../src/repository';
+import { StorageService, userPK } from '../src/domain';
+import { MemoryRepository, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
-import { USAGE_CACHE_MS, UsageService } from '../src/usage';
+import { USAGE_CACHE_MS, USAGE_COUNTING_MS, UsageService } from '../src/usage';
 
 let service: StorageService, storage: MemoryStorage, usage: UsageService;
 const op = () => randomUUID();
@@ -70,6 +70,25 @@ it('reuses a recent count, then recounts once the drive changed and it has aged'
     vi.spyOn(Date, 'now').mockReturnValue(now + USAGE_CACHE_MS + 1),
   );
   expect((await usage.usage('alice', [root.id])).items[0]).toMatchObject({ bytes: 8, files: 2 });
+  spy.mockRestore();
+});
+
+it('keeps the last count while another request is counting the folder again', async () => {
+  const root = await folder('Backup');
+  await upload(root.id, 'a.txt', 'hello');
+  await usage.usage('alice', [root.id]);
+  await upload(root.id, 'b.txt', 'abc');
+  const now = Date.now();
+  const { vi } = await import('vitest');
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(now + USAGE_CACHE_MS + 1);
+  // Another request has just started counting.
+  await transact(service.repo, async (tx) => {
+    const cached = await tx.get<object>(userPK('alice'), `USAGE#${root.id}`);
+    await tx.put(userPK('alice'), `USAGE#${root.id}`, { ...cached, countingAt: Date.now() });
+  });
+  expect((await usage.usage('alice', [root.id])).items[0].bytes).toBe(5);
+  spy.mockReturnValue(now + USAGE_CACHE_MS + USAGE_COUNTING_MS + 2);
+  expect((await usage.usage('alice', [root.id])).items[0].bytes).toBe(8);
   spy.mockRestore();
 });
 

@@ -251,11 +251,14 @@ export class DynamoRepository implements Repository {
       if (
         (e.name === 'TransactionCanceledException' &&
           e.CancellationReasons?.some((r) =>
-            ['ConditionalCheckFailed', 'TransactionConflict'].includes(r.Code),
+            ['ConditionalCheckFailed', 'TransactionConflict', 'ThrottlingError'].includes(r.Code),
           )) ||
         e.name === 'TransactionConflictException'
       )
         throw new RetryTransaction();
+      // Every row is checked by version, so running the change again from fresh reads is safe
+      // even if the failed attempt was applied after all.
+      if (transientDynamoError(error)) throw new RetryTransaction(error);
       throw error;
     }
   }
@@ -495,13 +498,32 @@ export class Transaction {
     await this.repo.commit([...this.writes.values()], checks);
   }
 }
+/**
+ * DynamoDB refusing for a moment, not for the request: busy, throttled, or a write the SDK sent
+ * again while the first try was still running. The same request a little later succeeds.
+ */
+export function transientDynamoError(error: unknown) {
+  const name = (error as { name?: string } | null)?.name;
+  return [
+    'InternalServerError',
+    'ServiceUnavailable',
+    'ThrottlingException',
+    'ProvisionedThroughputExceededException',
+    'RequestLimitExceeded',
+    'TransactionInProgressException',
+  ].includes(name ?? '');
+}
 const TRANSACT_ATTEMPTS = 12;
+// The database busy is retried only briefly: each attempt already includes the SDK's own retries,
+// and a request must answer within API Gateway's 29 seconds.
+const TRANSIENT_ATTEMPTS = 3;
 export async function transact<T>(
   repo: Repository,
   fn: (tx: Transaction) => Promise<T>,
 ): Promise<T> {
   // Every change to an account also writes its profile (the change sequence), so a person's
   // computers saving at once contend for it: retry for a few seconds, not a fraction of one.
+  let transient = 0;
   for (let attempt = 0; attempt < TRANSACT_ATTEMPTS; attempt++) {
     const tx = new Transaction(repo);
     try {
@@ -510,6 +532,7 @@ export async function transact<T>(
       return result;
     } catch (error) {
       if (!(error instanceof RetryTransaction)) throw error;
+      if (error.transient && ++transient >= TRANSIENT_ATTEMPTS) throw error.transient;
       await new Promise((r) => setTimeout(r, Math.random() * Math.min(1000, 5 * 2 ** attempt)));
     }
   }

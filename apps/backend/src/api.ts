@@ -25,7 +25,7 @@ import { SyncSharing } from './sync-sharing';
 import { UsageService } from './usage';
 import { StorageService, userPK } from './domain';
 import { DomainError, assert } from './errors';
-import { transact } from './repository';
+import { transact, transientDynamoError } from './repository';
 import { assertDeviceMayRegister, assertInboxFree } from './signup-guard';
 import { trackSignup } from './signup-tracking';
 import { needsSecondStep, type AuthProvider, type Tokens } from './auth';
@@ -1361,6 +1361,9 @@ export function createApp(
   // not reach come back as BATCH_NOT_REACHED and the device sends them again.
   const BATCH_DEADLINE_MS = 18_000;
   const batchError = (error: unknown) => {
+    // The database busy for a moment: this file goes again rather than failing the whole batch,
+    // which would leave the files already saved in it unreported.
+    if (transientDynamoError(error)) return notReached;
     if (!(error instanceof DomainError)) throw error;
     return {
       error: { code: error.code, message: error.message, details: error.details },

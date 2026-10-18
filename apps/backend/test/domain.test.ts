@@ -1328,3 +1328,89 @@ it('re-arms storage warnings once space is freed', async () => {
   });
   expect(await level()).toBe(0);
 });
+describe('uploads left finishing', () => {
+  it('finishes an upload whose finishing request failed when its status is read', async () => {
+    const data = 'left finishing';
+    const hash = createHash('sha256').update(data).digest('hex');
+    const r = await service.createUpload('alice', {
+      operationId: op(),
+      parentId: null,
+      name: 'batch.txt',
+      sizeBytes: Buffer.byteLength(data),
+      mimeType: 'text/plain',
+      contentHash: hash,
+    });
+    const u = await service.getUpload('alice', r.upload.id);
+    storage.uploads.get(u.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    // A batch finish that stored the file and then failed before adding it.
+    await service.prepareFinish('alice', u.id, [{ partNumber: 1, etag: 'part-1' }], hash);
+    expect((await service.getUpload('alice', u.id)).state).toBe('COMPLETING');
+    // Already in storage, so the device retrying it straight away gets the finished file.
+    const status = await service.uploadStatus('alice', u.id);
+    expect(status.upload.state).toBe('COMPLETED');
+    expect(status.upload.item).toMatchObject({ name: 'batch.txt', sizeBytes: data.length });
+  });
+  it('leaves completing in storage to a finishing request that may still be running', async () => {
+    const data = 'still finishing';
+    const hash = createHash('sha256').update(data).digest('hex');
+    const r = await service.createUpload('alice', {
+      operationId: op(),
+      parentId: null,
+      name: 'slow.txt',
+      sizeBytes: Buffer.byteLength(data),
+      mimeType: 'text/plain',
+      contentHash: hash,
+    });
+    const u = await service.getUpload('alice', r.upload.id);
+    storage.uploads.get(u.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    const parts = [{ partNumber: 1, etag: 'part-1' }];
+    // Marked finishing, but not yet completed in storage.
+    await transact(repo, async (tx) => {
+      await tx.put(userPK('alice'), `UPLOAD#${u.id}`, {
+        ...u,
+        state: 'COMPLETING',
+        contentHash: hash,
+        completionParts: parts,
+        completionHash: createHash('sha256')
+          .update(JSON.stringify({ parts, contentHash: hash }))
+          .digest('hex'),
+      });
+    });
+    expect((await service.uploadStatus('alice', u.id)).upload.state).toBe('COMPLETING');
+  });
+});
+describe('DynamoDB transient errors', () => {
+  it('runs a change again when DynamoDB refused it for a moment', async () => {
+    const { DynamoRepository } = await import('../src/repository');
+    const dynamo = new DynamoRepository('table');
+    const refusals = ['TransactionInProgressException', 'InternalServerError'];
+    const send = vi.fn(async (command: object) => {
+      const refusal = command.constructor.name === 'TransactWriteCommand' && refusals.shift();
+      if (refusal) throw Object.assign(new Error(refusal), { name: refusal });
+      return {};
+    });
+    (dynamo as unknown as { db: { send: typeof send } }).db = { send };
+    let runs = 0;
+    await transact(dynamo, async (tx) => {
+      runs++;
+      await tx.put('pk', 'sk', { n: 1 });
+    });
+    expect(runs).toBe(3);
+  });
+  it('gives up on a busy database after a few tries, with its own error', async () => {
+    const { DynamoRepository } = await import('../src/repository');
+    const dynamo = new DynamoRepository('table');
+    const send = vi.fn(async (command: object) => {
+      if (command.constructor.name === 'TransactWriteCommand')
+        throw Object.assign(new Error('busy'), { name: 'InternalServerError' });
+      return {};
+    });
+    (dynamo as unknown as { db: { send: typeof send } }).db = { send };
+    await expect(transact(dynamo, (tx) => tx.put('pk', 'sk', { n: 1 }))).rejects.toMatchObject({
+      name: 'InternalServerError',
+    });
+    expect(
+      send.mock.calls.filter(([c]) => c.constructor.name === 'TransactWriteCommand'),
+    ).toHaveLength(3);
+  });
+});
