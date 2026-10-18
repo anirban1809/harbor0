@@ -2,7 +2,7 @@ import { beforeEach, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DriveItem } from '@harbor/contracts';
 import type { BackupRoot, BackupEntry } from '../../../packages/contracts/src/backups';
-import { StorageService } from '../src/domain';
+import { StorageService, userPK } from '../src/domain';
 import { MemoryRepository, Transaction, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { Backups } from '../src/backups';
@@ -407,4 +407,79 @@ it('archives from the source computer only, keeps the cloud copy read-only and r
   expect((await service.download('alice', { driveItemId: file.id })).sizeBytes).toBe(4);
   expect((await backups.archive('alice', root.id, 'mac', false)).root.state).toBe('ACTIVE');
   await backups.start('alice', root.id, 'mac', { id: 'later', trigger: 'MANUAL' });
+});
+it('takes a decrypted copy and name from any device while encryption turns off, and nothing else', async () => {
+  const sealed = (seed: string) =>
+    'h0e1.' + createHash('sha256').update(seed).digest().toString('base64url') + 'AAAAAAAAAAAA';
+  const e2ee = (fields: object) =>
+    transact(service.repo, async (tx) => {
+      const account = await service.account(tx, 'alice');
+      await tx.put(userPK('alice'), 'PROFILE', { ...account, e2ee: fields });
+    });
+  const enabledAt = new Date().toISOString();
+  await e2ee({ enabledAt });
+  const mac = { rootId: root.id, runId: 'seed', deviceId: 'mac' };
+  const folder = (
+    await service.createFolder(
+      'alice',
+      { operationId: randomUUID(), name: sealed('Taxes'), parentId: root.remoteRootDriveItemId },
+      mac,
+    )
+  ).item;
+  const put = async (data: string, input: object, backupWrite?: typeof mac) => {
+    const { upload } = await service.createUpload(
+      'alice',
+      {
+        operationId: randomUUID(),
+        name: sealed('a.txt'),
+        parentId: folder.id,
+        sizeBytes: data.length,
+        mimeType: 'application/octet-stream',
+        ...input,
+      },
+      undefined,
+      backupWrite,
+    );
+    const stored = await service.getUpload('alice', upload.id);
+    storage.uploads.get(stored.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    const hash = createHash('sha256').update(data).digest('hex');
+    return (await service.completeUpload('alice', upload.id, [{ partNumber: 1, etag: 'e' }], hash))
+      .item;
+  };
+  const file = await put('ciphertext', { encrypted: true }, mac);
+  const decryptName = (item: DriveItem, name: string) =>
+    service.renameInBackup('alice', item.id, {
+      operationId: randomUUID(),
+      baseRevision: item.revision,
+      name,
+    });
+  // Not before turning off.
+  await expect(decryptName(folder, 'Taxes')).rejects.toMatchObject({
+    code: 'E2EE_NOT_DECRYPTING',
+  });
+  await expect(
+    put('plain', { driveItemId: file.id, baseRevision: file.revision }),
+  ).rejects.toMatchObject({ code: 'BACKUP_IMMUTABLE' });
+
+  await e2ee({ enabledAt, decryptingSince: new Date().toISOString() });
+  const plain = await put('plain', { driveItemId: file.id, baseRevision: file.revision });
+  expect(plain.encrypted).toBeUndefined();
+  expect((await decryptName(folder, 'Taxes')).item.name).toBe('Taxes');
+  // A plain file or name takes no further change, and nothing new goes in.
+  await expect(
+    put('again', { driveItemId: plain.id, baseRevision: plain.revision }),
+  ).rejects.toMatchObject({ code: 'BACKUP_IMMUTABLE' });
+  await expect(put('new', { name: 'new.txt' })).rejects.toMatchObject({
+    code: 'BACKUP_IMMUTABLE',
+  });
+  await expect(decryptName(plain, sealed('b.txt'))).rejects.toMatchObject({
+    code: 'VALIDATION_ERROR',
+  });
+  await expect(
+    service.mutate('alice', plain.id, {
+      operationId: randomUUID(),
+      baseRevision: plain.revision,
+      name: 'a.txt',
+    }),
+  ).rejects.toMatchObject({ code: 'BACKUP_IMMUTABLE' });
 });

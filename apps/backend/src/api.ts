@@ -1084,6 +1084,20 @@ export function createApp(
       return result;
     },
   );
+  add(
+    'post',
+    '/v1/e2ee/items/:id/name',
+    'While turning off: give a backed up item its decrypted name, from any device',
+    z
+      .object({
+        operationId: c.operationId,
+        baseRevision: z.number().int().positive(),
+        name: c.filename,
+      })
+      .strict(),
+    z.object({ item: c.itemSchema }),
+    async (ctx, i) => service.renameInBackup(userId(ctx), p(ctx, 'id'), i),
+  );
   // Turning off works whether or not the flag is on, like the account's other key changes.
   add(
     'post',

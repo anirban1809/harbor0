@@ -269,15 +269,30 @@ export class E2ee {
     const tx = new Transaction(this.repo);
     const account = await this.service.account(tx, userId);
     const items = new Map<string, DriveItem>();
+    const all = new Map<string, DriveItem>();
     let cursor: string | undefined;
     do {
       const page = await this.repo.query(userPK(userId), 'ITEM#', 500, cursor);
       for (const row of page.rows) {
         const item = row.data as DriveItem & { purging?: boolean };
+        all.set(item.id, item);
         if (!item.purging && !emptied(item, account)) items.set(item.id, item);
       }
       cursor = page.cursor ?? undefined;
     } while (cursor);
+    // A folder removed from sync stays as a hidden tombstone that no app can list or rename,
+    // so what is inside one can't hold up turning off.
+    const removed = new Map<string, boolean>();
+    const inRemoved = (id: string | null): boolean => {
+      if (!id) return false;
+      if (!removed.has(id)) {
+        removed.set(id, false);
+        const item = all.get(id);
+        removed.set(id, !!item && (!!item.syncRemovedAt || inRemoved(item.parentId)));
+      }
+      return removed.get(id)!;
+    };
+    for (const id of [...items.keys()]) if (inRemoved(id)) items.delete(id);
     const plaintextVersions = new Set<string>();
     const encryptedVersions = new Set<string>();
     do {

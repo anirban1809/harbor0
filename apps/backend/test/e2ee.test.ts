@@ -312,6 +312,22 @@ describe('end-to-end encryption', () => {
       });
     expect((await rename(file.id, done.item.revision, 'a.txt')).status).toBe(200);
 
+    // A folder removed from sync is a hidden tombstone nothing can rename: it doesn't count.
+    const removed = (
+      await (
+        await call('POST', '/v1/drive/folders', web, {
+          operationId: randomUUID(),
+          parentId: null,
+          name: token('Removed'),
+        })
+      ).json()
+    ).item;
+    await transact(service.repo, (tx) =>
+      tx.put(userPK('alice'), `ITEM#${removed.id}`, {
+        ...removed,
+        syncRemovedAt: new Date().toISOString(),
+      }),
+    );
     const early = await call('POST', '/v1/e2ee/disable/finish', web, { proof: 'the-right-proof' });
     expect((await early.json()).error).toMatchObject({
       code: 'E2EE_STILL_ENCRYPTED',

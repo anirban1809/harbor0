@@ -2623,7 +2623,19 @@ export class SyncEngine {
         backup,
       );
     } catch (e) {
-      if (root.mode === 'backup') throw e;
+      if (root.mode === 'backup') {
+        // Only this computer adds to its backups, but turning encryption off lets another device
+        // replace a backed up file with its decrypted copy. Its content is the same, so the next
+        // attempt builds on the new revision.
+        if (known && e instanceof ApiError && e.code === 'REVISION_CONFLICT') {
+          const remote: DriveItem = (await this.api.request(`/v1/drive/items/${known.itemId}`)).item;
+          if (remote.revision > known.revision) {
+            this.journal.putFile({ ...known, revision: remote.revision });
+            this.abandonUpload(job);
+          }
+        }
+        throw e;
+      }
       if (e instanceof ApiError && ['REVISION_CONFLICT', 'NAME_CONFLICT'].includes(e.code)) {
         this.journal.abandonUpload(state.uploadId);
         if (job.payload.relayVersion) return;

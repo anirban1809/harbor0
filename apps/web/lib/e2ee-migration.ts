@@ -22,6 +22,7 @@ import { isNameConflict, numberedName, put } from './upload';
  * as a new version, then its unencrypted versions are deleted. Runs in one tab at a time while
  * the account is unlocked, and picks up where it left off, as already encrypted files are
  * skipped. Backups stay as they are: only the desktop app that owns them may change them.
+ * Turning off is different: this browser decrypts backups too, as their computer may be gone.
  *
  * It talks to the API without the encrypting transport, to see which names are still plain.
  */
@@ -287,7 +288,8 @@ const emptyProgress = (
  * Turning encryption off: decrypts every file and name the account stores, Trash included,
  * then asks the server to delete the keys. Each file's current version is uploaded again
  * unencrypted and its encrypted versions are deleted, as nothing could read them afterwards.
- * Items in Trash are restored for a moment, decrypted and put back.
+ * Items in Trash are restored for a moment, decrypted and put back. Backups are decrypted
+ * here too, through the one change the server lets any device make to them while turning off.
  */
 export async function runDecryption(
   direct: Transport,
@@ -297,7 +299,7 @@ export async function runDecryption(
 ): Promise<MigrationProgress & { finished: boolean }> {
   const raw = patient(direct, signal);
   const api = new ApiClient(raw);
-  const found = (await walk(api, signal)).filter((f) => !f.backup);
+  const found = await walk(api, signal);
   const trashed: DriveItem[] = [];
   let cursor: string | null = null;
   do {
@@ -339,10 +341,10 @@ export async function runDecryption(
       return false;
     }
   };
-  const decryptItem = async (item: DriveItem) => {
+  const decryptItem = async (item: DriveItem, backup = false) => {
     signal.throwIfAborted();
     if (item.type === 'FOLDER') {
-      if (isEncryptedName(item.name)) await plainRename(api, item, keys);
+      if (isEncryptedName(item.name)) await plainRename(api, item, keys, backup);
       return;
     }
     state.current = isEncryptedName(item.name) ? await decryptName(keys, item.name) : item.name;
@@ -367,14 +369,14 @@ export async function runDecryption(
       saved.clear();
       await raw(`/v1/e2ee/items/${item.id}/purge-encrypted`, { method: 'POST' });
     }
-    if (isEncryptedName(current.name)) await plainRename(api, current, keys);
+    if (isEncryptedName(current.name)) await plainRename(api, current, keys, backup);
   };
   // Folders first, then files, as in the live tree.
   for (const f of found.filter((f) => f.item.type === 'FOLDER'))
-    await attempt(() => decryptItem(f.item));
+    await attempt(() => decryptItem(f.item, f.backup));
   for (const f of files) {
     if (!needsWork(f.item)) continue;
-    if (await attempt(() => decryptItem(f.item))) {
+    if (await attempt(() => decryptItem(f.item, f.backup))) {
       state.doneFiles++;
       state.doneBytes += plainBytes(f.item);
     }
@@ -445,15 +447,18 @@ async function walkFrom(api: ApiClient, id: string, signal: AbortSignal) {
   return found;
 }
 
-/** Gives an item its decrypted name, numbering it if a name differing only in case is taken. */
-async function plainRename(api: ApiClient, item: DriveItem, keys: AccountKeys) {
+/**
+ * Gives an item its decrypted name, numbering it if a name differing only in case is taken.
+ * A backed up item takes it through the route for backups, as backups are otherwise read-only.
+ */
+async function plainRename(api: ApiClient, item: DriveItem, keys: AccountKeys, backup = false) {
   const name = await decryptName(keys, item.name);
   let revision = item.revision;
   for (let n = 1; n <= 50; n++) {
     try {
       return (
-        await api.request(`/v1/drive/items/${item.id}`, {
-          method: 'PATCH',
+        await api.request(backup ? `/v1/e2ee/items/${item.id}/name` : `/v1/drive/items/${item.id}`, {
+          method: backup ? 'POST' : 'PATCH',
           body: {
             ...operation(),
             baseRevision: revision,

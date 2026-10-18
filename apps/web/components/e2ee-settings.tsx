@@ -222,12 +222,16 @@ function E2eeOn({ api }: { api: ApiClient }) {
                 {decrypting ? 'decrypted' : 'encrypted'}
                 {live?.running
                   ? ' · running in this browser'
-                  : s.migration?.deviceName
-                    ? ` · last ran on ${s.migration.deviceName}`
+                  : (decrypting ? s.decryption : s.migration)?.deviceName
+                    ? ` · last ran on ${(decrypting ? s.decryption : s.migration)!.deviceName}`
                     : ''}
                 {!!m.skippedFiles &&
                   ` · ${count(m.skippedFiles)} in backups or only on synced devices wait for those apps`}
                 <Progress className="e2ee-progress" value={percent} max={100} aria-hidden="true" />
+                {/* Why the last pass stopped short, such as files the server says are left. */}
+                {live === m && !live.running && live.error && (
+                  <Alert tone="error">{live.error} Trying again shortly.</Alert>
+                )}
               </>
             )}
           </Row>

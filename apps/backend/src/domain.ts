@@ -583,22 +583,31 @@ export class StorageService {
     /**
      * Switches a backed up item's name between its plain and encrypted forms, from the computer
      * the backup belongs to, as encryption is turned on or off. Backups are otherwise read-only,
-     * so this is the only rename they take.
+     * so this is the only rename they take. While encryption is turning off, any of the owner's
+     * devices may decrypt the name (no `backupWrite`), as the backup's computer may be gone.
      */
     async renameInBackup(
         userId: string,
         itemId: string,
         input: { operationId: string; baseRevision: number; name: string; },
-        backupWrite: BackupWrite,
+        backupWrite?: BackupWrite,
     ) {
         const result = await this.operation(
             userId,
             input.operationId,
-            { action: 'backupRename', itemId, ...input, backupWrite },
+            { action: 'backupRename', itemId, ...input, ...(backupWrite ? { backupWrite } : {}) },
             async (tx) => {
                 const item = await this.owned(tx, userId, itemId, true);
-                await this.checkDevice(userId, backupWrite.deviceId);
-                await assertBackupWrite(tx, userId, item.parentId, backupWrite);
+                if (backupWrite) {
+                    await this.checkDevice(userId, backupWrite.deviceId);
+                    await assertBackupWrite(tx, userId, item.parentId, backupWrite);
+                } else
+                    assert(
+                        decryptingAccount(await this.account(tx, userId)),
+                        'E2EE_NOT_DECRYPTING',
+                        'Backed up names change only as encryption is turned on or off.',
+                        409,
+                    );
                 assert(!item.deletedAt, 'ITEM_NOT_FOUND', 'Item was not found.', 404);
                 assert(
                     item.revision === input.baseRevision,
@@ -996,7 +1005,15 @@ export class StorageService {
             { action: 'upload', ...input, ...(backupWrite ? { backupWrite } : {}) },
             async (tx) => {
                 const target = input.driveItemId ?? input.parentId;
-                const shared = target ? await this.authorized(tx, userId, target, !backupWrite) : undefined;
+                const shared = target
+                    ? await this.authorized(
+                          tx,
+                          userId,
+                          target,
+                          !backupWrite &&
+                              !(await this.decryptsInPlace(tx, userId, input.driveItemId, input.encrypted)),
+                      )
+                    : undefined;
                 const owner = shared?.owner ?? userId;
                 if (backupWrite) {
                     assert(owner === userId, 'FORBIDDEN', 'Backup folders must belong to you.', 403);
@@ -1118,7 +1135,14 @@ export class StorageService {
         if (upload.backupWrite) {
             await this.checkDevice(owner, upload.backupWrite.deviceId);
             await assertBackupWrite(tx, owner, destination, upload.backupWrite);
-        } else await assertBackupMutable(tx, owner, destination);
+        } else if (
+            !(
+                owner === actor &&
+                upload.baseRevision !== null &&
+                (await this.decryptsInPlace(tx, owner, upload.itemId, upload.encrypted))
+            )
+        )
+            await assertBackupMutable(tx, owner, destination);
         if (owner !== actor) {
             const target = upload.baseRevision !== null ? upload.itemId : upload.targetParentId;
             assert(target, 'FORBIDDEN', 'A shared destination is required.', 403);
@@ -1126,6 +1150,25 @@ export class StorageService {
             assert(access.owner === owner, 'FORBIDDEN', 'The shared destination changed.', 403);
         }
         return owner;
+    }
+    /**
+     * While encryption is turning off, the owner may replace an encrypted file with its decrypted
+     * copy even in a backup, from any device: the computer that made the backup may be gone, and
+     * nothing could read the file once the keys are deleted. Backups take no other change.
+     */
+    private async decryptsInPlace(
+        tx: Transaction,
+        owner: string,
+        itemId: string | null | undefined,
+        encrypted: boolean | undefined,
+    ) {
+        if (!itemId || encrypted) return false;
+        const item = await tx.get<DriveItem>(userPK(owner), `ITEM#${itemId}`);
+        return (
+            item?.type === 'FILE' &&
+            !!item.encrypted &&
+            decryptingAccount(await this.account(tx, owner))
+        );
     }
     checkUpload(u: Upload) {
         assert(u.expiresAt > now(), 'UPLOAD_EXPIRED', 'Upload expired. Start a new upload.', 410);
