@@ -1,6 +1,6 @@
 {
   "name": "@harbor/desktop",
-  "version": "0.1.10",
+  "version": "0.1.11-test.2",
   "private": true,
   "type": "module",
   "main": "dist/main.cjs",
