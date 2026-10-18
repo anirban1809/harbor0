@@ -436,7 +436,11 @@ export function BackupFolderPanel({ api, folderId, desktop, onChanged }: Props) 
                             ? {
                                 tone: 'busy',
                                 label: 'Backing up',
-                                detail: `Saving ${count(latestRun.fileCount, 'file')} so far…`,
+                                detail:
+                                  latestRun.plannedFileCount !== undefined &&
+                                  latestRun.plannedSizeBytes !== undefined
+                                    ? `Saved ${latestRun.fileCount.toLocaleString('en-US')} of ${count(latestRun.plannedFileCount, 'file')} · ${fileSize(latestRun.sizeBytes)} of ${fileSize(latestRun.plannedSizeBytes)}`
+                                    : `Saving ${count(latestRun.fileCount, 'file')} so far…`,
                               }
                             : root.state === 'ERROR' || latestRun?.state === 'FAILED'
                               ? {

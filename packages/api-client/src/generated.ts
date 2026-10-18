@@ -27965,6 +27965,8 @@ export interface operations {
                             completedAt: string | null;
                             fileCount: number;
                             sizeBytes: number;
+                            plannedFileCount?: number;
+                            plannedSizeBytes?: number;
                             error?: string;
                         }[];
                         nextCursor: string | null;
@@ -28132,6 +28134,8 @@ export interface operations {
                     id: string;
                     /** @enum {string} */
                     trigger: "AUTOMATIC" | "MANUAL";
+                    plannedFileCount?: number;
+                    plannedSizeBytes?: number;
                 };
             };
         };
@@ -28155,6 +28159,8 @@ export interface operations {
                             completedAt: string | null;
                             fileCount: number;
                             sizeBytes: number;
+                            plannedFileCount?: number;
+                            plannedSizeBytes?: number;
                             error?: string;
                         };
                     };
@@ -29430,6 +29436,8 @@ export interface operations {
                             completedAt: string | null;
                             fileCount: number;
                             sizeBytes: number;
+                            plannedFileCount?: number;
+                            plannedSizeBytes?: number;
                             error?: string;
                         };
                     };

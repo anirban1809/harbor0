@@ -2517,7 +2517,14 @@ export function createApp(
     'post',
     '/v1/backups/:id/runs',
     'Start backup run',
-    z.object({ id: c.id, trigger: z.enum(['AUTOMATIC', 'MANUAL']) }).strict(),
+    z
+      .object({
+        id: c.id,
+        trigger: z.enum(['AUTOMATIC', 'MANUAL']),
+        plannedFileCount: z.number().int().nonnegative().optional(),
+        plannedSizeBytes: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
     z.object({ run: backupRunSchema }),
     async (ctx, i) => backupWorkflows.start(userId(ctx), p(ctx, 'id'), backupDevice(ctx), i),
   );

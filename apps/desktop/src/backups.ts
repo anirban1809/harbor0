@@ -45,6 +45,8 @@ type PendingRun = {
   // and `next` is how many of them have been handled: rewriting a list of a hundred thousand
   // IDs after every file would cost more than the backup.
   total?: number;
+  // Their combined size when the run started, sent with the run so its progress has an end.
+  bytes?: number;
   next?: number;
   error?: string;
   // Cloud storage still free for this run, once it is known to be short; files bigger than this
@@ -380,6 +382,7 @@ export class FolderBackups {
         id: crypto.randomUUID(),
         trigger: manual ? 'MANUAL' : 'AUTOMATIC',
         total: ready.length,
+        bytes: required,
         next: 0,
         ...(short ? { room: available, quota: storage?.quotaBytes } : {}),
       };
@@ -406,7 +409,14 @@ export class FolderBackups {
     const runJobs = cached.jobs;
     await this.api.request(`${url}/runs`, {
       method: 'POST',
-      body: { id: run.id, trigger: run.trigger },
+      body: {
+        id: run.id,
+        trigger: run.trigger,
+        // Runs left from older versions don't know their size.
+        ...(run.bytes !== undefined
+          ? { plannedFileCount: run.total ?? runJobs.length, plannedSizeBytes: run.bytes }
+          : {}),
+      },
     });
     // A file just saved: changes made to it while it was sent must survive its queue entry.
     const saved = async (job: LocalJob, entry: BackupEntry, before?: Stats) => {
@@ -646,7 +656,12 @@ export class FolderBackups {
     const runId = crypto.randomUUID();
     await this.api.request(`${url}/runs`, {
       method: 'POST',
-      body: { id: runId, trigger: 'MANUAL' },
+      body: {
+        id: runId,
+        trigger: 'MANUAL',
+        plannedFileCount: content.length,
+        plannedSizeBytes: content.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0),
+      },
     });
     const backup = { rootId: root.backupId!, runId };
     const scratch = await mkdtemp(path.join(os.tmpdir(), 'harbor0-convert-'));

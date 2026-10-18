@@ -22,6 +22,10 @@ export const backupRunSchema = z.object({
   completedAt: z.string().nullable(),
   fileCount: z.number(),
   sizeBytes: z.number(),
+  // What the device found to back up when the run started, so its progress has an end. Runs
+  // started by older app versions have none.
+  plannedFileCount: z.number().optional(),
+  plannedSizeBytes: z.number().optional(),
   error: z.string().optional(),
 });
 export const backupEntrySchema = z.object({

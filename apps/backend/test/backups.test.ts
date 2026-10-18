@@ -82,6 +82,22 @@ it('records exact versions per run, counts entries once on retries, and keeps ol
   expect(second.currentVersionId).not.toBe(first.currentVersionId);
   expect((await backups.finish('alice', root.id, 'mac', 'run1')).run).toEqual(run);
 });
+it('keeps what the device planned to back up with the run, beside what it has saved', async () => {
+  const { run } = await backups.start('alice', root.id, 'mac', {
+    id: 'planned',
+    trigger: 'AUTOMATIC',
+    plannedFileCount: 31_426,
+    plannedSizeBytes: 52_000_000_000,
+  });
+  expect(run).toMatchObject({ plannedFileCount: 31_426, plannedSizeBytes: 52_000_000_000 });
+  expect(run).toMatchObject({ fileCount: 0, sizeBytes: 0 });
+  // Starting again on resume returns the run as it began.
+  const again = await backups.start('alice', root.id, 'mac', {
+    id: 'planned',
+    trigger: 'AUTOMATIC',
+  });
+  expect(again.run.plannedFileCount).toBe(31_426);
+});
 it('validates backup ownership, device ownership, file ancestry and version identity', async () => {
   const item = await upload('hello');
   const outside = await upload(

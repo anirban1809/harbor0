@@ -115,7 +115,7 @@ export class Backups {
     userId: string,
     rootId: string,
     deviceId: string,
-    input: { id: string; trigger: BackupRun['trigger'] },
+    input: Pick<BackupRun, 'id' | 'trigger' | 'plannedFileCount' | 'plannedSizeBytes'>,
   ) {
     return transact(this.service.repo, async (tx) => {
       const root = await this.connected(tx, userId, rootId, deviceId);
