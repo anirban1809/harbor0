@@ -97,3 +97,13 @@ it('forgets a folder that is gone, and stops for a server without the route', as
   await r.flush();
   expect(sent).toEqual([]);
 });
+
+it('touches nothing once the engine stopped, so a closed journal is never written', async () => {
+  const r = reporter();
+  r.observe([sync('ACTIVE')]);
+  r.stop();
+  journal.close();
+  r.observe([sync('IDLE')]);
+  await expect(r.flush()).resolves.toBeUndefined();
+  expect(sent).toEqual([]);
+});

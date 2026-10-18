@@ -331,7 +331,6 @@ describe('activity reports', () => {
     const engine = engineFor(api, journal);
     engine.pause(true);
     engine.pause(false);
-    await engine.stop();
     await (engine as unknown as { reporter: { flush(): Promise<void> } }).reporter.flush();
     const line = (e: (typeof sent)[number]) =>
       [e.scope, e.folderId, e.action, e.reason].filter(Boolean).join(' ');

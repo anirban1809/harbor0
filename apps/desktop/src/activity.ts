@@ -61,6 +61,8 @@ export class ActivityReporter {
   private sending: Promise<void> | undefined;
   /** An older server without the route: stop until the app restarts. */
   private unsupported = false;
+  /** The engine stopped: its journal may be closed, so nothing more is read or written. */
+  private stopped = false;
 
   constructor(
     private api: ApiClient,
@@ -78,7 +80,7 @@ export class ActivityReporter {
 
   /** Compares every subject with what was last reported and queues an event for each change. */
   observe(subjects: ActivitySubject[]) {
-    if (this.unsupported) return;
+    if (this.unsupported || this.stopped) return;
     const now = this.now();
     const seen = new Set<string>();
     let queued = false;
@@ -140,19 +142,23 @@ export class ActivityReporter {
   flush(): Promise<void> {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    this.sending ??= this.send().finally(() => {
-      this.sending = undefined;
-    });
+    // A report that can't be sent waits for the next try; it never fails the caller.
+    this.sending ??= this.send()
+      .catch(() => {})
+      .finally(() => {
+        this.sending = undefined;
+      });
     return this.sending;
   }
 
   stop() {
+    this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
   }
 
   private async send() {
-    while (this.queue.length && !this.unsupported) {
+    while (this.queue.length && !this.unsupported && !this.stopped) {
       const batch = this.queue.slice(0, ACTIVITY_BATCH);
       try {
         await this.api.request('/v1/activity', { method: 'POST', body: { events: batch } });
@@ -185,6 +191,7 @@ export class ActivityReporter {
   }
 
   private save() {
+    if (this.stopped) return;
     this.journal.transaction(() => {
       this.journal.set(QUEUE, this.queue);
       this.journal.set(REPORTED, this.reported);
