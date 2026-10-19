@@ -18990,6 +18990,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -22758,6 +22761,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -23276,6 +23282,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -23788,6 +23797,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -24296,6 +24308,9 @@
                               }
                             ]
                           },
+                          "uploadMismatch": {
+                            "type": "boolean"
+                          },
                           "modifiedAt": {
                             "type": [
                               "string",
@@ -24789,6 +24804,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -25303,6 +25321,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -25822,6 +25843,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -26356,6 +26380,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -26869,6 +26896,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -28172,6 +28202,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -28683,6 +28716,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -29292,6 +29328,9 @@
                               }
                             ]
                           },
+                          "uploadMismatch": {
+                            "type": "boolean"
+                          },
                           "modifiedAt": {
                             "type": [
                               "string",
@@ -29718,6 +29757,13 @@
                           "contentHashAlgorithm": {
                             "type": "string",
                             "const": "SHA256"
+                          },
+                          "uploadMismatch": {
+                            "type": "boolean"
+                          },
+                          "storedContentHash": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
                           },
                           "sourceDeviceId": {
                             "type": [
@@ -30247,6 +30293,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -31771,6 +31820,9 @@
                                 }
                               ]
                             },
+                            "uploadMismatch": {
+                              "type": "boolean"
+                            },
                             "modifiedAt": {
                               "type": [
                                 "string",
@@ -33213,6 +33265,9 @@
                                 }
                               ]
                             },
+                            "uploadMismatch": {
+                              "type": "boolean"
+                            },
                             "modifiedAt": {
                               "type": [
                                 "string",
@@ -33763,6 +33818,9 @@
                                   "type": "null"
                                 }
                               ]
+                            },
+                            "uploadMismatch": {
+                              "type": "boolean"
                             },
                             "modifiedAt": {
                               "type": [
@@ -34718,6 +34776,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [
@@ -36410,6 +36471,9 @@
                       "const": "SHA256"
                     },
                     "encrypted": {
+                      "type": "boolean"
+                    },
+                    "uploadMismatch": {
                       "type": "boolean"
                     }
                   },
@@ -40614,6 +40678,9 @@
                               }
                             ]
                           },
+                          "uploadMismatch": {
+                            "type": "boolean"
+                          },
                           "modifiedAt": {
                             "type": [
                               "string",
@@ -42038,6 +42105,9 @@
                                   }
                                 ]
                               },
+                              "uploadMismatch": {
+                                "type": "boolean"
+                              },
                               "modifiedAt": {
                                 "type": [
                                   "string",
@@ -42568,6 +42638,9 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "uploadMismatch": {
+                                "type": "boolean"
                               },
                               "modifiedAt": {
                                 "type": [
@@ -51994,6 +52067,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -52842,6 +52918,9 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "uploadMismatch": {
+                            "type": "boolean"
                           },
                           "modifiedAt": {
                             "type": [
@@ -55775,6 +55854,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -56297,6 +56379,9 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "uploadMismatch": {
+                                "type": "boolean"
                               },
                               "modifiedAt": {
                                 "type": [
@@ -57289,6 +57374,9 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "uploadMismatch": {
+                                "type": "boolean"
                               },
                               "modifiedAt": {
                                 "type": [
@@ -61557,6 +61645,9 @@
                             }
                           ]
                         },
+                        "uploadMismatch": {
+                          "type": "boolean"
+                        },
                         "modifiedAt": {
                           "type": [
                             "string",
@@ -62092,6 +62183,9 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "uploadMismatch": {
+                          "type": "boolean"
                         },
                         "modifiedAt": {
                           "type": [

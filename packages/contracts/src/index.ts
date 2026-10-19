@@ -173,6 +173,11 @@ export const itemSchema = z.object({
   encrypted: z.boolean().optional(),
   /** SHA-256 of the current version; absent on files stored before it was recorded here. */
   contentHash: hash.nullable().optional(),
+  /**
+   * The current version's stored bytes don't match the SHA-256 its uploading app declared: the
+   * upload was damaged on the way, and the file should be uploaded again from the original.
+   */
+  uploadMismatch: z.boolean().optional(),
   /** When the uploading client last changed the file's content, if it said. */
   modifiedAt: z.string().nullable().optional(),
 });
@@ -189,6 +194,9 @@ export const versionSchema = z.object({
   sizeBytes: z.number(),
   contentHash: hash,
   contentHashAlgorithm: z.literal('SHA256'),
+  /** Set when the stored bytes hash to `storedContentHash` instead of the declared `contentHash`. */
+  uploadMismatch: z.boolean().optional(),
+  storedContentHash: hash.optional(),
   sourceDeviceId: z.string().nullable(),
   encrypted: z.boolean().optional(),
   modifiedAt: z.string().nullable().optional(),

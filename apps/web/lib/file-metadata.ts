@@ -11,6 +11,7 @@ export type FileEntry = Pick<DriveItem, 'id' | 'name' | 'type' | 'sizeBytes'> &
       | 'favorite'
       | 'revision'
       | 'currentVersionId'
+      | 'uploadMismatch'
     >
   > & {
     /** Shared with a public link that works now. */

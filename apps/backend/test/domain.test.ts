@@ -139,13 +139,13 @@ describe('quota and upload recovery', () => {
     await service.runJobs();
     expect((await service.me('alice')).storage.reservedBytes).toBe(0);
   });
-  it('corrects a wrong declared hash from the stored bytes so the file stays downloadable', async () => {
+  it('reports stored bytes that do not match the declared hash and keeps the declared one', async () => {
     const data = 'actual bytes';
     const wrong = 'a'.repeat(64);
     const r = await service.createUpload('alice', {
       operationId: op(),
       parentId: null,
-      name: 'lying.txt',
+      name: 'damaged.txt',
       sizeBytes: data.length,
       mimeType: 'text/plain',
       contentHash: wrong,
@@ -158,12 +158,47 @@ describe('quota and upload recovery', () => {
       [{ partNumber: 1, etag: 'part-1' }],
       wrong,
     );
-    expect((await service.download('alice', { driveItemId: item.id })).contentHash).toBe(wrong);
+    expect(await service.download('alice', { driveItemId: item.id })).not.toHaveProperty(
+      'uploadMismatch',
+    );
     await service.runJobs();
     const actual = createHash('sha256').update(data).digest('hex');
-    expect((await service.download('alice', { driveItemId: item.id })).contentHash).toBe(actual);
+    const download = await service.download('alice', { driveItemId: item.id });
+    expect(download).toMatchObject({ contentHash: wrong, uploadMismatch: true });
+    const [version] = (await service.versions('alice', item.id)).items;
+    expect(version).toMatchObject({
+      contentHash: wrong,
+      uploadMismatch: true,
+      storedContentHash: actual,
+    });
+    const listed = (await service.list('alice', null)).items.find((i) => i.id === item.id)!;
+    expect(listed).toMatchObject({ uploadMismatch: true, revision: item.revision });
     const object = await new Transaction(repo).get<StoredObject>('OBJECT', u.objectId);
-    expect(object!.contentHash).toBe(actual);
+    expect(object!.contentHash).toBe(wrong);
+    // Uploading the file again clears the mark.
+    const again = await service.createUpload('alice', {
+      operationId: op(),
+      parentId: null,
+      name: 'damaged.txt',
+      sizeBytes: data.length,
+      mimeType: 'text/plain',
+      contentHash: actual,
+      driveItemId: item.id,
+      baseRevision: item.revision,
+    });
+    const u2 = await service.getUpload('alice', again.upload.id);
+    storage.uploads.get(u2.providerUploadId!)!.parts.set(1, Buffer.from(data));
+    const fixed = await service.completeUpload(
+      'alice',
+      u2.id,
+      [{ partNumber: 1, etag: 'part-1' }],
+      actual,
+    );
+    expect(fixed.item.uploadMismatch).toBeUndefined();
+    await service.runJobs();
+    expect(await service.download('alice', { driveItemId: item.id })).not.toHaveProperty(
+      'uploadMismatch',
+    );
   });
   it('verifies large uploads in resumable slices and leaves a correct hash alone', async () => {
     const data = Buffer.alloc(17 * 1048576, 7);

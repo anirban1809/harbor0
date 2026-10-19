@@ -1347,6 +1347,7 @@ export class StorageService {
             item.mimeType = u.mimeType;
             item.currentVersionId = u.versionId;
             item.contentHash = contentHash;
+            delete item.uploadMismatch;
             item.modifiedAt = u.modifiedAt ?? null;
             item.cloudState = 'AVAILABLE';
             if (u.encrypted) item.encrypted = true;
@@ -1406,8 +1407,10 @@ export class StorageService {
     }
     /**
      * Hashes a finished upload's stored bytes, resuming across runs. The uploading client declares
-     * the SHA-256 that downloads are checked against; when it is wrong, the stored bytes win and
-     * the version's hash is corrected, so the file stays downloadable on every device.
+     * the SHA-256 that downloads are checked against; when the stored bytes don't match it, the
+     * upload was damaged on the way. The declared hash is kept, so apps refuse the damaged bytes
+     * rather than taking them for the file, and the version and item are marked for the owner to
+     * upload it again.
      */
     async verifyUpload(job: Job, until: number) {
         const object = await new Transaction(this.repo).get<StoredObject>('OBJECT', job.entityId!);
@@ -1433,19 +1436,24 @@ export class StorageService {
         const actual = hash.digest('hex');
         if (actual === object.contentHash) return true;
         await transact(this.repo, async (tx) => {
-            const current = await tx.get<StoredObject>('OBJECT', object.id);
-            if (current) await tx.put('OBJECT', object.id, { ...current, contentHash: actual });
             const version = await tx.get<FileVersion>(userPK(job.userId!), job.key!);
-            if (version?.storageObjectId === object.id) {
-                await tx.put(userPK(job.userId!), job.key!, { ...version, contentHash: actual });
-                // Listings carry the current version's hash, which must be corrected too.
-                const itemKey = `ITEM#${version.driveItemId}`;
-                const item = await tx.get<DriveItem>(userPK(job.userId!), itemKey);
-                if (item?.currentVersionId === version.id)
-                    await tx.put(userPK(job.userId!), itemKey, { ...item, contentHash: actual });
-            }
+            if (version?.storageObjectId !== object.id) return;
+            await tx.put(userPK(job.userId!), job.key!, {
+                ...version,
+                uploadMismatch: true,
+                storedContentHash: actual,
+            });
+            const itemKey = `ITEM#${version.driveItemId}`;
+            const item = await tx.get<DriveItem>(userPK(job.userId!), itemKey);
+            if (item?.currentVersionId !== version.id) return;
+            // The content and revision are unchanged, so in-flight edits based on it still apply.
+            const marked = { ...item, uploadMismatch: true };
+            await tx.put(userPK(job.userId!), itemKey, marked);
+            await this.record(tx, job.userId!, 'FILE_UPDATED', item.id, marked);
         });
-        console.warn(JSON.stringify({ event: 'upload_hash_corrected', objectId: object.id }));
+        console.warn(
+            JSON.stringify({ event: 'upload_hash_mismatch', objectId: object.id, userId: job.userId }),
+        );
         return true;
     }
     async email(tx: Transaction, id: string, email: Email) {
@@ -1839,6 +1847,7 @@ export class StorageService {
             contentHashAlgorithm: 'SHA256' as const,
             // The stored bytes are H0E1: the app decrypts them after checking contentHash.
             ...(version.encrypted ? { encrypted: true } : {}),
+            ...(version.uploadMismatch ? { uploadMismatch: true } : {}),
         };
     }
     async versions(userId: string, itemId: string) {
@@ -1910,6 +1919,8 @@ export class StorageService {
                     await this.reference(tx, v.storageObjectId, 1);
                     item.currentVersionId = v.id;
                     item.contentHash = v.contentHash;
+                    if (v.uploadMismatch) item.uploadMismatch = true;
+                    else delete item.uploadMismatch;
                     item.modifiedAt = v.modifiedAt ?? null;
                     item.cloudState = 'AVAILABLE';
                     item.sizeBytes = v.sizeBytes;

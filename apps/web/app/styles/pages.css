@@ -1010,6 +1010,12 @@
     flex-basis: 100%;
   }
 }
+/* A warning beside files whose stored bytes don't match what the uploading app sent. */
+.file-upload-mismatch {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--danger-text);
+}
 /* A link icon beside the names of items shared with a public link. */
 .file-public-link {
   flex-shrink: 0;

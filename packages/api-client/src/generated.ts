@@ -10007,6 +10007,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -11406,6 +11407,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -11607,6 +11609,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -11809,6 +11812,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -12005,6 +12009,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         }[];
                         nextCursor: string | null;
@@ -12199,6 +12204,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -12400,6 +12406,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -12601,6 +12608,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -12804,6 +12812,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -13005,6 +13014,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -13558,6 +13568,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -13759,6 +13770,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -13965,6 +13977,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         }[];
                         nextCursor: string | null;
@@ -14145,6 +14158,8 @@ export interface operations {
                             contentHash: string;
                             /** @constant */
                             contentHashAlgorithm: "SHA256";
+                            uploadMismatch?: boolean;
+                            storedContentHash?: string;
                             sourceDeviceId: string | null;
                             encrypted?: boolean;
                             modifiedAt?: string | null;
@@ -14350,6 +14365,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -14948,6 +14964,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         };
@@ -15526,6 +15543,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         };
@@ -15733,6 +15751,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         };
@@ -16115,6 +16134,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -16835,6 +16855,7 @@ export interface operations {
                         /** @constant */
                         contentHashAlgorithm: "SHA256";
                         encrypted?: boolean;
+                        uploadMismatch?: boolean;
                     };
                 };
             };
@@ -18430,6 +18451,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         }[];
                         jobId?: string;
@@ -19012,6 +19034,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         }[];
@@ -19215,6 +19238,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         }[];
@@ -23207,6 +23231,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                         sequence: number;
@@ -23567,6 +23592,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                             syncDevices: {
                                 id: string;
@@ -24812,6 +24838,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -25012,6 +25039,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                         }[];
@@ -25402,6 +25430,7 @@ export interface operations {
                                 deletedAt: string | null;
                                 encrypted?: boolean;
                                 contentHash?: string | null;
+                                uploadMismatch?: boolean;
                                 modifiedAt?: string | null;
                             };
                             serverRevision?: number;
@@ -27219,6 +27248,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };
@@ -27423,6 +27453,7 @@ export interface operations {
                             deletedAt: string | null;
                             encrypted?: boolean;
                             contentHash?: string | null;
+                            uploadMismatch?: boolean;
                             modifiedAt?: string | null;
                         };
                     };

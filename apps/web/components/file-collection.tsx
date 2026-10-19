@@ -7,7 +7,16 @@ import {
   type ComponentType,
   type ReactNode,
 } from 'react';
-import { File, FileImage, FileText, Folder, Link2, Star, Trash2 } from 'lucide-react';
+import {
+  File,
+  FileImage,
+  FileText,
+  Folder,
+  Link2,
+  Star,
+  Trash2,
+  TriangleAlert,
+} from 'lucide-react';
 import { fileDate, fileKind, fileSize, fileSummary, type FileEntry } from '../lib/file-metadata';
 import { LoadMoreFiles } from './load-more-files';
 import { Skeleton } from './ui/skeleton';
@@ -106,6 +115,16 @@ function FileIdentity({
           </span>
         </span>
       </button>
+      {item.uploadMismatch && (
+        <span
+          className="file-upload-mismatch"
+          role="img"
+          aria-label="Damaged during upload. Upload this file again from the original."
+          title="Damaged during upload. Upload this file again from the original."
+        >
+          <TriangleAlert size={14} aria-hidden="true" />
+        </span>
+      )}
       {item.publicLink && (
         <Link2 className="file-public-link" size={14} aria-label="Shared with a public link" />
       )}

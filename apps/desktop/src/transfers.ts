@@ -529,8 +529,14 @@ export async function downloadFile(
   try {
     offset = (await stat(part)).size;
   } catch {}
-  const signed: Awaited<ReturnType<ApiClient['download']>> & { encrypted?: boolean } =
-    await api.download(input);
+  const signed: Awaited<ReturnType<ApiClient['download']>> & {
+    encrypted?: boolean;
+    uploadMismatch?: boolean;
+  } = await api.download(input);
+  if (signed.uploadMismatch)
+    throw new Error(
+      'This file was damaged while it was uploaded. Upload it again from the original. The local file was kept.',
+    );
   const keys = signed.encrypted ? transferKeys.read() : undefined;
   if (signed.encrypted && !keys) throw lockedError();
   /**

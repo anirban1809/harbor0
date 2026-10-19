@@ -1591,6 +1591,8 @@ export function createApp(
       contentHashAlgorithm: z.literal('SHA256'),
       /** The stored bytes are encrypted; sizeBytes and contentHash describe them as stored. */
       encrypted: z.boolean().optional(),
+      /** The stored bytes don't match contentHash: the upload was damaged on the way. */
+      uploadMismatch: z.boolean().optional(),
     }),
     async (ctx, i) => service.download(userId(ctx), i),
   );
