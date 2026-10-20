@@ -38,8 +38,9 @@ export function totalUsage(ids: string[], usage: UsageMap | undefined) {
   return { bytes, complete };
 }
 
+/** No label while a folder's first count is still running (nothing counted, incomplete). */
 export const usageLabel = (usage: { bytes: number; complete: boolean } | undefined) =>
-  usage
+  usage && (usage.complete || usage.bytes > 0)
     ? usage.complete
       ? fileSize(usage.bytes)
       : `At least ${fileSize(usage.bytes)}`

@@ -14,6 +14,11 @@ type Cached = Omit<FolderUsage, 'itemId'> & {
 /** Items one request may visit; larger trees report a lower bound (`complete: false`). */
 export const USAGE_ITEM_BUDGET = 10_000;
 /**
+ * How long one request may spend counting. Well inside the API's 29 s timeout: a count cut off
+ * by the timeout is never kept, so every later request would start it over.
+ */
+export const USAGE_TIME_BUDGET_MS = 10_000;
+/**
  * A result stays good while the account is unchanged, and for this long after it changes. A
  * count reads two rows per file, so recounting a large folder every minute while a backup is
  * adding to it is what overloads the account's partition.
@@ -21,6 +26,11 @@ export const USAGE_ITEM_BUDGET = 10_000;
 export const USAGE_CACHE_MS = 5 * 60_000;
 /** How long one request's recount holds off others, which return the previous count instead. */
 export const USAGE_COUNTING_MS = 60_000;
+
+type Budget = { items: number; until: number };
+const spent = (budget: Budget) => budget.items <= 0 || Date.now() >= budget.until;
+/** Stands in for a folder's first count while it runs, so that only one request makes it. */
+const notCounted = { bytes: 0, files: 0, complete: false };
 
 const row = async <T>(repo: Repository, pk: string, sk: string) =>
   (await repo.get({ pk, sk }))?.data as T | undefined;
@@ -34,12 +44,13 @@ export class UsageService {
   constructor(
     private s: StorageService,
     private itemBudget = USAGE_ITEM_BUDGET,
+    private timeBudgetMs = USAGE_TIME_BUDGET_MS,
   ) {}
 
   /** `fresh`: count again rather than reuse a recent count, when the exact size matters. */
   async usage(userId: string, ids: string[], { fresh = false } = {}) {
     const tx = new Transaction(this.s.repo);
-    const budget = { items: this.itemBudget };
+    const budget = { items: this.itemBudget, until: Date.now() + this.timeBudgetMs };
     const items: FolderUsage[] = [];
     for (const id of new Set(ids)) {
       // A folder that was removed, or isn't yours, is left out instead of failing the rest.
@@ -53,30 +64,40 @@ export class UsageService {
     return { items };
   }
 
-  private async measure(owner: string, item: DriveItem, budget: { items: number }, fresh = false) {
+  private async measure(owner: string, item: DriveItem, budget: Budget, fresh = false) {
     const repo = this.s.repo;
     const key = `USAGE#${item.id}`;
     const sequence = (await row<{ sequence: number }>(repo, userPK(owner), 'PROFILE'))!.sequence;
     const cached = await row<Cached>(repo, userPK(owner), key);
+    const previous = cached
+      ? { bytes: cached.bytes, files: cached.files, complete: cached.complete }
+      : notCounted;
+    // An unchanged account keeps a full count; a lower bound is counted again once it has aged,
+    // as a count cut short by time may get further next time.
     if (
       !fresh &&
       cached &&
-      (cached.sequence === sequence || Date.now() - cached.computedAt < USAGE_CACHE_MS)
+      ((cached.complete && cached.sequence === sequence) ||
+        Date.now() - cached.computedAt < USAGE_CACHE_MS)
     )
-      return { bytes: cached.bytes, files: cached.files, complete: cached.complete };
+      return previous;
+    // Earlier folders in this request used up its time: the previous count will do, uncounted
+    // and unmarked so the next request can count it.
+    if (item.type === 'FOLDER' && spent(budget)) return previous;
     // Another request is counting this folder right now: the previous count will do. The mark
-    // is claimed in a transaction, so of several requests arriving together only one counts.
-    if (cached && !fresh) {
+    // is claimed in a transaction, so of several requests arriving together only one counts; a
+    // folder never counted yet gets a stand-in row to carry it.
+    if (!fresh) {
       const counting = await transact(repo, async (tx) => {
         const current = await tx.get<Cached>(userPK(owner), key);
-        if (!current) return false;
-        if (current.countingAt && Date.now() - current.countingAt < USAGE_COUNTING_MS) return true;
-        await tx.put(userPK(owner), key, { ...current, countingAt: Date.now() } satisfies Cached, {
+        if (current?.countingAt && Date.now() - current.countingAt < USAGE_COUNTING_MS) return true;
+        const marked = current ?? { ...notCounted, sequence: -1, computedAt: 0 };
+        await tx.put(userPK(owner), key, { ...marked, countingAt: Date.now() } satisfies Cached, {
           expiresAt: Math.floor(Date.now() / 1000) + 7 * 86400,
         });
         return false;
       }).catch(() => false); // Without the mark, others may count too; nothing worse.
-      if (counting) return { bytes: cached.bytes, files: cached.files, complete: cached.complete };
+      if (counting) return previous;
     }
     const total = { bytes: 0, files: 0, complete: true };
     if (item.type === 'FILE') await this.file(owner, item.id, total);
@@ -93,14 +114,14 @@ export class UsageService {
     owner: string,
     folderId: string,
     total: { bytes: number; files: number; complete: boolean },
-    budget: { items: number },
+    budget: Budget,
   ) {
     const pending = [folderId];
     while (pending.length) {
       const parent = pending.shift()!;
       let cursor: string | undefined;
       do {
-        if (budget.items <= 0) {
+        if (spent(budget)) {
           total.complete = false;
           return;
         }

@@ -774,7 +774,10 @@ export function DriveWorkspace({
     return () => controller.abort();
   }, [request, usageKey, revision]);
   const folderSizes = Object.fromEntries(
-    Object.values(usage).map((entry) => [entry.itemId, usageLabel(entry)!]),
+    Object.values(usage).flatMap((entry) => {
+      const label = usageLabel(entry);
+      return label ? [[entry.itemId, label]] : [];
+    }),
   );
   const folderTotal = parentId && usage[parentId] ? usageLabel(usage[parentId]) : undefined;
   const selection = files.filter((item) => selected.includes(item.id));

@@ -5,6 +5,7 @@ import { StorageService, userPK } from '../src/domain';
 import { MemoryRepository, transact } from '../src/repository';
 import { MemoryStorage } from '../src/storage';
 import { USAGE_CACHE_MS, USAGE_COUNTING_MS, UsageService } from '../src/usage';
+import { vi } from 'vitest';
 
 let service: StorageService, storage: MemoryStorage, usage: UsageService;
 const op = () => randomUUID();
@@ -90,6 +91,95 @@ it('keeps the last count while another request is counting the folder again', as
   spy.mockReturnValue(now + USAGE_CACHE_MS + USAGE_COUNTING_MS + 2);
   expect((await usage.usage('alice', [root.id])).items[0].bytes).toBe(8);
   spy.mockRestore();
+});
+
+it('counts a folder seen for the first time once, however many requests ask at once', async () => {
+  const root = await folder('Backup');
+  await upload(root.id, 'a.txt', 'hello');
+  // Another request has just started the first count: there's nothing to reuse yet.
+  await transact(service.repo, (tx) =>
+    tx.put(userPK('alice'), `USAGE#${root.id}`, {
+      bytes: 0,
+      files: 0,
+      complete: false,
+      sequence: -1,
+      computedAt: 0,
+      countingAt: Date.now(),
+    }),
+  );
+  expect((await usage.usage('alice', [root.id])).items[0]).toEqual({
+    itemId: root.id,
+    bytes: 0,
+    files: 0,
+    complete: false,
+  });
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + USAGE_COUNTING_MS + 1);
+  expect((await usage.usage('alice', [root.id])).items[0]).toMatchObject({
+    bytes: 5,
+    complete: true,
+  });
+  spy.mockRestore();
+});
+
+it('marks a first count so a request arriving meanwhile does not count too', async () => {
+  const root = await folder('Backup');
+  await upload(root.id, 'a.txt', 'hello');
+  const slow = service.repo.query.bind(service.repo);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const query = vi.spyOn(service.repo, 'query').mockImplementation(async (...args) => {
+    if (String(args[1]).startsWith('CHILD#')) await held;
+    return slow(...args);
+  });
+  const first = usage.usage('alice', [root.id]);
+  await vi.waitFor(() => expect(query).toHaveBeenCalled());
+  expect((await usage.usage('alice', [root.id])).items[0]).toMatchObject({
+    bytes: 0,
+    complete: false,
+  });
+  release();
+  expect((await first).items[0]).toMatchObject({ bytes: 5, complete: true });
+  query.mockRestore();
+});
+
+it('stops counting when its time runs out, keeps the lower bound, and counts again later', async () => {
+  const root = await folder('Backup');
+  const nested = await folder('Nested', root.id);
+  const other = await folder('Other');
+  await upload(root.id, 'a.txt', 'hello');
+  await upload(nested.id, 'b.txt', 'abc');
+  await upload(other.id, 'c.txt', 'xy');
+  // Each folder listing takes a second; the request has half of one.
+  let now = Date.now();
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const list = service.repo.query.bind(service.repo);
+  const query = vi.spyOn(service.repo, 'query').mockImplementation(async (...args) => {
+    if (String(args[1]).startsWith('CHILD#')) now += 1000;
+    return list(...args);
+  });
+  const rushed = new UsageService(service, undefined, 500);
+  // The first folder is cut short after its first level; the second isn't started.
+  expect((await rushed.usage('alice', [root.id, other.id])).items).toEqual([
+    { itemId: root.id, bytes: 5, files: 1, complete: false },
+    { itemId: other.id, bytes: 0, files: 0, complete: false },
+  ]);
+  query.mockRestore();
+  // The folder that wasn't started was left unmarked, so it's counted straight away.
+  expect((await usage.usage('alice', [other.id])).items[0]).toMatchObject({
+    bytes: 2,
+    complete: true,
+  });
+  // The cut-short count is kept for a while, then counted again though nothing changed.
+  expect((await usage.usage('alice', [root.id])).items[0]).toMatchObject({
+    bytes: 5,
+    complete: false,
+  });
+  now += USAGE_CACHE_MS + 1;
+  expect((await usage.usage('alice', [root.id])).items[0]).toMatchObject({
+    bytes: 8,
+    complete: true,
+  });
+  clock.mockRestore();
 });
 
 it('reports a lower bound for trees larger than the budget', async () => {
