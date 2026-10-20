@@ -115,6 +115,8 @@ declare global {
       checkForUpdate: () => Promise<import('./updater').UpdateStatus>;
       /** Downloads and installs the available update, then restarts the app. */
       installUpdate: () => Promise<{ restarting: boolean }>;
+      /** Restarts into the update downloaded in the background. */
+      restartToUpdate: () => Promise<{ restarting: boolean }>;
       webdav: () => Promise<WebdavState>;
       setWebdav: (input: { enabled: boolean }) => Promise<WebdavState>;
       /** Connects the server as a drive in Finder or File Explorer and opens it. */

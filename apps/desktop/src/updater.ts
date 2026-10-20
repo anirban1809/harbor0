@@ -11,6 +11,11 @@
 // directly rather than from a helper script: a detached PowerShell has no console and exits before
 // running anything, and one that isn't detached dies with the app.
 //
+// With autoDownload, a new version found by a check is downloaded, checked and staged in the
+// background straight away (state `ready`), so updating is only a restart. A staged Mac app sits
+// beside the running one as a hidden .harbor0-update-<id>.app until then; one left by a session
+// that quit without restarting is removed at the next start, as are Windows installers.
+//
 // Test builds (versions like 0.1.9-test or 0.1.9-test.2) are GitHub pre-releases. A production
 // build only ever looks at the latest full release, which GitHub never points at a pre-release, so
 // it can't be offered one. A test build looks through recent releases and takes the newest of
@@ -39,6 +44,8 @@ export type UpdateStatus = {
     | 'current'
     | 'available'
     | 'downloading'
+    /** Downloaded, checked and staged: a restart finishes the update. */
+    | 'ready'
     | 'installing'
     | 'failed';
   /** Why this build can't update itself. */
@@ -129,6 +136,8 @@ export type UpdaterOptions = {
    */
   bundle: { path: string; platform?: 'darwin' | 'win32' } | { unsupported: string };
   arch: string;
+  /** Download each new version in the background as soon as a check finds it. */
+  autoDownload?: boolean;
   onChange: (status: UpdateStatus) => void;
   /** Called once the new app is in place; it must stop work and quit. */
   quit: () => Promise<void>;
@@ -151,9 +160,15 @@ const launchDetached = (file: string, args: string[]) =>
     : spawn('/bin/sh', [file, ...args], { detached: true, stdio: 'ignore' })
   ).unref();
 
+/** A Mac app staged beside the running one by an update that was never finished. */
+const STAGED_APP = /^\.harbor0-update-[0-9a-f-]{36}\.app$/;
+
 export class Updater {
   status: UpdateStatus;
   private asset: Asset | null = null;
+  /** The downloaded update, ready to restart into: a staged Mac app or a Windows installer. */
+  private staged: { version: string; path: string } | null = null;
+  private preparing?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
   private checking?: Promise<UpdateStatus>;
   private readonly fetch: typeof fetch;
@@ -174,6 +189,7 @@ export class Updater {
   start() {
     if (this.status.state === 'unsupported') return;
     if (this.platform === 'win32') void this.removeOldInstallers();
+    else void this.removeStagedApps();
     setTimeout(() => void this.check().catch(() => {}), 10_000).unref?.();
     this.timer = setInterval(() => void this.check().catch(() => {}), CHECK_INTERVAL_MS);
     this.timer.unref?.();
@@ -207,7 +223,8 @@ export class Updater {
 
   private async lookup() {
     const previous = this.status;
-    this.set({ state: 'checking', error: undefined });
+    // A staged update stays ready to restart into while it looks for a newer one.
+    if (previous.state !== 'ready') this.set({ state: 'checking', error: undefined });
     try {
       const testBuild = isTestVersion(this.options.current);
       const response = await this.fetch(testBuild ? TEST_RELEASES_URL : RELEASES_URL, {
@@ -231,6 +248,12 @@ export class Updater {
         if (found) [release, asset] = [candidate, found];
       }
       const version = release?.tag_name.replace(/^v/, '');
+      // Still the newest: it stays ready. Something newer replaces it.
+      if (this.staged && version === this.staged.version) {
+        this.asset = asset;
+        return this.status;
+      }
+      if (this.staged) await this.discardStaged();
       this.asset = asset;
       this.set(
         asset && release && version
@@ -242,31 +265,79 @@ export class Updater {
           : { state: 'current', checkedAt: Date.now() },
         true,
       );
+      if (this.options.autoDownload && this.status.state === 'available')
+        void this.prepare().catch(() => {});
     } catch (error) {
       // A failed background check keeps showing what was last known.
       this.set({
         ...previous,
-        state: previous.state === 'available' ? 'available' : 'failed',
+        state:
+          previous.state === 'available' || previous.state === 'ready' ? previous.state : 'failed',
         error: `Couldn't check for updates: ${(error as Error).message}`,
       });
     }
     return this.status;
   }
 
-  /** Downloads and stages the update, then hands over to the swap script and quits. */
+  /** Downloads and stages the update if it isn't yet, then restarts into it. */
   async install() {
+    await this.prepare();
+    await this.restart();
+  }
+
+  /**
+   * Downloads, checks and stages the available update without installing it, so finishing it
+   * is only a restart (state `ready`). Asking again while it runs waits for the same download.
+   */
+  prepare(): Promise<void> {
     const bundleOption = this.options.bundle;
+    if ('unsupported' in bundleOption) return Promise.reject(new Error(bundleOption.unsupported));
+    const latest = this.status.latest;
+    if (this.staged && latest && this.staged.version === latest.version) return Promise.resolve();
+    this.preparing ??= (
+      this.platform === 'win32' ? this.prepareWindows() : this.prepareMac(bundleOption.path)
+    ).finally(() => (this.preparing = undefined));
+    return this.preparing;
+  }
+
+  /** Hands the staged update over (to the swap script, or the Windows installer) and quits. */
+  async restart() {
+    const staged = this.staged;
+    if (this.status.state !== 'ready' || !staged) throw new Error('No update is ready yet.');
+    const bundleOption = this.options.bundle;
+    if ('unsupported' in bundleOption) throw new Error(bundleOption.unsupported);
+    this.set({ state: 'installing', error: undefined });
+    try {
+      if (this.platform === 'win32') this.launch(staged.path, ['/S', '--updated', '--force-run']);
+      else {
+        const script = path.join(
+          this.options.temp ?? os.tmpdir(),
+          `harbor0-update-${randomUUID()}.sh`,
+        );
+        await writeFile(script, SWAP_SCRIPT, { mode: 0o700 });
+        this.launch(script, [
+          String(process.pid),
+          bundleOption.path,
+          staged.path,
+          this.options.opener ?? '/usr/bin/open',
+        ]);
+      }
+    } catch (error) {
+      this.set({ state: 'ready', error: (error as Error).message });
+      throw error;
+    }
+    this.staged = null;
+    await this.options.quit();
+  }
+
+  private async prepareMac(bundle: string) {
     const asset = this.asset;
     const latest = this.status.latest;
-    if ('unsupported' in bundleOption) throw new Error(bundleOption.unsupported);
     if (this.busy) throw new Error('The update is already being installed.');
     if (!asset || !latest) throw new Error('No update is available.');
-    if (this.platform === 'win32') return this.installWindows(asset);
-    const bundle = bundleOption.path;
     const parent = path.dirname(bundle);
     let work: string | undefined;
     const staged = path.join(parent, `.harbor0-update-${randomUUID()}.app`);
-    let handedOver = false;
     try {
       try {
         await access(parent, constants.W_OK);
@@ -281,7 +352,6 @@ export class Updater {
       const dmg = path.join(work, asset.name);
       await this.download(asset, dmg);
 
-      this.set({ state: 'installing' });
       const mount = path.join(work, 'mount');
       await this.run('hdiutil', [
         'attach',
@@ -307,21 +377,10 @@ export class Updater {
       if ((await read('CFBundleShortVersionString')) !== latest.version)
         throw new Error(`The downloaded app is not version ${latest.version}.`);
       await this.run('codesign', ['--verify', '--deep', '--strict', staged]);
-      // The app quits right after the hand-over, before `finally` could run.
-      await rm(work, { recursive: true, force: true });
-
-      const script = path.join(work, '..', `harbor0-update-${randomUUID()}.sh`);
-      await writeFile(script, SWAP_SCRIPT, { mode: 0o700 });
-      this.launch(script, [
-        String(process.pid),
-        bundle,
-        staged,
-        this.options.opener ?? '/usr/bin/open',
-      ]);
-      handedOver = true;
-      await this.options.quit();
+      this.staged = { version: latest.version, path: staged };
+      this.set({ state: 'ready' });
     } catch (error) {
-      if (!handedOver) await rm(staged, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
       this.set({ state: 'failed', error: (error as Error).message });
       throw error;
     } finally {
@@ -329,25 +388,48 @@ export class Updater {
     }
   }
 
-  /** Downloads the installer, then starts it and quits. */
-  private async installWindows(asset: Asset) {
+  /** Downloads and checks the Windows installer, to be started on restart. */
+  private async prepareWindows() {
+    const asset = this.asset;
+    const latest = this.status.latest;
+    if (this.busy) throw new Error('The update is already being installed.');
+    if (!asset || !latest) throw new Error('No update is available.');
     const installer = path.join(
       this.options.temp ?? os.tmpdir(),
       `harbor0-update-${randomUUID()}.exe`,
     );
-    let handedOver = false;
     try {
       this.set({ state: 'downloading', received: 0, error: undefined });
       await this.download(asset, installer);
-      this.set({ state: 'installing' });
-      this.launch(installer, ['/S', '--updated', '--force-run']);
-      handedOver = true;
-      await this.options.quit();
+      this.staged = { version: latest.version, path: installer };
+      this.set({ state: 'ready' });
     } catch (error) {
-      if (!handedOver) await rm(installer, { force: true });
+      await rm(installer, { force: true });
       this.set({ state: 'failed', error: (error as Error).message });
       throw error;
     }
+  }
+
+  /** A staged update a newer version replaced. */
+  private async discardStaged() {
+    const staged = this.staged;
+    this.staged = null;
+    if (staged) await rm(staged.path, { recursive: true, force: true }).catch(() => {});
+  }
+
+  /** Staged apps left beside the running one by sessions that quit without restarting. */
+  private async removeStagedApps() {
+    const bundle = this.options.bundle;
+    if ('unsupported' in bundle) return;
+    const parent = path.dirname(bundle.path);
+    const names = await readdir(parent).catch(() => [] as string[]);
+    await Promise.all(
+      names
+        .filter((name) => STAGED_APP.test(name) && path.join(parent, name) !== this.staged?.path)
+        .map((name) =>
+          rm(path.join(parent, name), { recursive: true, force: true }).catch(() => {}),
+        ),
+    );
   }
 
   /** The installer can't delete itself, so the next start removes it (and older leftovers). */

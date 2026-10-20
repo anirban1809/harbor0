@@ -577,6 +577,7 @@ const signedOutChannels = new Set([
   'updateStatus',
   'checkForUpdate',
   'installUpdate',
+  'restartToUpdate',
 ]);
 /** Encrypted files being previewed, opened once and read a range at a time. */
 const encryptedPreviews = new Map<string, Promise<PlainReader>>();
@@ -1546,6 +1547,8 @@ app
       current: app.getVersion(),
       bundle: runningBundle(app.isPackaged, process.platform, process.execPath),
       arch: process.arch,
+      // Each new version downloads in the background, so updating is only a restart.
+      autoDownload: true,
       onChange: (status) => {
         if (!window.isDestroyed()) window.webContents.send('harbor:update', status);
       },
@@ -1603,6 +1606,10 @@ app
     ipc('checkForUpdate', z.undefined(), () => updater!.check());
     ipc('installUpdate', z.undefined(), async () => {
       await updater!.install();
+      return { restarting: true };
+    });
+    ipc('restartToUpdate', z.undefined(), async () => {
+      await updater!.restart();
       return { restarting: true };
     });
     ipc(

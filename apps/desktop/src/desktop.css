@@ -369,3 +369,36 @@
   gap: 8px;
   font-size: 13px;
 }
+/* Sidebar: an update downloaded in the background, one click from installing. */
+.update-ready {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-align: left;
+  transition: background-color var(--ease);
+}
+.update-ready:hover:not(:disabled) {
+  background: var(--fill-1);
+}
+.update-ready:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+.update-ready > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.update-ready > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

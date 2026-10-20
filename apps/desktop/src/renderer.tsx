@@ -93,7 +93,7 @@ import {
 import { SyncNotifications } from './sync-notifications';
 import { SharedSyncInvitations } from './sync-sharing';
 import { IncomingDialog } from './incoming-dialog';
-import { UpdatePanel, useUpdateStatus } from './update-panel';
+import { UpdatePanel, UpdateReady, useUpdateStatus } from './update-panel';
 import type { IncomingContent } from './incoming';
 import { mergeSyncItems } from './sync-drive';
 import { Button } from '../../web/components/ui/button';
@@ -1199,15 +1199,18 @@ function App() {
             >
               <Icon aria-hidden="true" />
               <span>{name}</span>
-              {name === 'Settings' && update?.state === 'available' && (
-                <Badge tone="accent" className="nav-badge">
-                  Update
-                </Badge>
-              )}
+              {name === 'Settings' &&
+                (update?.state === 'available' ||
+                  (update?.state === 'failed' && update.latest)) && (
+                  <Badge tone="accent" className="nav-badge">
+                    Update
+                  </Badge>
+                )}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
+          <UpdateReady status={update} />
           <FolderActivityStatus
             activity={folderStatus?.activity ?? null}
             onOpen={() => folderStatus?.open()}

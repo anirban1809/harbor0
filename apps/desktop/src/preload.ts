@@ -38,6 +38,7 @@ const channels = [
   'updateStatus',
   'checkForUpdate',
   'installUpdate',
+  'restartToUpdate',
   'webdav',
   'setWebdav',
   'openWebdavDrive',

@@ -401,3 +401,91 @@ it.skipIf(process.platform === 'win32')(
     expect(existsSync(script)).toBe(false);
   },
 );
+
+it('downloads a new version in the background, then restarts into it only when asked', async () => {
+  const apps = path.join(directory, 'Applications');
+  const bundle = path.join(apps, 'harbor0.app');
+  await mkdir(bundle, { recursive: true });
+  const launched: string[][] = [];
+  const quit = vi.fn(async () => {});
+  const states: string[] = [];
+  let latest = release('0.1.7');
+  const updater = new Updater({
+    current: '0.1.6',
+    bundle: { path: bundle },
+    arch: 'arm64',
+    autoDownload: true,
+    onChange: (status) => {
+      if (states.at(-1) !== status.state) states.push(status.state);
+    },
+    quit,
+    fetch: (async (url: string) => github(latest)(url)) as typeof fetch,
+    run: async (command: string, args: string[]) => {
+      if (command === 'hdiutil' && args[0] === 'attach')
+        await mkdir(path.join(args[args.indexOf('-mountpoint') + 1], 'harbor0.app'), {
+          recursive: true,
+        });
+      if (command === 'ditto') await mkdir(args[1], { recursive: true });
+      if (command === 'plutil')
+        return args[1] === 'CFBundleIdentifier' ? 'com.harbor.storage' : latest.tag_name.slice(1);
+      return '';
+    },
+    launch: (script, args) => launched.push([script, ...args]),
+    temp: directory,
+  });
+  await updater.check();
+  await vi.waitFor(() => expect(updater.status.state).toBe('ready'));
+  expect(states).toEqual(['checking', 'available', 'downloading', 'ready']);
+  const staged = (await readdir(apps)).find((name) => name.startsWith('.harbor0-update-'));
+  expect(staged).toBeDefined();
+  // Nothing is installed until the person restarts.
+  expect(launched).toEqual([]);
+  expect(quit).not.toHaveBeenCalled();
+
+  // A later check finding the same version keeps it ready, without downloading again.
+  await updater.check();
+  expect(updater.status).toMatchObject({ state: 'ready', latest: { version: '0.1.7' } });
+
+  // A newer version replaces the staged one.
+  latest = release('0.1.8');
+  await updater.check();
+  await vi.waitFor(() =>
+    expect(updater.status).toMatchObject({ state: 'ready', latest: { version: '0.1.8' } }),
+  );
+  const now = (await readdir(apps)).filter((name) => name.startsWith('.harbor0-update-'));
+  expect(now).toHaveLength(1);
+  expect(now[0]).not.toBe(staged);
+
+  await updater.restart();
+  expect(launched).toHaveLength(1);
+  expect(launched[0]!.slice(2, 4)).toEqual([bundle, path.join(apps, now[0]!)]);
+  expect(quit).toHaveBeenCalledOnce();
+  expect(updater.status.state).toBe('installing');
+});
+
+it('removes staged apps left by sessions that quit without restarting', async () => {
+  const apps = path.join(directory, 'Applications');
+  const bundle = path.join(apps, 'harbor0.app');
+  const left = path.join(apps, '.harbor0-update-6a478879-0ca1-4ae4-9ec9-a3c75cdda44b.app');
+  await mkdir(bundle, { recursive: true });
+  await mkdir(left);
+  await mkdir(path.join(apps, 'Other.app'));
+  const updater = new Updater({
+    current: '0.1.6',
+    bundle: { path: bundle },
+    arch: 'arm64',
+    onChange: () => {},
+    quit: async () => {},
+    fetch: github(release('0.1.6')),
+  });
+  updater.start();
+  updater.stop();
+  await vi.waitFor(async () =>
+    expect((await readdir(apps)).sort()).toEqual(['Other.app', 'harbor0.app']),
+  );
+});
+
+it('refuses to restart before an update is ready', async () => {
+  const { updater } = await installSetup();
+  await expect(updater.restart()).rejects.toThrow('No update is ready yet.');
+});

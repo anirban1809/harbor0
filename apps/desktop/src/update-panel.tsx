@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, RefreshCw } from 'lucide-react';
+import { Download, RefreshCw, RotateCw } from 'lucide-react';
 import { Alert } from '../../web/components/ui/alert';
 import { Badge } from '../../web/components/ui/badge';
 import { Button } from '../../web/components/ui/button';
@@ -16,6 +16,33 @@ export function useUpdateStatus() {
     return window.harbor.onUpdate(setStatus);
   }, []);
   return status;
+}
+
+/**
+ * In the sidebar once an update has downloaded in the background: one click restarts into it.
+ * Nothing shows while it downloads; the update is only offered once it's ready.
+ */
+export function UpdateReady({ status }: { status: UpdateStatus | undefined }) {
+  const [error, setError] = useState('');
+  if (!status?.latest || (status.state !== 'ready' && status.state !== 'installing')) return null;
+  const restarting = status.state === 'installing';
+  const label = restarting
+    ? 'Restarting to update…'
+    : `Restart to update to ${status.latest.version}`;
+  return (
+    <button
+      className="update-ready"
+      disabled={restarting}
+      title={error || label}
+      onClick={() => {
+        setError('');
+        void window.harbor.restartToUpdate().catch((e) => setError((e as Error).message));
+      }}
+    >
+      <RotateCw aria-hidden="true" className={restarting ? 'spin' : undefined} />
+      <span>{error ? 'Couldn’t restart. Try again' : label}</span>
+    </button>
+  );
 }
 
 /** The app's version, with a check for updates and a one-click update and restart. */
@@ -39,10 +66,12 @@ export function UpdatePanel({ status }: { status: UpdateStatus | undefined }) {
           : state === 'available' && latest
             ? `Version ${latest.version} is available (${storageSize(latest.bytes)}). harbor0 restarts to finish updating; sync picks up where it left off.`
             : state === 'downloading' && latest
-              ? `Downloading version ${latest.version}… ${storageSize(status.received ?? 0)} of ${storageSize(latest.bytes)}`
-              : state === 'installing'
-                ? 'Installing. harbor0 will restart in a moment.'
-                : null;
+              ? `Downloading version ${latest.version} in the background… ${storageSize(status.received ?? 0)} of ${storageSize(latest.bytes)}`
+              : state === 'ready' && latest
+                ? `Version ${latest.version} is downloaded. Restart harbor0 to finish updating; sync picks up where it left off.`
+                : state === 'installing'
+                  ? 'Installing. harbor0 will restart in a moment.'
+                  : null;
   return (
     <Card
       className="panel update-panel"
@@ -51,6 +80,8 @@ export function UpdatePanel({ status }: { status: UpdateStatus | undefined }) {
       action={
         state === 'available' ? (
           <Badge tone="accent">Update available</Badge>
+        ) : state === 'ready' ? (
+          <Badge tone="accent">Ready to install</Badge>
         ) : state === 'current' ? (
           <Badge tone="success">Up to date</Badge>
         ) : undefined
@@ -67,11 +98,16 @@ export function UpdatePanel({ status }: { status: UpdateStatus | undefined }) {
       {(error || status.error) && <Alert tone="error">{error || status.error}</Alert>}
       {state !== 'unsupported' && (
         <div className="settings-actions">
-          {latest &&
-          (state === 'available' ||
-            state === 'downloading' ||
-            state === 'installing' ||
-            state === 'failed') ? (
+          {state === 'ready' ? (
+            <Button onClick={() => run(() => bridge.restartToUpdate())}>
+              <RotateCw />
+              Restart to update
+            </Button>
+          ) : latest &&
+            (state === 'available' ||
+              state === 'downloading' ||
+              state === 'installing' ||
+              state === 'failed') ? (
             <Button disabled={working} onClick={() => run(() => bridge.installUpdate())}>
               <Download />
               {state === 'downloading'
