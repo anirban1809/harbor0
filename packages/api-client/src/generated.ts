@@ -14540,7 +14540,7 @@ export interface operations {
                         /** @enum {string} */
                         status: "PAUSED" | "BLOCKED" | "ACTIVE" | "IDLE";
                         /** @enum {string} */
-                        reason?: "USER" | "ALL" | "APP" | "STORAGE_FULL" | "LOCKED";
+                        reason?: "USER" | "ALL" | "APP" | "STORAGE_FULL" | "LOCKED" | "UNAVAILABLE";
                         files?: number;
                         bytes?: number;
                         failed?: number;

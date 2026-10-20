@@ -12,6 +12,8 @@ import { ActivityReporter, type ActivitySubject } from './activity';
 import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
+  FOLDER_UNAVAILABLE_CODES,
+  folderUnreadable,
   fullBelow,
   stickyIssue,
   storageFullNow,
@@ -657,6 +659,10 @@ export class SyncEngine {
       const folderId = root.mode === 'backup' ? root.backupId : (root.remoteId ?? undefined);
       if (!folderId || root.archive) continue;
       const scope = root.mode === 'backup' ? 'BACKUP' : 'SYNC';
+      const unavailable = this.state.issues.some(
+        (i) =>
+          i.rootId === root.id && !i.jobId && !i.scope && FOLDER_UNAVAILABLE_CODES.includes(i.code),
+      );
       if (this.state.paused || root.paused) {
         const byApp = this.state.issues.some((i) => i.id === `${root.id}:mapping`);
         subjects.push({
@@ -665,6 +671,8 @@ export class SyncEngine {
           status: 'PAUSED',
           reason: this.state.paused ? 'ALL' : byApp ? 'APP' : 'USER',
         });
+      } else if (unavailable) {
+        subjects.push({ scope, folderId, status: 'BLOCKED', reason: 'UNAVAILABLE' });
       } else if (root.mode === 'backup') {
         const run = this.backups.openRun(root.id);
         subjects.push(
@@ -1523,7 +1531,12 @@ export class SyncEngine {
       return await this.onShare(root, () => this.checkLocation(root));
     } catch (error) {
       const code = (error as { code?: string }).code;
-      if (code === 'DRIVE_MISSING' || code === 'WRONG_DRIVE' || code === 'SHARE_UNAVAILABLE') {
+      if (
+        code === 'DRIVE_MISSING' ||
+        code === 'WRONG_DRIVE' ||
+        code === 'SHARE_UNAVAILABLE' ||
+        code === 'FOLDER_UNAVAILABLE'
+      ) {
         // Whatever is mounted there now is not this folder; nothing of it may be queued.
         await this.watchers.get(root.id)?.close();
         this.watchers.delete(root.id);
@@ -1537,6 +1550,9 @@ export class SyncEngine {
   private async checkLocation(root: Root) {
     root = await this.checkVolume(root);
     const info = await lstat(root.localPath).catch((error: NodeJS.ErrnoException) => {
+      // There but unreadable, as a share that disconnected answers: said in plain words.
+      if (error.code !== 'ENOENT' && error.code !== 'EACCES' && error.code !== 'EPERM')
+        throw folderUnreadable(root, error);
       if (error.code !== 'ENOENT') throw error;
       throw Object.assign(
         new Error(
@@ -1869,9 +1885,13 @@ export class SyncEngine {
           this.state.issues.some(
             (issue) =>
               issue.rootId === root.id &&
-              ['FOLDER_MISSING', 'DRIVE_MISSING', 'WRONG_DRIVE', 'SHARE_UNAVAILABLE'].includes(
-                issue.code,
-              ) &&
+              [
+                'FOLDER_MISSING',
+                'DRIVE_MISSING',
+                'WRONG_DRIVE',
+                'SHARE_UNAVAILABLE',
+                'FOLDER_UNAVAILABLE',
+              ].includes(issue.code) &&
               !issue.scope,
           )
         ) {
@@ -1988,6 +2008,9 @@ export class SyncEngine {
         } catch (error) {
           if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED')
             await this.detachRoot(root, 'backup');
+          // Its folder can't be read now: shown on the folder, and the other folders go on.
+          else if ((error as { code?: string }).code === 'FOLDER_UNAVAILABLE')
+            this.issue(root.id, error);
           else throw error;
         }
       }

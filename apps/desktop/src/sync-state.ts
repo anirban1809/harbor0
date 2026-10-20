@@ -5,6 +5,8 @@ export type SyncIssueCode =
   | 'DRIVE_MISSING'
   | 'WRONG_DRIVE'
   | 'SHARE_UNAVAILABLE'
+  // The folder is there but can't be read: its drive or share stopped answering.
+  | 'FOLDER_UNAVAILABLE'
   | 'PERMISSION_DENIED'
   | 'FILE_IN_USE'
   | 'STORAGE_QUOTA_EXCEEDED'
@@ -208,11 +210,42 @@ export function syncRequirements(roots: SyncFolder[], state: SyncRuntime, jobs: 
   }
   return issues;
 }
+/** Folder problems that stop a whole folder until its drive, share or access is back. */
+export const FOLDER_UNAVAILABLE_CODES: readonly SyncIssueCode[] = [
+  'FOLDER_MISSING',
+  'DRIVE_MISSING',
+  'WRONG_DRIVE',
+  'SHARE_UNAVAILABLE',
+  'FOLDER_UNAVAILABLE',
+  'PERMISSION_DENIED',
+];
+/**
+ * A folder that exists but can't be read, as a disconnected network share answers (ENOTCONN,
+ * EIO, a time-out): said in plain words rather than as the system's error.
+ */
+export function folderUnreadable(
+  root: { localPath: string; mode: 'sync' | 'backup' },
+  cause?: unknown,
+) {
+  const name = root.localPath.split(/[\\/]/).filter(Boolean).pop() ?? root.localPath;
+  const resumes = root.mode === 'backup' ? 'Backups resume' : 'Syncing resumes';
+  return Object.assign(
+    new Error(
+      `“${name}” can’t be read right now. Its drive or network share may have disconnected. ${resumes} when it’s readable again.`,
+    ),
+    { code: 'FOLDER_UNAVAILABLE', cause },
+  );
+}
 export function syncIssueCode(error: unknown, item = false): SyncIssueCode {
   const code = (error as { code?: string })?.code;
   // A single missing file is not a missing sync folder.
   if (code === 'ENOENT' || code === 'ENOTDIR') return item ? 'SYNC_ERROR' : 'FOLDER_MISSING';
-  if (code === 'DRIVE_MISSING' || code === 'WRONG_DRIVE' || code === 'SHARE_UNAVAILABLE')
+  if (
+    code === 'DRIVE_MISSING' ||
+    code === 'WRONG_DRIVE' ||
+    code === 'SHARE_UNAVAILABLE' ||
+    code === 'FOLDER_UNAVAILABLE'
+  )
     return code;
   // Windows: another app has the file open without sharing it, as Office and Outlook do.
   if (code === 'EBUSY') return 'FILE_IN_USE';

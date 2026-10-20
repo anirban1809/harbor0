@@ -348,3 +348,38 @@ describe('activity reports', () => {
     ]);
   });
 });
+
+describe('activity reports for folders that cannot be read', () => {
+  it('reports a backup folder whose drive is gone as stopped, and why', async () => {
+    const { directory, journal } = await setup();
+    journal.root({
+      id: 'photos',
+      localPath: path.join(directory, 'gone'),
+      remoteId: 'cloud-photos',
+      mode: 'backup',
+      backupId: 'backup-photos',
+      paused: false,
+      excluded: [],
+    });
+    const sent: { scope: string; folderId?: string; action: string; reason?: string }[] = [];
+    const api = new ApiClient(async (endpoint, init) => {
+      if (endpoint === '/v1/activity') sent.push(...(init?.body as { events: typeof sent }).events);
+      return endpoint.includes('/changes') ? feed : {};
+    });
+    const engine = engineFor(api, journal);
+    await engine.tick();
+    await (engine as unknown as { reporter: { flush(): Promise<void> } }).reporter.flush();
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        scope: 'BACKUP',
+        folderId: 'backup-photos',
+        action: 'BLOCKED',
+        status: 'BLOCKED',
+        reason: 'UNAVAILABLE',
+      }),
+    );
+    expect(engine.state.issues).toContainEqual(
+      expect.objectContaining({ rootId: 'photos', code: 'FOLDER_MISSING' }),
+    );
+  });
+});

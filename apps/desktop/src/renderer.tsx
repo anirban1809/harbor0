@@ -113,6 +113,7 @@ const UNAVAILABLE: Partial<Record<SyncIssueCode, string>> = {
   DRIVE_MISSING: 'Drive not connected',
   WRONG_DRIVE: 'Wrong drive connected',
   SHARE_UNAVAILABLE: 'Network share unavailable',
+  FOLDER_UNAVAILABLE: 'Can’t read folder',
   FOLDER_MISSING: 'Folder not found',
   PERMISSION_DENIED: 'Can’t read folder',
 };

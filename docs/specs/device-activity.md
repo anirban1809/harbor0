@@ -28,7 +28,7 @@ The app works out each subject's **status** and reports an event only when it ch
 | Status    | Engine                                   | Sync folder                       | Backup folder                     |
 | --------- | ---------------------------------------- | --------------------------------- | --------------------------------- |
 | `PAUSED`  | "Pause sync and backups" is on           | paused, or everything is paused   | paused, or everything is paused   |
-| `BLOCKED` | can't run: storage full, account locked  | –                                 | –                                 |
+| `BLOCKED` | can't run: storage full, account locked  | its folder can't be read          | its folder can't be read          |
 | `ACTIVE`  | running                                  | moving files (see below)          | a backup run is open              |
 | `IDLE`    | –                                        | nothing to send or fetch          | no run open                       |
 
@@ -58,6 +58,22 @@ learns every subject's status once.
 - `APP`: the app paused it itself (a sync folder whose cloud folder is gone, a revoked device).
 - `STORAGE_FULL`: the account has no storage left, so nothing can upload (engine `BLOCKED`).
 - `LOCKED`: the account's encryption is locked on this computer (engine `BLOCKED`).
+- `UNAVAILABLE`: the folder can't be read: its drive isn't connected, its network share
+  disconnected or stopped answering, it was moved or deleted, or harbor0 lost permission to it
+  (folder `BLOCKED`). It carries on by itself once the folder can be read again.
+
+### A file that can't be read
+
+When a backup can't read a file for any reason other than the file being gone, the app first
+checks the backup folder itself (giving a network share 15 seconds to answer):
+
+- The folder can still be read: only that file is set aside, with its error, for the next run,
+  and the run goes on with the rest. A brief hiccup or one unreadable subfolder no longer stops a
+  backup.
+- The folder can't be read: the run stops there and stays open, nothing is marked failed, and the
+  folder shows "“library” can't be read right now. Its drive or network share may have
+  disconnected." (`FOLDER_UNAVAILABLE`) instead of the system's error, and reports `BLOCKED` /
+  `UNAVAILABLE`. It goes on from the same file once the folder can be read.
 
 ### Counts
 

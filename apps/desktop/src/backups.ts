@@ -1,11 +1,42 @@
 import os from 'node:os';
 import path from 'node:path';
-import { lstat, mkdir, mkdtemp, readdir, rm, rmdir } from 'node:fs/promises';
-import type { Stats } from 'node:fs';
+import { access, lstat, mkdir, mkdtemp, readdir, rm, rmdir } from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
 import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
-import type { RestoreProgress, RestoreSummary } from './sync-state';
+import { folderUnreadable, type RestoreProgress, type RestoreSummary } from './sync-state';
+
+/** How long the backup folder may take to answer whether it can still be read. */
+export const FOLDER_CHECK_MS = 15_000;
+/**
+ * Whether the backup folder itself can still be read, within a time limit, since a network share
+ * that went away can leave every look at it waiting.
+ */
+export async function folderReadable(
+  localPath: string,
+  timeout = FOLDER_CHECK_MS,
+  look = async (folder: string) => {
+    if (!(await lstat(folder)).isDirectory()) return false;
+    await access(folder, constants.R_OK);
+    return true;
+  },
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const check = look(localPath).catch(() => false);
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeout);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([check, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+/** An error from the file system (it names a system call), rather than from the server. */
+const fileSystemError = (error: unknown) =>
+  typeof (error as { syscall?: unknown } | null)?.syscall === 'string';
 import {
   BATCH_UPLOAD_FILES,
   BATCH_UPLOAD_MAX_BYTES,
@@ -454,6 +485,10 @@ export class FolderBackups {
       )
         throw error;
       if (error instanceof ApiError && error.code === 'BACKUP_DISCONNECTED') throw error;
+      // Its folder went away (a drive or share disconnected), which is no fault of the file: the
+      // run stops and keeps its upload, and goes on once the folder can be read again.
+      if (fileSystemError(error) && !(await folderReadable(root.localPath)))
+        throw folderUnreadable(root, error);
       // Too many requests, or the account busy with another change: the pass pauses and this
       // file is tried again, not failed.
       if (error instanceof ApiError && (error.status === 429 || error.code === 'CONCURRENT_UPDATE'))
@@ -530,7 +565,15 @@ export class FolderBackups {
           await safeParents(root.localPath, job.relativePath, false);
           before = await lstat(contained(root.localPath, job.relativePath));
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            // The folder itself gone: the run stops here and goes on once it's back. Only this
+            // file unreadable: it waits for a later run, and the rest go on now.
+            if (!(await folderReadable(root.localPath))) throw folderUnreadable(root, error);
+            await failed(job, error);
+            run.next = index + 1;
+            this.journal.set(key, run);
+            continue;
+          }
         }
         // Too big for the storage left: it waits for a later run instead of being refused.
         const tooBig =

@@ -137,6 +137,8 @@ const issueText: Record<SyncIssue['code'], string> = {
         'A different drive is connected where this folder’s drive was. Syncing resumes when you connect the right one.',
     SHARE_UNAVAILABLE:
         'The network share this folder is on isn’t available. Syncing resumes when it’s back.',
+    FOLDER_UNAVAILABLE:
+        'This folder can’t be read right now. Its drive or network share may have disconnected.',
     PERMISSION_DENIED: 'harbor0 no longer has permission to access this folder.',
     FILE_IN_USE:
         'This file is open in another app. Once that app closes it, syncing retries automatically.',
@@ -211,7 +213,7 @@ export function SyncProblem({
                         ? 'harbor0 does not have permission to read or change this item. Once its permissions are fixed, syncing retries automatically.'
                         : issue.code === 'STORAGE_QUOTA_EXCEEDED'
                             ? storageText(issue, root)
-                            : ['SYNC_DETACHED', 'DRIVE_MISSING', 'WRONG_DRIVE', 'SHARE_UNAVAILABLE'].includes(issue.code)
+                            : ['SYNC_DETACHED', 'DRIVE_MISSING', 'WRONG_DRIVE', 'SHARE_UNAVAILABLE', 'FOLDER_UNAVAILABLE'].includes(issue.code)
                                 ? issue.message
                                 : issueText[issue.code]}
                 </p>

@@ -17,7 +17,15 @@ export const activityActions = [
   /** First report of a subject that is idle. */
   'IDLE',
 ] as const;
-export const activityReasons = ['USER', 'ALL', 'APP', 'STORAGE_FULL', 'LOCKED'] as const;
+export const activityReasons = [
+  'USER',
+  'ALL',
+  'APP',
+  'STORAGE_FULL',
+  'LOCKED',
+  /** The folder's drive or network share can't be read, or the folder is gone. */
+  'UNAVAILABLE',
+] as const;
 export type ActivityScope = (typeof activityScopes)[number];
 export type ActivityStatus = (typeof activityStatuses)[number];
 export type ActivityAction = (typeof activityActions)[number];

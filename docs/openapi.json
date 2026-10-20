@@ -30732,7 +30732,8 @@
                             "ALL",
                             "APP",
                             "STORAGE_FULL",
-                            "LOCKED"
+                            "LOCKED",
+                            "UNAVAILABLE"
                           ]
                         },
                         "files": {
