@@ -180,6 +180,13 @@ export const itemSchema = z.object({
   uploadMismatch: z.boolean().optional(),
   /** When the uploading client last changed the file's content, if it said. */
   modifiedAt: z.string().nullable().optional(),
+  /**
+   * Backups only: the item's name on the computer it was backed up from, when its name here had
+   * to differ. Two files whose names differ only in capitalization (IMG_1.MOV and IMG_1.mov, as a
+   * case-sensitive drive can hold) can't share a folder here, so one is stored under another name
+   * and keeps its own for backup paths and restores.
+   */
+  sourceName: z.string().optional(),
 });
 export const syncFolderSchema = itemSchema.extend({
   syncDevices: z.array(z.object({ id: z.string(), name: z.string() })),
@@ -333,6 +340,8 @@ export const uploadInput = z
     /** The bytes are encrypted by this device; required on end-to-end encrypted accounts. */
     encrypted: z.boolean().optional(),
     modifiedAt: z.iso.datetime().optional(),
+    /** Backup uploads only: the file's name on its computer, when `name` had to differ. */
+    sourceName: filename.optional(),
   })
   .strict();
 export const completedPart = z

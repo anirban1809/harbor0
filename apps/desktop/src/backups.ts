@@ -893,8 +893,12 @@ export class FolderBackups {
         const page = await this.api.list(parentId, cursor);
         for (const item of page.items as DriveItem[]) {
           if (stopped()) return false;
-          const name = safeSegment(item.name, item.id);
-          const relativePath = relative ? `${relative}/${name}` : name;
+          const name = safeSegment(item.sourceName ?? item.name, item.id);
+          const relativePath = await this.restorePlace(
+            root,
+            relative ? `${relative}/${name}` : name,
+            async () => item.name,
+          );
           if (this.ignored(root, relativePath)) continue;
           const destination = await safeParents(root.localPath, relativePath);
           if (item.type === 'FOLDER') {
@@ -986,6 +990,27 @@ export class FolderBackups {
     });
   }
   /**
+   * Where a restored item goes. Its name on the backed up computer, unless this folder already
+   * has a different item whose name differs only in case and the disk can't hold both (as on a
+   * Mac or PC, where writing it would replace that item): then the name it's stored under.
+   */
+  private async restorePlace(root: Root, relativePath: string, stored: () => Promise<string>) {
+    if (!relativePath) return relativePath;
+    const own = path.posix.basename(relativePath);
+    const folder = path.posix.dirname(relativePath);
+    const directory = contained(root.localPath, folder === '.' ? '' : folder);
+    const names = await readdir(directory).catch(() => [] as string[]);
+    if (names.includes(own)) return relativePath;
+    // Not listed under this exact name, yet found by it: another item in other capitals.
+    const clash = await lstat(path.join(directory, own)).then(
+      () => true,
+      () => false,
+    );
+    if (!clash) return relativePath;
+    const name = safeSegment(await stored(), own);
+    return folder === '.' ? name : `${folder}/${name}`;
+  }
+  /**
    * Everything saved in a folder, each file at its latest version. Files that already match it
    * are left alone. Returns why some files could not be restored, if any could not.
    */
@@ -997,8 +1022,13 @@ export class FolderBackups {
       do {
         const page = await this.api.list(parentId, cursor);
         for (const item of page.items as DriveItem[]) {
-          const name = safeSegment(item.name, item.id);
-          const relativePath = folder ? `${folder}/${name}` : name;
+          // Each under its name on the backed up computer, where this disk can hold it.
+          const name = safeSegment(item.sourceName ?? item.name, item.id);
+          const relativePath = await this.restorePlace(
+            root,
+            folder ? `${folder}/${name}` : name,
+            async () => item.name,
+          );
           if (this.ignored(root, relativePath)) continue;
           if (item.type === 'FOLDER') {
             await mkdir(await safeParents(root.localPath, relativePath), { recursive: true });
@@ -1015,6 +1045,11 @@ export class FolderBackups {
         cursor = page.nextCursor ?? undefined;
       } while (cursor);
     };
+    relative = await this.restorePlace(
+      root,
+      relative,
+      async () => (await this.api.request(`/v1/drive/items/${folderId}`)).item.name,
+    );
     if (relative) await mkdir(await safeParents(root.localPath, relative), { recursive: true });
     await walk(folderId, relative);
     restoring.total += files.length;
@@ -1062,6 +1097,11 @@ export class FolderBackups {
     modifiedAt?: string | null,
   ) {
     const { root, url, summary } = restoring;
+    relativePath = await this.restorePlace(
+      root,
+      relativePath,
+      async () => (await this.api.request(`/v1/drive/items/${version.itemId}`)).item.name,
+    );
     const progress = (loaded: number, size: number) =>
       this.onRestore?.(root.id, {
         done: restoring.done,

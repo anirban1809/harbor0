@@ -125,7 +125,8 @@ export async function uploadFile(
   existing?: { itemId: string; revision: number },
   progress?: (loaded: number, total: number) => void,
   beforeComplete?: () => Promise<void>,
-  backup?: { rootId: string; runId: string },
+  /** A backup run; `sourceName` is the file's own name when `name` had to differ. */
+  backup?: { rootId: string; runId: string; sourceName?: string },
 ) {
   // Where the upload got to, for the problem report if it fails.
   const at = { stage: 'hash' as ClientEventStage };
@@ -164,7 +165,7 @@ async function upload(
   existing: { itemId: string; revision: number } | undefined,
   progress: ((loaded: number, total: number) => void) | undefined,
   beforeComplete: (() => Promise<void>) | undefined,
-  backup: { rootId: string; runId: string } | undefined,
+  backup: { rootId: string; runId: string; sourceName?: string } | undefined,
   at: { stage: ClientEventStage },
 ): Promise<DriveItem> {
   at.stage = 'hash';
@@ -211,6 +212,8 @@ async function upload(
       // Kept with the version, so a restore can give the file back its time.
       modifiedAt: modifiedAt(info),
       ...(existing ? { driveItemId: existing.itemId, baseRevision: existing.revision } : {}),
+      // An encrypted account's names never go in plain text.
+      ...(backup?.sourceName && !existing && !cipher ? { sourceName: backup.sourceName } : {}),
     };
     const result = backup
       ? await api.request(`/v1/backups/${backup.rootId}/runs/${backup.runId}/uploads`, {

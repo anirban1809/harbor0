@@ -69,6 +69,19 @@ const STORAGE_BLOCKED_NOTICE_MS = 3600_000;
 const now = () => new Date().toISOString();
 const uid = () => randomUUID();
 export const userPK = (id: string) => `USER#${id}`;
+/**
+ * `sourceName` belongs to backups: a device keeping a file's own name when it had to be stored
+ * under another. It never comes in plain text from an encrypted account.
+ */
+function assertSourceName(
+    input: { sourceName?: string; },
+    backupWrite: BackupWrite | undefined,
+    encrypted = false,
+) {
+    if (!input.sourceName) return;
+    assert(backupWrite, 'VALIDATION_ERROR', 'Only a backup can keep a different name.');
+    assert(!encrypted, 'VALIDATION_ERROR', 'An encrypted account’s names are never sent in plain text.');
+}
 const nameKey = (parent: string | null, name: string) =>
     `NAME#${parent ?? 'root'}#${normalizeName(name)}`;
 const childKey = (item: DriveItem) =>
@@ -174,6 +187,8 @@ export type Upload = {
     encrypted?: boolean;
     /** The client's own modification time for the file, when it sent one. */
     modifiedAt?: string | null;
+    /** A backup file's name on its computer, when the name here had to differ. */
+    sourceName?: string;
     state: 'CREATED' | 'UPLOADING' | 'COMPLETING' | 'COMPLETED' | 'FAILED' | 'ABORTED' | 'EXPIRED';
     multipart: true;
     partSizeBytes: number;
@@ -549,7 +564,7 @@ export class StorageService {
     }
     async createFolder(
         userId: string,
-        input: { parentId: string | null; name: string; operationId: string; },
+        input: { parentId: string | null; name: string; operationId: string; sourceName?: string; },
         backupWrite?: BackupWrite,
     ) {
         const result = await this.operation(
@@ -571,8 +586,11 @@ export class StorageService {
                     `Folders can be nested up to ${MAX_DEPTH} levels.`,
                     400,
                 );
-                assertNameFor(await this.account(tx, owner), input.name);
+                const account = await this.account(tx, owner);
+                assertNameFor(account, input.name);
+                assertSourceName(input, backupWrite, encryptsNew(account));
                 const item = this.newItem(owner, input.parentId, input.name, 'FOLDER');
+                if (input.sourceName) item.sourceName = input.sourceName.normalize('NFC');
                 await this.reserveName(tx, item);
                 await this.record(tx, item.ownerUserId, 'FOLDER_CREATED', item.id, item);
                 return { item };
@@ -760,6 +778,8 @@ export class StorageService {
                     assertNameFor(await this.account(tx, ownerId), input.name);
                     item.name = input.name.normalize('NFC');
                     item.normalizedName = normalizeName(input.name);
+                    // A name the person chose is the name, on the computer too.
+                    delete item.sourceName;
                     type = 'ITEM_RENAMED';
                 }
                 if (input.parentId !== undefined) {
@@ -1058,6 +1078,7 @@ export class StorageService {
                     );
                     if (!prior) assertNameFor(account, input.name);
                 }
+                assertSourceName(input, backupWrite, encryptsNew(account));
                 this.assertRoom(
                     account,
                     userId,
@@ -1082,6 +1103,10 @@ export class StorageService {
                     contentHash: input.contentHash ?? null,
                     ...(input.encrypted ? { encrypted: true } : {}),
                     modifiedAt: input.modifiedAt ?? null,
+                    // Only a new file takes it; a new version keeps its file's names.
+                    ...(input.sourceName && !prior
+                        ? { sourceName: input.sourceName.normalize('NFC') }
+                        : {}),
                     state: 'CREATED',
                     multipart: true,
                     partSizeBytes: Math.max(
@@ -1342,7 +1367,10 @@ export class StorageService {
                     { serverItem: old },
                 );
                 item = { ...old, revision: old.revision + 1, updatedAt: now() };
-            } else item = this.newItem(owner, u.targetParentId, u.targetName, 'FILE', u.itemId);
+            } else {
+                item = this.newItem(owner, u.targetParentId, u.targetName, 'FILE', u.itemId);
+                if (u.sourceName) item.sourceName = u.sourceName;
+            }
             item.sizeBytes = u.expectedSizeBytes;
             item.mimeType = u.mimeType;
             item.currentVersionId = u.versionId;

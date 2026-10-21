@@ -160,9 +160,13 @@ export class Backups {
     assert(version, 'ITEM_NOT_FOUND', 'File version was not found.', 404);
     return { version, relativePath };
   }
-  /** Where an item is inside a backup folder, as stored: `a/b/name`. */
+  /**
+   * Where an item is inside a backup folder, by its names on the computer: `a/b/name`. An item
+   * stored under another name (see `sourceName`) keeps its own here, so backups and restores
+   * use the names the computer has.
+   */
   private async pathOf(tx: Transaction, userId: string, root: BackupRoot, item: DriveItem) {
-    const segments = [item.name];
+    const segments = [item.sourceName ?? item.name];
     const seen = new Set<string>();
     while (item.parentId !== root.remoteRootDriveItemId) {
       assert(
@@ -173,7 +177,7 @@ export class Backups {
       );
       seen.add(item.parentId);
       item = await this.service.owned(tx, userId, item.parentId);
-      segments.unshift(item.name);
+      segments.unshift(item.sourceName ?? item.name);
     }
     return segments.join('/');
   }

@@ -100,11 +100,23 @@ type UploadPlan = {
   parentId: string | null;
   known: LocalFile | undefined;
   state: UploadState;
-  backup?: { rootId: string; runId: string };
+  backup?: { rootId: string; runId: string; sourceName?: string };
+  /** The name it is stored under, when its own name was taken (see caseAlias). */
+  cloudName?: string;
   verifyBackupQuiet: () => Promise<void>;
 };
 // Files of a backup batch sent to storage at once.
 const BATCH_PUT_CONCURRENCY = 8;
+/**
+ * The name a backed up file or folder is stored under when another one here has the same name
+ * in other capitals (IMG_1.MOV beside IMG_1.mov, as a case-sensitive drive can hold): harbor0
+ * keeps names unique regardless of case, as Macs and PCs do.
+ */
+export function caseAlias(name: string, attempt = 1) {
+  const dot = name.lastIndexOf('.');
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  return `${stem} (Case Conflict${attempt > 1 ? ` ${attempt}` : ''})${ext}`;
+}
 // A path harbor0 never accepts (nested too deep) is retried this rarely.
 const REFUSED_PATH_RETRY_MS = 24 * 3600_000;
 // Unreadable subfolders listed as separate problems; the last one counts the rest.
@@ -2346,15 +2358,32 @@ export class SyncEngine {
       void this.reporter.flush();
     }
   }
+  /**
+   * The child with this name. One that has exactly this name, here or as its name on the
+   * computer it was backed up from, comes first; otherwise one whose name differs only in case.
+   */
   private async child(parentId: string | null, name: string) {
+    const exact = name.normalize('NFC');
+    const normalized = exact.toLowerCase();
     let cursor: string | undefined;
+    let other: DriveItem | undefined;
     do {
       const page = await this.api.list(parentId, cursor);
-      const item = page.items.find((i) => i.normalizedName === name.normalize('NFC').toLowerCase());
-      if (item) return item;
+      for (const item of page.items as DriveItem[]) {
+        if ((item.sourceName ?? item.name).normalize('NFC') === exact) return item;
+        if (!other && item.normalizedName === normalized) other = item;
+      }
       cursor = page.nextCursor ?? undefined;
     } while (cursor);
-    return undefined;
+    return other;
+  }
+  /** A free name for a backed up item whose own name is taken here in other capitals. */
+  private async freeAlias(parentId: string | null, name: string) {
+    for (let attempt = 1; attempt < 50; attempt++) {
+      const alias = caseAlias(name, attempt);
+      if (!(await this.child(parentId, alias))) return alias;
+    }
+    throw new Error('Too many files here share this name in different capitals.');
   }
   private async ensureFolder(
     name: string,
@@ -2374,7 +2403,27 @@ export class SyncEngine {
     } catch (e) {
       if (e instanceof ApiError && e.code === 'NAME_CONFLICT') {
         const existing = await this.child(parentId, name);
-        if (existing?.type === 'FOLDER') return existing;
+        const same =
+          !!existing &&
+          (existing.sourceName ?? existing.name).normalize('NFC') === name.normalize('NFC');
+        // In a backup, a folder named the same in other capitals is another folder on the
+        // computer: it gets one of its own here rather than mixing their files.
+        if (existing?.type === 'FOLDER' && (same || !backup)) return existing;
+        if (backup && existing && !same) {
+          const alias = await this.freeAlias(parentId, name);
+          return (
+            await this.api.request(`/v1/backups/${backup.rootId}/runs/${backup.runId}/folders`, {
+              method: 'POST',
+              body: {
+                name: alias,
+                parentId,
+                operationId: crypto.randomUUID(),
+                // An encrypted account's names never go in plain text.
+                ...(transferKeys.upload() ? {} : { sourceName: name }),
+              },
+            })
+          ).item;
+        }
       }
       throw e;
     }
@@ -2611,16 +2660,21 @@ export class SyncEngine {
     }
     if (root.mode === 'sync' && !known && (await this.renamedFrom(root, job.relativePath)))
       return this.abandonUpload(job);
+    // Set when another backed up file here has this one's name in other capitals.
+    let cloudName: string | undefined;
+    let planBackup: UploadPlan['backup'] = backup;
     if (root.mode === 'backup') {
       await safeParents(root.localPath, job.relativePath, false);
       const remote = known
         ? ((await this.api.request(`/v1/drive/items/${known.itemId}`)).item as DriveItem)
         : await this.child(parentId, path.basename(absolute));
-      if (remote?.type === 'FILE') {
-        if (remote.name.normalize('NFC') !== path.basename(absolute).normalize('NFC'))
-          throw new Error(
-            'Another archived file has the same name with different capitalization. Rename the local file to back up both.',
-          );
+      const own = path.basename(absolute).normalize('NFC');
+      if (remote?.type === 'FILE' && (remote.sourceName ?? remote.name).normalize('NFC') !== own) {
+        if (known) throw new Error('This backed up file was renamed in harbor0.');
+        // Stored under a name of its own; it keeps this one for the backup and restores.
+        cloudName = await this.freeAlias(parentId, own);
+        if (backup && !transferKeys.upload()) planBackup = { ...backup, sourceName: own };
+      } else if (remote?.type === 'FILE') {
         let savedHash = known?.revision === remote.revision ? known.hash : null;
         if (!savedHash) {
           const { items } = await this.api.request(`/v1/drive/items/${remote.id}/versions`);
@@ -2680,10 +2734,20 @@ export class SyncEngine {
         throw new Error('This file changed recently. Automatic backup will wait one hour.');
     };
     await verifyBackupQuiet();
-    return { absolute, info, hash, parentId, known, state, backup, verifyBackupQuiet };
+    return {
+      absolute,
+      info,
+      hash,
+      parentId,
+      known,
+      state,
+      backup: planBackup,
+      cloudName,
+      verifyBackupQuiet,
+    };
   }
   private async sendUpload(root: Root, job: LocalJob, plan: UploadPlan) {
-    const { absolute, parentId, known, state, backup, verifyBackupQuiet } = plan;
+    const { absolute, parentId, known, state, backup, verifyBackupQuiet, cloudName } = plan;
     const info = plan.info;
     let item: DriveItem;
     this.state.active = {
@@ -2698,7 +2762,7 @@ export class SyncEngine {
       item = await uploadFile(
         this.api,
         absolute,
-        path.basename(absolute),
+        cloudName ?? path.basename(absolute),
         parentId,
         state,
         () => this.journal.saveJob(job),

@@ -85,6 +85,8 @@ const anyObject = z.record(z.string(), z.unknown());
 const folderBody = z
   .object({ operationId: c.operationId, parentId: c.id.nullable().default(null), name: c.filename })
   .strict();
+/** A backup's folder may keep its name on the computer, when its name here had to differ. */
+const backupFolderBody = folderBody.extend({ sourceName: c.filename.optional() }).strict();
 const deleteAccountPath = '/v1/users/me/delete';
 const sessionChallengePath = '/v1/auth/session/challenge';
 /** Keeps signed URLs and local paths out of the logs if an app's error message carries one. */
@@ -2374,7 +2376,7 @@ export function createApp(
     'post',
     '/v1/backups/:id/runs/:runId/folders',
     'Create folder in a backup run',
-    folderBody,
+    backupFolderBody,
     z.object({ item: c.itemSchema }),
     async (ctx, i) =>
       service.createFolder(userId(ctx), i, {
