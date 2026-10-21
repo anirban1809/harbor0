@@ -1,3 +1,4 @@
+import { GAVE_UP_ATTEMPTS } from './retry-policy';
 import { DatabaseSync } from 'node:sqlite';
 import type { Volume } from './volumes';
 export type Root = {
@@ -183,8 +184,13 @@ export class Journal {
       .get(rootId, itemId) as { data: string } | undefined;
     return row ? JSON.parse(row.data) : undefined;
   }
+  /** Work waiting, leaving out files harbor0 stopped retrying (see retry-policy). */
   jobCount(): number {
-    return (this.db.prepare('SELECT COUNT(*) AS count FROM jobs').get() as { count: number }).count;
+    return (
+      this.db
+        .prepare('SELECT COUNT(*) AS count FROM jobs WHERE attempts < ?')
+        .get(GAVE_UP_ATTEMPTS) as { count: number }
+    ).count;
   }
   /**
    * Queued uploads seen from one folder (`prefix` is '' or ends in '/'): the jobs directly in it,
@@ -216,15 +222,19 @@ export class Journal {
   }
   pendingCount(rootId: string): number {
     return (
-      this.db.prepare('SELECT COUNT(*) AS count FROM jobs WHERE root_id=?').get(rootId) as {
+      this.db
+        .prepare('SELECT COUNT(*) AS count FROM jobs WHERE root_id=? AND attempts < ?')
+        .get(rootId, GAVE_UP_ATTEMPTS) as {
         count: number;
       }
     ).count;
   }
   jobCounts(): Map<string, number> {
     const rows = this.db
-      .prepare('SELECT root_id AS rootId, COUNT(*) AS count FROM jobs GROUP BY root_id')
-      .all() as { rootId: string; count: number }[];
+      .prepare(
+        'SELECT root_id AS rootId, COUNT(*) AS count FROM jobs WHERE attempts < ? GROUP BY root_id',
+      )
+      .all(GAVE_UP_ATTEMPTS) as { rootId: string; count: number }[];
     return new Map(rows.map((row) => [row.rootId, row.count]));
   }
   files(rootId: string): LocalFile[] {

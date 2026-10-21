@@ -6,6 +6,19 @@ import { ApiClient, ApiError } from '@harbor/api-client';
 import type { BackupEntry, BackupRestore } from '../../../packages/contracts/src/backups';
 import { Journal, type Root, type LocalJob } from './journal';
 import { folderUnreadable, type RestoreProgress, type RestoreSummary } from './sync-state';
+import {
+  GIVE_UP_AFTER,
+  gaveUp,
+  gaveUpMessage,
+  giveUp,
+  retryDelay,
+  revive,
+  unchangedSinceGivingUp,
+} from './retry-policy';
+
+/** A backed up file that failed waits this long, doubling with each failure up to the next. */
+const BACKUP_RETRY_FIRST_MS = 60_000;
+const BACKUP_RETRY_MAX_MS = 6 * 3600_000;
 
 /** How long the backup folder may take to answer whether it can still be read. */
 export const FOLDER_CHECK_MS = 15_000;
@@ -286,6 +299,12 @@ export class FolderBackups {
         this.journal.drop(job.id);
         continue;
       }
+      // A file harbor0 stopped retrying waits until it changes, or the person backs up now.
+      if (gaveUp(job)) {
+        if (!manual && unchangedSinceGivingUp(job, info)) continue;
+        revive(job);
+        this.journal.saveJob(job);
+      }
       if (job.kind === 'delete') {
         this.journal.finish(job.id);
         this.journal.enqueue(root.id, job.relativePath, 'upsert');
@@ -498,11 +517,18 @@ export class FolderBackups {
       // operation ID even when no upload was recorded: one may have been made unseen.
       if (job.payload.upload) job.payload.upload = { operationId: crypto.randomUUID() };
       job.attempts++;
-      // A path harbor0 never accepts waits a day; retrying each minute cannot help.
-      job.payload.retryAfter =
-        Date.now() +
-        (error instanceof ApiError && error.code === 'PATH_TOO_DEEP' ? 24 * 3600_000 : 60000);
       job.error = (error as Error).message;
+      // Each failure waits twice as long; a path harbor0 never accepts waits a day. After a few
+      // tries it waits for the file to change or for Back up now, as retrying can't help.
+      if (job.attempts >= GIVE_UP_AFTER.backup) {
+        giveUp(job, await lstat(contained(root.localPath, job.relativePath)).catch(() => null));
+        job.error = gaveUpMessage(job.error, 'backup');
+      } else
+        job.payload.retryAfter =
+          Date.now() +
+          (error instanceof ApiError && error.code === 'PATH_TOO_DEEP'
+            ? 24 * 3600_000
+            : retryDelay(job.attempts, BACKUP_RETRY_FIRST_MS, BACKUP_RETRY_MAX_MS));
       this.journal.saveJob(job);
       if (error instanceof ApiError && error.code === 'STORAGE_QUOTA_EXCEEDED') {
         // From here on only files that fit in what is left are tried.

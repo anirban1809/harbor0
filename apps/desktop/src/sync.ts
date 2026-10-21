@@ -9,6 +9,14 @@ import {
 } from './backups';
 import { SyncReceipts } from './sync-receipts';
 import { ActivityReporter, type ActivitySubject } from './activity';
+import {
+  GIVE_UP_AFTER,
+  gaveUp,
+  gaveUpMessage,
+  giveUp,
+  revive,
+  unchangedSinceGivingUp,
+} from './retry-policy';
 import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
@@ -620,8 +628,8 @@ export class SyncEngine {
       this.scannedAt.clear();
       this.hurry();
       for (const job of this.journal.jobs())
-        if (job.payload.retryAt) {
-          delete job.payload.retryAt;
+        if (job.payload.retryAt || job.payload.retryAfter || gaveUp(job)) {
+          revive(job);
           this.journal.saveJob(job);
         }
     }
@@ -2087,13 +2095,25 @@ export class SyncEngine {
             this.state.active = null;
             return;
           }
-          // One failing file waits for its own retry; the rest of the queue keeps moving.
-          job.payload.retryAt = Date.now() + retryDelay(job.attempts);
+          // One failing file waits for its own retry, longer each time; the rest of the queue keeps
+          // moving. After a few tries it waits for the file to change, or for Resume.
+          let shown = e;
+          if (job.attempts >= GIVE_UP_AFTER.sync) {
+            giveUp(
+              job,
+              await lstat(contained(root.localPath, job.relativePath)).catch(() => null),
+            );
+            // Shown as the same kind of problem, saying it waits now.
+            shown = Object.assign(new Error(gaveUpMessage((e as Error).message, 'sync')), {
+              code: (e as { code?: string }).code,
+            });
+            job.error = (shown as Error).message;
+          } else job.payload.retryAt = Date.now() + retryDelay(job.attempts);
           this.journal.saveJob(job);
           // Every further upload that does not fit would fail the same way until storage is freed.
           if (e instanceof ApiError && syncIssueCode(e) === 'STORAGE_QUOTA_EXCEEDED')
             full.set(root.id, storageNeed(e, !!root.shareId)?.availableBytes ?? 0);
-          this.issue(root.id, e, job.relativePath, job.id);
+          this.issue(root.id, shown, job.relativePath, job.id);
           this.state.active = null;
         }
       };
@@ -2150,6 +2170,13 @@ export class SyncEngine {
                 Infinity))
         )
           continue;
+        // A file harbor0 stopped retrying waits until it changes (or Resume brings it back).
+        if (gaveUp(job)) {
+          const info = await lstat(contained(root.localPath, job.relativePath)).catch(() => null);
+          if (unchangedSinceGivingUp(job, info)) continue;
+          revive(job);
+          this.journal.saveJob(job);
+        }
         if (this.syncBatches && this.batchable(root, job)) {
           if (group && group.root.id !== root.id) await flush();
           (group ??= { root, jobs: [] }).jobs.push(job);

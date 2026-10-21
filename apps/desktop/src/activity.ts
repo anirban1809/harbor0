@@ -8,6 +8,7 @@ import {
   type ActivityStatus,
 } from '@harbor/contracts';
 import type { Journal } from './journal';
+import { retryDelay } from './retry-policy';
 
 /** What one subject is doing now: the engine, a sync folder or a backup folder. */
 export type ActivitySubject = {
@@ -29,6 +30,11 @@ export const ACTIVITY_QUEUE_MAX = 500;
 export const SYNC_IDLE_MS = 30_000;
 /** How soon after a change its events are sent. */
 const SEND_DELAY_MS = 3_000;
+/** After a failed send the next waits this long, doubling each time up to the next. */
+const RETRY_FIRST_MS = 5_000;
+const RETRY_MAX_MS = 10 * 60_000;
+/** A batch the server keeps refusing is dropped after this many failed sends in a row. */
+export const ACTIVITY_SEND_ATTEMPTS = 10;
 const QUEUE = 'activity-queue';
 const REPORTED = 'activity-reported';
 
@@ -61,6 +67,9 @@ export class ActivityReporter {
   private sending: Promise<void> | undefined;
   /** An older server without the route: stop until the app restarts. */
   private unsupported = false;
+  /** Failed sends in a row, and when the next may go. */
+  private failures = 0;
+  private nextSendAt = 0;
   /** The engine stopped: its journal may be closed, so nothing more is read or written. */
   private stopped = false;
 
@@ -163,6 +172,8 @@ export class ActivityReporter {
   }
 
   private async send() {
+    // Failing sends back off rather than going again on every pass.
+    if (this.now() < this.nextSendAt) return;
     while (this.queue.length && !this.unsupported && !this.stopped) {
       const batch = this.queue.slice(0, ACTIVITY_BATCH);
       try {
@@ -172,15 +183,26 @@ export class ActivityReporter {
           this.unsupported = true;
           this.queue = [];
           this.save();
+          return;
         }
-        // Refused for its content: dropped rather than sent again forever.
-        else if (error instanceof ApiError && error.status === 400) {
+        // Refused for its content, or failing over and over: dropped rather than sent again
+        // forever, so the rest can go.
+        this.failures++;
+        if (
+          (error instanceof ApiError && error.status === 400) ||
+          this.failures >= ACTIVITY_SEND_ATTEMPTS
+        ) {
           this.queue.splice(0, batch.length);
           this.save();
+          this.failures = 0;
+          this.nextSendAt = 0;
           continue;
         }
+        this.nextSendAt = this.now() + retryDelay(this.failures, RETRY_FIRST_MS, RETRY_MAX_MS);
         return;
       }
+      this.failures = 0;
+      this.nextSendAt = 0;
       this.queue.splice(0, batch.length);
       this.save();
     }

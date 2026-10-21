@@ -383,3 +383,53 @@ describe('activity reports for folders that cannot be read', () => {
     );
   });
 });
+
+describe('files that keep failing to sync', () => {
+  it('stops retrying after a few tries, and tries again once the file changes', async () => {
+    const { directory, journal } = await setup();
+    const { GIVE_UP_AFTER, GAVE_UP_ATTEMPTS } = await import('../src/retry-policy');
+    journal.root({
+      id: 'docs',
+      localPath: directory,
+      remoteId: 'cloud-docs',
+      mode: 'sync',
+      paused: false,
+      excluded: [],
+    });
+    await writeFile(path.join(directory, 'report.txt'), 'first');
+    let uploads = 0;
+    const api = new ApiClient(async (endpoint) => {
+      if (endpoint.includes('/uploads')) {
+        uploads++;
+        throw new ApiError('UPLOAD_REFUSED', 'This file is refused.', 409);
+      }
+      return endpoint.includes('/changes') ? feed : { items: [], nextCursor: null };
+    });
+    const engine = engineFor(api, journal);
+    await engine.tick();
+    const job = () => journal.jobs().find((j) => j.relativePath === 'report.txt')!;
+    expect(job()).toBeDefined();
+    // Its last try before harbor0 gives up.
+    const almost = job();
+    almost.attempts = GIVE_UP_AFTER.sync - 1;
+    delete almost.payload.retryAt;
+    journal.saveJob(almost);
+    await engine.tick();
+    expect(job().attempts).toBe(GAVE_UP_ATTEMPTS);
+    expect(engine.state.issues.find((i) => i.jobId === job().id)?.message).toContain(
+      'stopped retrying',
+    );
+    expect(journal.jobCounts().get('docs')).toBeUndefined();
+
+    const tried = uploads;
+    await engine.tick();
+    await engine.tick();
+    expect(uploads).toBe(tried);
+
+    // Edited: it goes again.
+    await writeFile(path.join(directory, 'report.txt'), 'second, longer');
+    await engine.tick();
+    expect(uploads).toBeGreaterThan(tried);
+    expect(job().attempts).toBe(1);
+  });
+});
