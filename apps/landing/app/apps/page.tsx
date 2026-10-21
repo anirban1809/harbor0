@@ -10,16 +10,16 @@ type Download = { version: string; size: string; url: string; sha256: string };
 
 // The published installers; `npm run release:desktop` updates them with each GitHub release.
 const mac: Download | null = {
-  version: '0.1.11',
+  version: '0.1.12',
   size: '132 MB',
-  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.11/harbor0-0.1.11-mac-arm64.dmg',
-  sha256: 'b2e6c4b19680ae7324be4356b8f5f0a23ceed2406be1ee8f4831546a82595bec',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.12/harbor0-0.1.12-mac-arm64.dmg',
+  sha256: '3c070302babd22f66c27672b44a8a25cf6986046e1d226e1f6c50276f164cb39',
 };
 const windows: Download | null = {
-  version: '0.1.11',
+  version: '0.1.12',
   size: '115 MB',
-  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.11/harbor0-0.1.11-win-x64.exe',
-  sha256: '9c45d473c9756dd5b2ef21715ebc486c0ed250492a08f1c2bf65a2ce0539a9de',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.12/harbor0-0.1.12-win-x64.exe',
+  sha256: '81ccee34e164fcd40f6d2db35c21cad8329ac1b74f897e46f4219d10072b0aeb',
 };
 
 const computers = windows ? 'on Mac and Windows' : 'on your Mac';
