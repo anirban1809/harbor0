@@ -720,13 +720,18 @@ function App() {
                   restart harbor0.
                 </Alert>
               )}
+              {status.configured && status.keychainProblem && (
+                <Alert tone="error" role="none">
+                  {status.keychainProblem}
+                </Alert>
+              )}
               {status.signedOutReason && !error && <Alert>{status.signedOutReason}</Alert>}
               {error && <Alert tone="error">{error}</Alert>}
               <form
                 className="form"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (busy || !status.configured) return;
+                  if (busy || !status.configured || status.keychainProblem) return;
                   const form = e.currentTarget;
                   const data = new FormData(form);
                   const credentials = {
@@ -774,7 +779,12 @@ function App() {
                     <ExternalLink aria-hidden="true" />
                   </Button>
                 )}
-                <Button type="submit" size="lg" block disabled={busy || !status.configured}>
+                <Button
+                  type="submit"
+                  size="lg"
+                  block
+                  disabled={busy || !status.configured || !!status.keychainProblem}
+                >
                   {busy
                     ? 'Signing in…'
                     : status.development

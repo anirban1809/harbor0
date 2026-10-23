@@ -5,6 +5,8 @@
 //   npm run release:desktop -- --dry-run    build and update the files, but commit and publish nothing
 //   npm run release:desktop -- --test       a test build of the next patch version, such as 0.1.9-test
 //                                           (then 0.1.9-test.2, …); takes minor, major or x.y.z too
+//   npm run release:desktop -- --test --linux  a test build that also has Linux packages (AppImage,
+//                                           deb and rpm for x64, built in Docker); test builds only
 //
 // The installers are built from a clean worktree of HEAD, so uncommitted work in this checkout never
 // ships. Both come from this Mac: an Apple silicon DMG and an x64 NSIS installer (which also runs on
@@ -28,6 +30,7 @@ const root = process.cwd();
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const testBuild = args.includes('--test');
+const linux = args.includes('--linux');
 const bump = args.find((arg) => !arg.startsWith('--')) ?? 'patch';
 
 const git = (...command: string[]) =>
@@ -54,6 +57,8 @@ const landingPage = 'apps/landing/app/apps/page.tsx';
 const released = [desktopPackage, lockfile, landingPage];
 
 // --- Checks -----------------------------------------------------------------------------------
+// The landing site has no Linux downloads yet, so Linux ships only in test builds.
+if (linux && !testBuild) throw new Error('Linux packages are built only for test builds (--test).');
 if (!testBuild) {
   if (git('rev-parse', '--abbrev-ref', 'HEAD') !== 'main') throw new Error('Release from main.');
   const dirty = git('status', '--porcelain', '--', ...released);
@@ -128,6 +133,32 @@ const targets = [
     name: `harbor0-${version}-win-x64.exe`,
     build: ['--win', 'nsis', '--x64'],
   },
+  // One Linux build makes all three packages.
+  ...(linux
+    ? [
+        {
+          key: 'linux-appimage',
+          platform: 'Linux (AppImage)',
+          architecture: 'x64',
+          name: `harbor0-${version}-linux-x86_64.AppImage`,
+          build: ['--linux', 'AppImage', 'deb', 'rpm', '--x64'],
+        },
+        {
+          key: 'linux-deb',
+          platform: 'Linux (deb)',
+          architecture: 'x64',
+          name: `harbor0-${version}-linux-amd64.deb`,
+          build: null,
+        },
+        {
+          key: 'linux-rpm',
+          platform: 'Linux (rpm)',
+          architecture: 'x64',
+          name: `harbor0-${version}-linux-x86_64.rpm`,
+          build: null,
+        },
+      ]
+    : []),
 ];
 const worktree = await mkdtemp(path.join(os.tmpdir(), 'harbor0-release-'));
 try {
@@ -144,7 +175,8 @@ try {
   await setVersion(worktree);
   await mkdir(path.join(root, 'apps/desktop/release'), { recursive: true });
   for (const target of targets) {
-    await run('npx', ['tsx', 'scripts/package-desktop-release.ts', ...target.build], worktree);
+    if (target.build)
+      await run('npx', ['tsx', 'scripts/package-desktop-release.ts', ...target.build], worktree);
     // A bundle whose signature doesn't seal its resources is reported as "damaged" once downloaded.
     if (target.key === 'mac')
       execFileSync(
@@ -209,6 +241,12 @@ if (testBuild) {
       `Test build of harbor0 desktop ${version}, for trying new features before they ship. Not for general use.`,
       '',
       'Test builds update themselves to newer test builds and to the next release. Released apps never update to a test build.',
+      ...(linux
+        ? [
+            '',
+            'Linux packages are x64 and don’t update themselves: install newer builds from their release page. On GNOME without the AppIndicator extension there is no tray icon, so closing the window asks whether to keep syncing.',
+          ]
+        : []),
       '',
       ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
     ].join('\n'),

@@ -10,5 +10,7 @@
     "package": "npm run build && electron-builder"
   },
   "productName": "harbor0",
+  "homepage": "https://harbor0.com",
+  "desktopName": "harbor0.desktop",
   "description": "harbor0 — private storage, backup, sync, and sending"
 }
