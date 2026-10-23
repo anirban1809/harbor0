@@ -3,6 +3,7 @@ import { ApiClient, ApiError, createTransport } from '@harbor/api-client';
 import { e2eeTransport, type E2eeVaultView } from '../../../packages/api-client/src/e2ee-transport';
 import { DriveDav } from './drive-dav';
 import { apiDrive, davEntry } from './drive-dav-api';
+import { apiCatalog, placesDrive } from './drive-dav-places';
 import { retrying } from './retry';
 import { transferKeys } from './transfers';
 import type { DavHostMessage, DavWorkerConfig, DavWorkerMessage } from './dav-host';
@@ -54,7 +55,7 @@ async function start(config: DavWorkerConfig) {
   );
   dav = new DriveDav({
     ...config,
-    drive: apiDrive(api),
+    drive: placesDrive(apiDrive(api), apiCatalog(api)),
     onError: (error) => send({ type: 'error', message: describe(error) }),
     onUploads: (uploads) => send({ type: 'uploads', uploads }),
   });

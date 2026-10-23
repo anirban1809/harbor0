@@ -7,6 +7,7 @@ import { keychainReady, readSavedSession, sessionFile, writeSealed } from './cre
 import { DesktopSession, requestRenewal } from './session';
 import { DriveDav } from './drive-dav';
 import { apiDrive } from './drive-dav-api';
+import { apiCatalog, placesDrive } from './drive-dav-places';
 import {
   MissingWebdavKey,
   WEBDAV_ENCRYPTED,
@@ -70,7 +71,7 @@ export async function runWebdavCli(args: string[]) {
   const { password } = await webdavSecrets(key.userId);
   const api = new ApiClient(createTransport(key.apiUrl, async () => key.token));
   const server = new DriveDav({
-    drive: apiDrive(api),
+    drive: placesDrive(apiDrive(api), apiCatalog(api)),
     username: WEBDAV_USERNAME,
     password,
     port: command.port,
