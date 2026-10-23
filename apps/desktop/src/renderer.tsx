@@ -103,6 +103,7 @@ import { Badge } from '../../web/components/ui/badge';
 import { Card } from '../../web/components/ui/card';
 import { WebdavPanel } from './webdav-panel';
 import { Checkbox } from '../../web/components/ui/checkbox';
+import { TrayOnlySetting } from './tray-only-setting';
 import { Field } from '../../web/components/ui/field';
 import { RecipientPicker, type RecipientKind } from '../../web/components/recipient-picker';
 import { ActionsMenu, MenuItem, MenuSeparator } from '../../web/components/ui/menu';
@@ -1914,6 +1915,7 @@ function App() {
                 {status.notificationError && (
                   <Alert tone="error">Notifications failed: {status.notificationError}</Alert>
                 )}
+                <TrayOnlySetting />
                 <div className="settings-actions">
                   <Button
                     variant="outline"

@@ -402,3 +402,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Desktop settings: "Show in menu bar only" above the buttons. */
+.settings-layout .card > .choice {
+  margin-bottom: 16px;
+}

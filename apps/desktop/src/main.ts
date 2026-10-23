@@ -28,6 +28,7 @@ import { Journal, type Root } from './journal';
 import { AccountProfiles } from './account-profiles';
 import { DeviceKey } from './device-key';
 import { SyncEngine } from './sync';
+import { applyTrayOnly, readTrayOnly, trayOnlySupported, writeTrayOnly } from './tray-only';
 import { syncView } from './sync-view';
 import { FolderDiskUsageCache } from './folder-disk-usage';
 const folderDiskUsage = new FolderDiskUsageCache();
@@ -91,6 +92,16 @@ setGlobalDispatcher(new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 6
 const { development, apiUrl, webUrl, configured, configurationError } = prepareAppEnvironment();
 let window: BrowserWindow;
 let tray: Tray;
+/** Out of the Dock (macOS) or taskbar (Windows); the window opens from the tray icon. */
+let trayOnly = false;
+const trayOnlyFile = () => path.join(app.getPath('userData'), 'window.json');
+/** Brings the window forward; on macOS also the app, which a Dock-less app isn't until asked. */
+function showWindow() {
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  if (process.platform === 'darwin') app.focus({ steal: true });
+}
 let journal: Journal;
 let profiles: AccountProfiles;
 let accountReady = false;
@@ -670,7 +681,7 @@ function ipc(name: string, schema: z.ZodType, handler: (input: any) => Promise<u
 function notify(title: string, body: string) {
   if (Notification.isSupported()) {
     const notification = new Notification({ title, body });
-    notification.on('click', () => window.show());
+    notification.on('click', () => showWindow());
     void presentNotification(notification);
   }
 }
@@ -725,9 +736,7 @@ async function notifyIncoming(content: IncomingContent, monitor: IncomingMonitor
   });
   notification.on('click', () => {
     if (!accountReady || authTransition || incomingMonitor !== monitor) return;
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
+    showWindow();
     window.webContents.send('harbor:incoming', content);
   });
   return presentNotification(notification);
@@ -738,6 +747,9 @@ app
     await mkdir(app.getPath('userData'), { recursive: true, mode: 0o700 });
     profiles = new AccountProfiles(app.getPath('userData'), apiUrl);
     journal = new Journal(':memory:');
+    // Before the window opens, so the Dock icon or taskbar button doesn't appear first.
+    trayOnly = trayOnlySupported(process.platform) && (await readTrayOnly(trayOnlyFile()));
+    if (trayOnly) await applyTrayOnly({ platform: process.platform, dock: app.dock }, true);
     window = new BrowserWindow({
       width: 1140,
       height: 780,
@@ -747,6 +759,7 @@ app
       icon: path.join(__dirname, 'icon.png'),
       backgroundColor: '#f4f5f7',
       autoHideMenuBar: true,
+      skipTaskbar: trayOnly && process.platform === 'win32',
       ...(process.platform === 'darwin' && {
         titleBarStyle: 'hiddenInset' as const,
         trafficLightPosition: { x: 18, y: 18 },
@@ -781,11 +794,11 @@ app
     tray.setToolTip('harbor0');
     tray.setContextMenu(
       Menu.buildFromTemplate([
-        { label: 'Open harbor0', click: () => window.show() },
+        { label: 'Open harbor0', click: () => showWindow() },
         {
           label: 'Send a file',
           click: () => {
-            window.show();
+            showWindow();
             window.webContents.send('harbor:send');
           },
         },
@@ -800,7 +813,7 @@ app
         },
       ]),
     );
-    tray.on('click', () => window.show());
+    tray.on('click', () => showWindow());
     // Clicks on toasts from an earlier run, or after the Notification was collected, arrive here.
     // Windows starts the app hidden for a click while it is closed and waits for its activator,
     // which Electron registers only once its notification presenter exists; isSupported()
@@ -1599,6 +1612,21 @@ app
         if (engine && accountReady) sendEngineStatus(journal, engine.state);
       },
     );
+    ipc('trayOnly', z.undefined(), async () => ({
+      supported: trayOnlySupported(process.platform),
+      enabled: trayOnly,
+    }));
+    ipc('setTrayOnly', z.object({ enabled: z.boolean() }).strict(), async ({ enabled }) => {
+      if (!trayOnlySupported(process.platform)) throw new Error('Not available on this system.');
+      await writeTrayOnly(trayOnlyFile(), enabled);
+      trayOnly = enabled;
+      await applyTrayOnly({ platform: process.platform, dock: app.dock, window }, enabled);
+      // A Dock icon shown again starts with the default one, and changing either way can leave
+      // the window behind other apps.
+      if (!enabled) app.dock?.setIcon(nativeImage.createFromPath(path.join(__dirname, 'icon.png')));
+      showWindow();
+      return { supported: true, enabled };
+    });
     ipc('copyText', z.object({ text: z.string().max(10_000) }).strict(), async ({ text }) => {
       clipboard.writeText(text);
     });

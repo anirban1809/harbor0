@@ -122,6 +122,11 @@ declare global {
       /** Connects the server as a drive in Finder or File Explorer and opens it. */
       openWebdavDrive: () => Promise<WebdavState>;
       disconnectWebdavDrive: () => Promise<WebdavState>;
+      /** Out of the Dock (macOS) or taskbar (Windows), opened from the tray icon instead. */
+      trayOnly: () => Promise<{ supported: boolean; enabled: boolean }>;
+      setTrayOnly: (input: {
+        enabled: boolean;
+      }) => Promise<{ supported: boolean; enabled: boolean }>;
       copyText: (input: { text: string }) => Promise<void>;
       /** The folder the window shows, so the sync status lists only its pending items. */
       viewFolder: (input: { id: string | null }) => Promise<void>;

@@ -43,6 +43,8 @@ const channels = [
   'setWebdav',
   'openWebdavDrive',
   'disconnectWebdavDrive',
+  'trayOnly',
+  'setTrayOnly',
   'copyText',
   'viewFolder',
 ] as const;
