@@ -24,7 +24,13 @@ if (!desktopConfiguration(settings, true).configured)
   throw new Error('Deploy the backend before packaging a release.');
 async function run(command: string, args: string[], cwd?: string) {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: 'inherit', env: process.env });
+    // npm and npx are .cmd scripts on Windows, which Node runs only through a shell.
+    const child = spawn(command, args, {
+      cwd,
+      stdio: 'inherit',
+      env: process.env,
+      shell: process.platform === 'win32',
+    });
     child.on('error', reject);
     child.on('exit', (code) =>
       code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)),
