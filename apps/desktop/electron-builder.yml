@@ -72,9 +72,9 @@ nsis:
 # The Store signs it on submission. The identity values come from Partner Center → Product
 # identity and must match it exactly.
 appx:
-  identityName: TODO-Partner-Center-Package-Identity-Name
-  publisher: CN=TODO-Partner-Center-Package-Identity-Publisher
-  publisherDisplayName: TODO Partner Center PublisherDisplayName
+  identityName: harbor0.harbor0
+  publisher: CN=23C8851E-0613-4335-A3C1-131C80C8678E
+  publisherDisplayName: harbor0
   displayName: harbor0
   applicationId: harbor0
   backgroundColor: transparent
