@@ -109,7 +109,8 @@ const table = new dynamodb.Table(stack, 'Metadata', {
   partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
   sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
   billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-  encryption: dynamodb.TableEncryption.AWS_MANAGED,
+  // AWS-owned key: the aws/dynamodb key bills a KMS request for every Decrypt DynamoDB makes.
+  encryption: dynamodb.TableEncryption.DEFAULT,
   pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: harborEnv.production },
   timeToLiveAttribute: 'expiresAt',
   // Keys only: live updates need to know which rows changed, never their contents.
