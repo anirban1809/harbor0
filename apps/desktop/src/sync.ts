@@ -17,7 +17,7 @@ import {
   revive,
   unchangedSinceGivingUp,
 } from './retry-policy';
-import { mkdir, lstat, rename, rm, access, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, access, readdir, readFile } from 'node:fs/promises';
 import { constants, type Stats } from 'node:fs';
 import {
   FOLDER_UNAVAILABLE_CODES,
