@@ -167,6 +167,7 @@ useSesForCognito(pool);
 ) as unknown as string[];
 const registration = new lambda.Function(stack, 'Registration', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.preSignup',
   code: lambda.Code.fromAsset('dist/backend'),
   timeout: Duration.seconds(10),
@@ -177,6 +178,7 @@ pool.addTrigger(cognito.UserPoolOperation.PRE_SIGN_UP, registration);
 // Queues the password-changed email after a reset, however the reset was made.
 const passwordNotices = new lambda.Function(stack, 'PasswordNotices', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.postConfirmation',
   code: lambda.Code.fromAsset('dist/backend'),
   timeout: Duration.seconds(10),
@@ -191,6 +193,7 @@ const brandEmails = (userPool: cognito.UserPool, id: string, signInUrl: string) 
     cognito.UserPoolOperation.CUSTOM_MESSAGE,
     new lambda.Function(stack, id, {
       runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
       handler: 'index.customMessage',
       code: lambda.Code.fromAsset('dist/backend'),
       timeout: Duration.seconds(5),
@@ -271,6 +274,7 @@ const logGroup = new logs.LogGroup(stack, 'ApiLogs', {
 });
 const apiFunction = new lambda.Function(stack, 'Api', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.handler',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 512,
@@ -289,6 +293,7 @@ apiFunction.addToRolePolicy(
 // visits can't take the Lambda capacity the apps need, and is throttled on its own route below.
 const publicLinksFunction = new lambda.Function(stack, 'PublicLinksApi', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.handler',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 512,
@@ -299,6 +304,7 @@ const publicLinksFunction = new lambda.Function(stack, 'PublicLinksApi', {
 });
 const jobsFunction = new lambda.Function(stack, 'Maintenance', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.jobs',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 512,
@@ -325,6 +331,7 @@ jobsFunction.addToRolePolicy(
 // Hard bounces and complaints are recorded so optional email (campaigns) skips those addresses.
 const mailEventsFunction = new lambda.Function(stack, 'MailEventHandler', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.mailEvent',
   code: lambda.Code.fromAsset('dist/backend'),
   timeout: Duration.seconds(10),
@@ -365,6 +372,7 @@ jobsFunction.addToRolePolicy(
 // Live updates: clients hold a WebSocket; the table stream says which users to wake.
 const realtimeSocket = new lambda.Function(stack, 'RealtimeSocket', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.realtimeSocket',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 256,
@@ -391,6 +399,7 @@ realtimeSocket.addEnvironment('REALTIME_URL', socketStage.url);
 apiFunction.addEnvironment('REALTIME_URL', socketStage.url);
 const realtimeStream = new lambda.Function(stack, 'RealtimeStream', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.realtimeStream',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 256,
@@ -486,6 +495,7 @@ const adminLogs = new logs.LogGroup(stack, 'AdminLogs', {
 });
 const adminFunction = new lambda.Function(stack, 'Admin', {
   runtime: lambda.Runtime.NODEJS_22_X,
+  architecture: lambda.Architecture.ARM_64,
   handler: 'index.admin',
   code: lambda.Code.fromAsset('dist/backend'),
   memorySize: 512,
