@@ -487,6 +487,43 @@ html {
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
+.get-more {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.linux-downloads {
+  display: grid;
+  margin-top: clamp(24px, 4vw, 48px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+.linux-downloads > div {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 6fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 16px 20px;
+}
+.linux-downloads > div + div {
+  border-top: 1px solid var(--line);
+}
+.linux-downloads h3 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.linux-downloads p {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+.linux-downloads code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
 .details.spaced {
   margin-top: clamp(24px, 4vw, 48px);
 }
@@ -650,6 +687,7 @@ html {
   .steps,
   .learn-split,
   .get,
+  .linux-downloads > div,
   .others,
   .details,
   .beta-grid {

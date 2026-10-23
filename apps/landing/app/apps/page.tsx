@@ -22,7 +22,32 @@ const windows: Download | null = {
   sha256: '81ccee34e164fcd40f6d2db35c21cad8329ac1b74f897e46f4219d10072b0aeb',
 };
 
-const computers = windows ? 'on Mac and Windows' : 'on your Mac';
+// x64 is the same build that Debian calls amd64 and Fedora calls x86_64.
+const linuxDeb: Download | null = null;
+const linuxRpm: Download | null = null;
+const linuxAppImage: Download | null = null;
+const linuxDebArm64: Download | null = null;
+const linuxAppImageArm64: Download | null = null;
+const linux: { package: string; for: string; arch: string; download: Download | null }[] = [
+  { package: 'deb', for: 'Ubuntu, Debian, Mint', arch: 'x64', download: linuxDeb },
+  { package: 'deb', for: 'Ubuntu, Debian, Mint', arch: 'arm64', download: linuxDebArm64 },
+  { package: 'rpm', for: 'Fedora', arch: 'x64', download: linuxRpm },
+  { package: 'AppImage', for: 'Most other distributions', arch: 'x64', download: linuxAppImage },
+  {
+    package: 'AppImage',
+    for: 'Most other distributions',
+    arch: 'arm64',
+    download: linuxAppImageArm64,
+  },
+].filter((row) => row.download);
+// Cast so the page type-checks while the Linux downloads are still null.
+const linuxMain = linuxDeb as Download | null;
+
+const computers = linuxMain
+  ? 'on Mac, Windows and Linux'
+  : windows
+    ? 'on Mac and Windows'
+    : 'on your Mac';
 
 export const metadata: Metadata = {
   title: 'Apps — harbor0',
@@ -75,6 +100,20 @@ const installWindows = [
     'Choose where to install harbor0, or keep the suggested folder. You only do this once: new versions install from Settings in the app.',
   ],
 ];
+const installLinux = [
+  [
+    'Pick a package',
+    'Ubuntu, Debian and Mint use the .deb, Fedora the .rpm. On anything else, the AppImage runs without installing.',
+  ],
+  [
+    'Pick x64 or arm64',
+    'x64 is for ordinary Intel and AMD PCs; it is the same build that Ubuntu calls amd64 and Fedora calls x86_64. arm64 is for ARM computers, including Linux VMs on Apple silicon Macs. Not sure? Run uname -m: x86_64 means x64, aarch64 means arm64.',
+  ],
+  [
+    'Install',
+    'Open a terminal in the download folder and run the command for your package below. The app doesn’t update itself on Linux yet: install a new version the same way.',
+  ],
+];
 const sync = features.find(({ id }) => id === 'sync')!;
 
 export default function AppsPage() {
@@ -97,7 +136,11 @@ export default function AppsPage() {
         <p className="label">01 — Get harbor0</p>
         <div
           className="get"
-          style={{ '--get-columns': 1 + Number(!!mac) + Number(!!windows) } as CSSProperties}
+          style={
+            {
+              '--get-columns': 1 + Number(!!mac) + Number(!!windows) + Number(!!linuxMain),
+            } as CSSProperties
+          }
         >
           <div>
             <h3>Web</h3>
@@ -128,11 +171,25 @@ export default function AppsPage() {
               </a>
             </div>
           )}
+          {linuxMain && (
+            <div>
+              <h3>Linux</h3>
+              <p>Version {linuxMain.version} · x64 and arm64 · deb, rpm and AppImage</p>
+              <a href={linuxMain.url} className="btn" data-variant="primary" data-size="md">
+                <ArrowDownToLine /> Download .deb (x64)
+              </a>
+              <a href="#install-linux" className="get-more">
+                arm64, rpm and AppImage
+              </a>
+            </div>
+          )}
         </div>
         <p className="fine">
-          {windows
-            ? 'The desktop app is for Macs with Apple silicon and for 64-bit Windows 10 and 11, including Windows on Arm. Intel Macs and Linux are not available yet.'
-            : 'The desktop app is for Macs with Apple silicon. Intel Macs, Windows and Linux are not available yet.'}
+          {linuxMain
+            ? 'The desktop app is for Macs with Apple silicon, 64-bit Windows 10 and 11 (including Windows on Arm), and 64-bit Linux on x64 or arm64. Intel Macs are not available yet.'
+            : windows
+              ? 'The desktop app is for Macs with Apple silicon and for 64-bit Windows 10 and 11, including Windows on Arm. Intel Macs and Linux are not available yet.'
+              : 'The desktop app is for Macs with Apple silicon. Intel Macs, Windows and Linux are not available yet.'}
         </p>
       </section>
 
@@ -183,6 +240,64 @@ export default function AppsPage() {
             </p>
           </section>
         ))}
+
+      {linuxMain && (
+        <section className="wrap section" id="install-linux">
+          <p className="label">
+            {String(3 + Number(!!mac) + Number(!!windows)).padStart(2, '0')} — Install on Linux
+          </p>
+          <ol className="steps">
+            {installLinux.map(([title, text], step) => (
+              <li key={title}>
+                <span>{String(step + 1).padStart(2, '0')}</span>
+                <h3>{title}</h3>
+                <p>{text}</p>
+              </li>
+            ))}
+          </ol>
+          <div className="linux-downloads">
+            {linux.map(({ package: kind, for: distros, arch, download }) => {
+              const file = download!.url.split('/').pop()!;
+              return (
+                <div key={file}>
+                  <div>
+                    <h3>
+                      {kind} · {arch}
+                    </h3>
+                    <p>
+                      {distros} · {download!.size}
+                    </p>
+                  </div>
+                  <code>
+                    {kind === 'deb'
+                      ? `sudo apt install ./${file}`
+                      : kind === 'rpm'
+                        ? `sudo dnf install ./${file}`
+                        : `chmod +x ${file} && ./${file}`}
+                  </code>
+                  <a href={download!.url} className="btn" data-variant="outline" data-size="md">
+                    <ArrowDownToLine /> Download
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+          <p className="fine">
+            Made for Ubuntu 22.04 and later, Debian 12 and later, and current Fedora. On GNOME,
+            harbor0’s tray icon needs the AppIndicator extension (Ubuntu has it already); without
+            it, closing the window asks whether to keep syncing in the background. The AppImage
+            needs FUSE 2, which Ubuntu 22.04 and later leave out: install it with sudo apt install
+            libfuse2t64 (libfuse2 on 22.04).
+          </p>
+          <p className="fine">
+            To verify a download, its SHA-256 checksum is listed with it on the{' '}
+            <a href={linuxMain.url.replace(/\/download\/(v[^/]+)\/.*$/, '/tag/$1')}>
+              GitHub release
+            </a>
+            .
+          </p>
+        </section>
+      )}
 
       <section className="wrap section learn-cta">
         <h2>10 GB free from 31 October. Join the waitlist today.</h2>

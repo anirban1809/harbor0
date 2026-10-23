@@ -128,7 +128,7 @@ const questions: [string, string][] = [
   ],
   [
     'Does it work on phones?',
-    'Not yet. Encryption works on the web and in the desktop app for Mac and Windows.',
+    'Not yet. Encryption works on the web and in the desktop app for Mac, Windows and Linux.',
   ],
 ];
 

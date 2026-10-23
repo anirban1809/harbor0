@@ -1,12 +1,15 @@
-// Releases the Mac and Windows desktop apps on GitHub and points the landing site's downloads at them.
+// Releases the Mac, Windows and Linux desktop apps on GitHub and points the landing site's downloads
+// at them.
 //
 //   npm run release:desktop                 next patch version
 //   npm run release:desktop -- minor        or major, or an exact version such as 0.2.0
 //   npm run release:desktop -- --dry-run    build and update the files, but commit and publish nothing
 //   npm run release:desktop -- --test       a test build of the next patch version, such as 0.1.9-test
 //                                           (then 0.1.9-test.2, …); takes minor, major or x.y.z too
-//   npm run release:desktop -- --test --linux  a test build that also has Linux packages (AppImage,
-//                                           deb and rpm for x64, built in Docker); test builds only
+//   npm run release:desktop -- --test --linux  a test build that also has the Linux packages
+//
+// Releases always have Linux packages, built in Docker: AppImage, deb and rpm for x64, and AppImage
+// and deb for arm64. Linux apps don't update themselves; people install new versions by hand.
 //
 // The installers are built from a clean worktree of HEAD, so uncommitted work in this checkout never
 // ships. Both come from this Mac: an Apple silicon DMG and an x64 NSIS installer (which also runs on
@@ -30,7 +33,7 @@ const root = process.cwd();
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const testBuild = args.includes('--test');
-const linux = args.includes('--linux');
+const linux = !testBuild || args.includes('--linux');
 const bump = args.find((arg) => !arg.startsWith('--')) ?? 'patch';
 
 const git = (...command: string[]) =>
@@ -51,14 +54,32 @@ async function run(command: string, commandArgs: string[], cwd: string) {
   });
 }
 
+// Large uploads to GitHub sometimes stall until it gives up (HTTP 408), so the release is created
+// as a draft, each installer is uploaded with retries, and only then is the release published.
+async function publishRelease(files: string[], createArgs: string[], publishArgs: string[]) {
+  gh('release', 'create', tag, '--repo', repo, '--verify-tag', '--draft', ...createArgs);
+  for (const file of files)
+    for (let attempt = 1; ; attempt++) {
+      try {
+        execFileSync('gh', ['release', 'upload', tag, file, '--clobber', '--repo', repo], {
+          cwd: root,
+          stdio: 'inherit',
+        });
+        break;
+      } catch (error) {
+        if (attempt === 5) throw error;
+        console.log(`Uploading ${path.basename(file)} failed; retrying (${attempt} of 4).`);
+      }
+    }
+  gh('release', 'edit', tag, '--repo', repo, '--draft=false', ...publishArgs);
+}
+
 const desktopPackage = 'apps/desktop/package.json';
 const lockfile = 'package-lock.json';
 const landingPage = 'apps/landing/app/apps/page.tsx';
 const released = [desktopPackage, lockfile, landingPage];
 
 // --- Checks -----------------------------------------------------------------------------------
-// The landing site has no Linux downloads yet, so Linux ships only in test builds.
-if (linux && !testBuild) throw new Error('Linux packages are built only for test builds (--test).');
 if (!testBuild) {
   if (git('rev-parse', '--abbrev-ref', 'HEAD') !== 'main') throw new Error('Release from main.');
   const dirty = git('status', '--porcelain', '--', ...released);
@@ -133,28 +154,43 @@ const targets = [
     name: `harbor0-${version}-win-x64.exe`,
     build: ['--win', 'nsis', '--x64'],
   },
-  // One Linux build makes all three packages.
+  // One Linux build per architecture makes all of its packages.
   ...(linux
     ? [
         {
-          key: 'linux-appimage',
+          key: 'linuxAppImage',
           platform: 'Linux (AppImage)',
           architecture: 'x64',
           name: `harbor0-${version}-linux-x86_64.AppImage`,
           build: ['--linux', 'AppImage', 'deb', 'rpm', '--x64'],
         },
         {
-          key: 'linux-deb',
+          key: 'linuxDeb',
           platform: 'Linux (deb)',
           architecture: 'x64',
           name: `harbor0-${version}-linux-amd64.deb`,
           build: null,
         },
         {
-          key: 'linux-rpm',
+          key: 'linuxRpm',
           platform: 'Linux (rpm)',
           architecture: 'x64',
           name: `harbor0-${version}-linux-x86_64.rpm`,
+          build: null,
+        },
+        // arm64 is for Ubuntu and Debian on ARM machines, such as VMs on Apple silicon Macs.
+        {
+          key: 'linuxAppImageArm64',
+          platform: 'Linux (AppImage)',
+          architecture: 'arm64',
+          name: `harbor0-${version}-linux-arm64.AppImage`,
+          build: ['--linux', 'AppImage', 'deb', '--arm64'],
+        },
+        {
+          key: 'linuxDebArm64',
+          platform: 'Linux (deb)',
+          architecture: 'arm64',
+          name: `harbor0-${version}-linux-arm64.deb`,
           build: null,
         },
       ]
@@ -224,32 +260,28 @@ if (testBuild) {
     process.exit(0);
   }
   git('push', 'origin', tag);
-  gh(
-    'release',
-    'create',
-    tag,
-    ...installers.map((i) => i.file),
-    '--repo',
-    repo,
-    '--verify-tag',
-    '--prerelease',
-    '--latest=false',
-    '--title',
-    `harbor0 ${version} (test build)`,
-    '--notes',
+  await publishRelease(
+    installers.map((i) => i.file),
     [
-      `Test build of harbor0 desktop ${version}, for trying new features before they ship. Not for general use.`,
-      '',
-      'Test builds update themselves to newer test builds and to the next release. Released apps never update to a test build.',
-      ...(linux
-        ? [
-            '',
-            'Linux packages are x64 and don’t update themselves: install newer builds from their release page. On GNOME without the AppIndicator extension there is no tray icon, so closing the window asks whether to keep syncing.',
-          ]
-        : []),
-      '',
-      ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
-    ].join('\n'),
+      '--prerelease',
+      '--title',
+      `harbor0 ${version} (test build)`,
+      '--notes',
+      [
+        `Test build of harbor0 desktop ${version}, for trying new features before they ship. Not for general use.`,
+        '',
+        'Test builds update themselves to newer test builds and to the next release. Released apps never update to a test build.',
+        ...(linux
+          ? [
+              '',
+              'Linux packages are x64 (AppImage, deb, rpm) and arm64 (AppImage, deb) and don’t update themselves: install newer builds from their release page. On GNOME without the AppIndicator extension there is no tray icon, so closing the window asks whether to keep syncing.',
+            ]
+          : []),
+        '',
+        ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
+      ].join('\n'),
+    ],
+    ['--latest=false'],
   );
   for (const { url } of installers) {
     const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
@@ -302,30 +334,29 @@ git('tag', '-a', tag, '-m', `harbor0 desktop ${version}`);
 // The tag goes first so the download exists before the landing site links to it.
 git('push', 'origin', tag);
 const notes = [
-  `harbor0 desktop ${version} for Macs with Apple silicon and for 64-bit Windows 10 and 11.`,
+  `harbor0 desktop ${version} for Macs with Apple silicon, 64-bit Windows 10 and 11, and Linux.`,
   '',
   'The beta builds are not code-signed:',
   '- macOS blocks the app on first open: choose **Open Anyway** in System Settings → Privacy & Security.',
   '- Windows SmartScreen says “Windows protected your PC”: choose **More info**, then **Run anyway**.',
   '',
-  'Installed apps update themselves from Settings.',
+  'Linux: the `.deb` is for Ubuntu and Debian, the `.rpm` for Fedora, and the AppImage runs on most other distributions. `amd64`, `x86_64` and `x64` are the same build, for ordinary 64-bit Intel and AMD PCs; `arm64` is for ARM computers, including Linux VMs on Apple silicon Macs.',
+  '',
+  'Installed Mac and Windows apps update themselves from Settings. On Linux, install new versions from the release page.',
   '',
   ...installers.map(({ name, sha256 }) => `SHA-256 of \`${name}\`: \`${sha256}\``),
 ].join('\n');
-gh(
-  'release',
-  'create',
-  tag,
-  ...installers.map((i) => i.file),
-  '--repo',
-  repo,
-  '--verify-tag',
-  '--title',
-  `harbor0 ${version}`,
-  '--notes',
-  notes,
-  '--generate-notes',
-  ...(previousRelease ? ['--notes-start-tag', previousRelease] : []),
+await publishRelease(
+  installers.map((i) => i.file),
+  [
+    '--title',
+    `harbor0 ${version}`,
+    '--notes',
+    notes,
+    '--generate-notes',
+    ...(previousRelease ? ['--notes-start-tag', previousRelease] : []),
+  ],
+  ['--latest'],
 );
 for (const { url } of installers) {
   const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
