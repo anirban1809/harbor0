@@ -5,11 +5,16 @@ import path from 'node:path';
 import { desktopConfiguration } from '../apps/desktop/src/config';
 import { readOutputs } from '../infra/environment';
 
-const output = await readOutputs('storage');
-const web = await readOutputs('web').then(
-  (outputs) => outputs as { WebUrl?: string },
-  () => undefined,
-);
+// CI has no deploy outputs, so it passes the URLs instead.
+const output = process.env.HARBOR_API_URL
+  ? { ApiUrl: process.env.HARBOR_API_URL }
+  : await readOutputs('storage');
+const web = process.env.HARBOR_API_URL
+  ? { WebUrl: process.env.HARBOR_WEB_URL }
+  : await readOutputs('web').then(
+      (outputs) => outputs as { WebUrl?: string },
+      () => undefined,
+    );
 const settings = {
   HARBOR_API_URL: output.ApiUrl,
   // Optional: enables the sign-in screen's account creation and password reset links.

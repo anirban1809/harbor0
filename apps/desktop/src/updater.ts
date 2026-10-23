@@ -483,8 +483,11 @@ export function runningBundle(
   packaged: boolean,
   platform: string,
   execPath: string,
+  windowsStore = false,
 ): UpdaterOptions['bundle'] {
   if (!packaged) return { unsupported: "Development builds don't update themselves." };
+  // Store policy leaves updates to the Store, which also couldn't be written over its package.
+  if (windowsStore) return { unsupported: 'harbor0 updates through the Microsoft Store.' };
   if (platform === 'win32') {
     // Only the installer's copy can be updated by running the next installer over it.
     const folder = path.dirname(execPath);

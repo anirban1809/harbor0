@@ -154,6 +154,9 @@ it('updates a Windows app only when it was installed with the installer', async 
   await writeFile(path.join(directory, 'Uninstall harbor0.exe'), '');
   expect(runningBundle(true, 'win32', exe)).toEqual({ path: exe, platform: 'win32' });
   expect(runningBundle(false, 'win32', exe)).toHaveProperty('unsupported');
+  expect(runningBundle(true, 'win32', exe, true)).toEqual({
+    unsupported: expect.stringContaining('Microsoft Store'),
+  });
 });
 
 it('reports a newer release that has an installer for this Mac', async () => {

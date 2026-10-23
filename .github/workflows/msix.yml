@@ -1,0 +1,27 @@
+name: Microsoft Store package
+# Builds the unsigned MSIX (.appx) packages to upload to Partner Center, which signs them.
+# electron-builder can only make them on Windows.
+on:
+  workflow_dispatch:
+  push:
+    branches: [msix]
+jobs:
+  appx:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsx scripts/package-desktop-release.ts --win appx --x64 --arm64
+        env:
+          # Production's public endpoints, which every release bundles; CI has no deploy outputs.
+          HARBOR_API_URL: https://zlh5nzxdy6.execute-api.us-east-1.amazonaws.com
+          HARBOR_WEB_URL: https://app.harbor0.com
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor0-appx
+          path: apps/desktop/release/*.appx
+          if-no-files-found: error

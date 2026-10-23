@@ -39,6 +39,41 @@ async function tiled(size) {
     .toBuffer();
 }
 
+// Windows Store tiles: the white tile without the macOS grid's margin and shadow, which turn to
+// smudges at taskbar sizes, centred on a transparent canvas of the asset's shape.
+async function windowsTile(width, height, share) {
+  const tile = Math.round(Math.min(width, height) * share);
+  const background = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+      <rect x="${(width - tile) / 2}" y="${(height - tile) / 2}" width="${tile}" height="${tile}" rx="${tile * 0.225}" fill="#ffffff"/>
+    </svg>`,
+  );
+  return sharp(background)
+    .composite([{ input: await png(Math.round(tile * 0.74)), gravity: 'center' }])
+    .png()
+    .toBuffer();
+}
+// Scale variants for each asset the MSIX manifest names; makepri maps them to the plain names.
+// The taskbar and Start menu pick exact target sizes, unplated ones on Windows 11.
+const appxTiles = [
+  ['StoreLogo', 50, 50, 0.92],
+  ['Square44x44Logo', 44, 44, 0.92],
+  ['Square150x150Logo', 150, 150, 0.66],
+  ['Wide310x150Logo', 310, 150, 0.66],
+];
+for (const [name, width, height, share] of appxTiles)
+  for (const scale of [100, 200, 400])
+    await save(
+      `apps/desktop/assets/appx/${name}.scale-${scale}.png`,
+      await windowsTile((width * scale) / 100, (height * scale) / 100, share),
+    );
+for (const size of [16, 24, 32, 48, 256])
+  for (const variant of ['', '_altform-unplated'])
+    await save(
+      `apps/desktop/assets/appx/Square44x44Logo.targetsize-${size}${variant}.png`,
+      await windowsTile(size, size, 0.92),
+    );
+
 // Preserve the transparent master on every surface that supports alpha.
 await save('apps/desktop/assets/icon.png', await tiled(1024));
 await save('apps/web/app/icon.png', await png(512));

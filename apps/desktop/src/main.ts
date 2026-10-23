@@ -205,9 +205,12 @@ function webdavView() {
     // `harbor0 webdav` uses an access token, which can't read encrypted files.
     command: encrypted
       ? null
-      : app.isPackaged
-        ? `${executable} webdav`
-        : 'npm run dev:desktop -- webdav',
+      : process.windowsStore
+        ? // The package's command alias; its folder can't be run from.
+          'harbor0 webdav'
+        : app.isPackaged
+          ? `${executable} webdav`
+          : 'npm run dev:desktop -- webdav',
   };
 }
 function sendWebdav() {
@@ -565,8 +568,10 @@ async function connected() {
 // Electron registers that ID's toast activator to launch whichever executable last showed a
 // notification, so an unpackaged electron.exe must use its own ID or clicks open Electron's
 // default app. A fixed activator keeps toasts left in Action Center working after a restart.
+// A Store package has its own app ID, and its manifest registers the same activator.
 if (process.platform === 'win32') {
-  app.setAppUserModelId(app.isPackaged ? 'com.harbor.storage' : 'com.harbor.storage.dev');
+  if (!process.windowsStore)
+    app.setAppUserModelId(app.isPackaged ? 'com.harbor.storage' : 'com.harbor.storage.dev');
   app.setToastActivatorCLSID(
     app.isPackaged
       ? '{97B05483-3DCF-41FC-997E-621F60D1B04E}'
@@ -1600,7 +1605,12 @@ app
     });
     updater = new Updater({
       current: app.getVersion(),
-      bundle: runningBundle(app.isPackaged, process.platform, process.execPath),
+      bundle: runningBundle(
+        app.isPackaged,
+        process.platform,
+        process.execPath,
+        process.windowsStore,
+      ),
       arch: process.arch,
       // Each new version downloads in the background, so updating is only a restart.
       autoDownload: true,
