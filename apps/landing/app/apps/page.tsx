@@ -10,24 +10,49 @@ type Download = { version: string; size: string; url: string; sha256: string };
 
 // The published installers; `npm run release:desktop` updates them with each GitHub release.
 const mac: Download | null = {
-  version: '0.1.12',
+  version: '0.1.13',
   size: '132 MB',
-  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.12/harbor0-0.1.12-mac-arm64.dmg',
-  sha256: '3c070302babd22f66c27672b44a8a25cf6986046e1d226e1f6c50276f164cb39',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-mac-arm64.dmg',
+  sha256: '02d7f41dfa94d1e132bf4d348ca620ed43ea4d376fbb20415ef76d9803ff31c1',
 };
 const windows: Download | null = {
-  version: '0.1.12',
+  version: '0.1.13',
   size: '115 MB',
-  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.12/harbor0-0.1.12-win-x64.exe',
-  sha256: '81ccee34e164fcd40f6d2db35c21cad8329ac1b74f897e46f4219d10072b0aeb',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-win-x64.exe',
+  sha256: 'ab83fff5eb7e7ffb92c03a1502d463300da054740b2be5ca40cb6ac3af7ae7ce',
 };
 
 // x64 is the same build that Debian calls amd64 and Fedora calls x86_64.
-const linuxDeb: Download | null = null;
-const linuxRpm: Download | null = null;
-const linuxAppImage: Download | null = null;
-const linuxDebArm64: Download | null = null;
-const linuxAppImageArm64: Download | null = null;
+const linuxDeb: Download | null = {
+  version: '0.1.13',
+  size: '103 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-linux-amd64.deb',
+  sha256: '200d5d04e25c9e90ca7a379ed13bd04d69b26ac0e616b2e5a0a122cdfa874a69',
+};
+const linuxRpm: Download | null = {
+  version: '0.1.13',
+  size: '91 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-linux-x86_64.rpm',
+  sha256: '495cf2efb437bc0b3820f5ffafa82e433be870e1bdce0dafffcfab0101326547',
+};
+const linuxAppImage: Download | null = {
+  version: '0.1.13',
+  size: '130 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-linux-x86_64.AppImage',
+  sha256: '0f9cb341d3990249758ca40172f5f7078573dbc3abecb3ccd45345ed31510c2b',
+};
+const linuxDebArm64: Download | null = {
+  version: '0.1.13',
+  size: '98 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-linux-arm64.deb',
+  sha256: '73c85e0ad9505daff9844a88801784d65fc591e2f63ece3b501f349ed1e186b9',
+};
+const linuxAppImageArm64: Download | null = {
+  version: '0.1.13',
+  size: '131 MB',
+  url: 'https://github.com/anirban1809/harbor0/releases/download/v0.1.13/harbor0-0.1.13-linux-arm64.AppImage',
+  sha256: '44ef62aa911b817978fd3b32e1c5a9832b78b2d0e129044e41f8711564d9f707',
+};
 const linux: { package: string; for: string; arch: string; download: Download | null }[] = [
   { package: 'deb', for: 'Ubuntu, Debian, Mint', arch: 'x64', download: linuxDeb },
   { package: 'deb', for: 'Ubuntu, Debian, Mint', arch: 'arm64', download: linuxDebArm64 },
